@@ -1,0 +1,6 @@
+# The default (corporate) registry 403s on scoped @esbuild/* platform binaries,
+# which Vite needs. These are public, open-source prebuilt binaries — scope just
+# that namespace to the public npm registry so `bun install` resolves the binary
+# that matches Vite's esbuild host version.
+[install.scopes]
+"@esbuild" = "https://registry.npmjs.org"

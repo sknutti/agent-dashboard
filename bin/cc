@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# cc — Command Centre launcher shim.
+#   cc start | stop | restart | doctor | sync | logs
+# Manages the launchd-supervised server. Resolves its own location (following
+# symlinks) so it works both from the repo (./bin/cc) and when symlinked into
+# ~/.local/bin/cc by install.sh.
+set -euo pipefail
+
+# ── Resolve real script path (follow symlinks) ──────────────────────────────
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+BIN_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROJECT_ROOT="${CC_PROJECT_ROOT:-$(cd "$BIN_DIR/.." && pwd)}"
+
+LABEL="com.commandcentre.server"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+UID_NUM="$(id -u)"
+DOMAIN="gui/$UID_NUM"
+DATA_DIR="${CC_DATA_DIR:-$PROJECT_ROOT/data}"
+LOG_DIR="$DATA_DIR/logs"
+BUN="$(command -v bun || true)"
+
+die() { echo "cc: $*" >&2; exit 1; }
+need_bun() { [ -n "$BUN" ] || die "bun not found on PATH"; }
+have_plist() { [ -f "$PLIST" ]; }
+
+cmd="${1:-}"
+case "$cmd" in
+  start)
+    if have_plist; then
+      launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null \
+        || launchctl load -w "$PLIST" 2>/dev/null \
+        || die "launchctl could not load $LABEL"
+      echo "cc: started $LABEL (launchd)"
+    else
+      need_bun
+      echo "cc: no launchd plist installed — running in foreground (Ctrl-C to stop)"
+      exec "$BUN" run "$PROJECT_ROOT/scripts/server.ts"
+    fi
+    ;;
+  stop)
+    if have_plist; then
+      launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null \
+        || launchctl unload "$PLIST" 2>/dev/null \
+        || true
+      echo "cc: stopped $LABEL"
+    else
+      pkill -f "scripts/server.ts" 2>/dev/null && echo "cc: stopped foreground server" || echo "cc: nothing running"
+    fi
+    ;;
+  restart)
+    if have_plist; then
+      launchctl kickstart -k "$DOMAIN/$LABEL" 2>/dev/null \
+        || { "$0" stop; "$0" start; }
+      echo "cc: restarted $LABEL"
+    else
+      "$0" stop || true
+      "$0" start
+    fi
+    ;;
+  doctor)
+    need_bun
+    exec "$BUN" run "$PROJECT_ROOT/scripts/doctor.ts"
+    ;;
+  sync)
+    need_bun
+    echo "cc: running one sync tick…"
+    exec "$BUN" run "$PROJECT_ROOT/scripts/sync_agents.ts" --once
+    ;;
+  logs)
+    mkdir -p "$LOG_DIR"
+    echo "cc: tailing $LOG_DIR/*.log (Ctrl-C to stop)"
+    touch "$LOG_DIR/server.out.log" "$LOG_DIR/server.err.log"
+    exec tail -n 50 -f "$LOG_DIR/server.out.log" "$LOG_DIR/server.err.log"
+    ;;
+  ""|-h|--help|help)
+    cat <<EOF
+cc — Command Centre
+
+  cc start      load/start the server (launchd, or foreground if not installed)
+  cc stop       stop the server
+  cc restart    restart the server
+  cc doctor     run health checks (zero LLM)
+  cc sync       run one orchestrator sync tick now
+  cc logs       tail server logs
+EOF
+    ;;
+  *)
+    die "unknown command '$cmd' (try: cc help)"
+    ;;
+esac

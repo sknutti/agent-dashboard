@@ -28,6 +28,7 @@ data/
 # ── Logs / runtime ──────────────────────────────────
 *.log
 .tmp/
+.playwright-cli/
 
 # ── Editor / OS ─────────────────────────────────────
 .DS_Store

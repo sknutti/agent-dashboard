@@ -1,0 +1,42 @@
+# Per-agent adapter registry (master §10.3).
+#
+# Phase 0 SCAFFOLD: no adapter is implemented yet, so the orchestrator runs an
+# empty registry regardless of these flags. install.sh auto-detects which agent
+# data dirs exist on this machine and flips `enabled: true` for the ones present;
+# the rest stay false and render a "not detected" empty state (never an error).
+#
+# `cost` drives the hybrid USD policy (master §11.5 + ADR-0002):
+#   native  -> show the vendor's exact USD                (Claude Code, Pi)
+#   none    -> tokens-only; rack-rate estimate still computed, never fabricated
+# `tokens: protobuf_db` tells the Antigravity adapter to decode token usage from
+# the conversation .db protobuf (§10.2) rather than the JSONL transcript.
+
+agents:
+  claude_code:
+    enabled: true
+    path: "~/.claude/projects"
+    glob: "*/*.jsonl"
+    otel: true
+    cost: native
+
+  codex:
+    enabled: true
+    path: "~/.codex/sessions"
+    glob: "**/*.jsonl"
+    otel: false # built-in but opt-in; wizard enables in Phase 2
+    cost: none
+
+  pi:
+    enabled: true
+    path: "~/.pi/agent/sessions"
+    glob: "**/*.jsonl"
+    otel: false # plugin (pi-otel); enabled in Phase 3
+    cost: native
+
+  antigravity:
+    enabled: true
+    path: "~/.gemini/antigravity-cli"
+    glob: "brain/*/.system_generated/logs/transcript_full.jsonl"
+    otel: false # no usable local OTLP — do NOT enable the Google toggle
+    cost: none
+    tokens: protobuf_db

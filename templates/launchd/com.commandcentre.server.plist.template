@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Command Centre server LaunchAgent. install.sh renders {{TOKENS}} and writes
+  this to ~/Library/LaunchAgents/com.commandcentre.server.plist.
+
+  RunAtLoad + KeepAlive => always-on; ThrottleInterval avoids crash-spin.
+  We point at the resolved bun binary (NEVER hardcode an interpreter path —
+  master §18) and pass config via env so the process is location-independent.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.commandcentre.server</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{BUN}}</string>
+    <string>run</string>
+    <string>{{PROJECT_ROOT}}/scripts/server.ts</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CC_PROJECT_ROOT</key>
+    <string>{{PROJECT_ROOT}}</string>
+    <key>CC_DATA_DIR</key>
+    <string>{{DATA_DIR}}</string>
+    <key>CC_PORT</key>
+    <string>{{PORT}}</string>
+    <key>PATH</key>
+    <string>{{BUN_DIR}}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>{{PROJECT_ROOT}}</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+
+  <key>StandardOutPath</key>
+  <string>{{DATA_DIR}}/logs/server.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>{{DATA_DIR}}/logs/server.err.log</string>
+</dict>
+</plist>

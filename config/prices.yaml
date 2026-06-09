@@ -1,0 +1,30 @@
+# Rack-rate price table (ADR-0002) — STUB.
+#
+# Phase 0 ships the STRUCTURE only; no rates are wired. The rack-rate cost
+# engine debuts in Phase 1 with Claude (first real tokens) and reads this file
+# to compute `cost_estimated_usd = tokens x API list price`, ALWAYS badged
+# `estimated`. Until then every estimate stays NULL.
+#
+# Rules baked into the engine that consumes this file:
+#   • Rates are USD per 1,000,000 tokens (API list / "rack" rate).
+#   • A model absent from `models` => cost_estimated_usd NULL + "model unknown"
+#     flag. NEVER guess a rate.
+#   • Estimated cost is NEVER summed into a headline total with native cost.
+#   • This table drifts; stale rates silently skew estimates. Maintain it.
+
+version: 0              # bumped when the schema of this file changes
+currency: USD
+unit: per_million_tokens
+
+# Phase 1 will populate real rates here, e.g.:
+#   "claude-opus-4-8":
+#     input: 0.00
+#     output: 0.00
+#     cache_read: 0.00
+#     cache_write: 0.00
+#     reasoning: 0.00   # priced as output unless a model splits it
+models: {}
+
+# Optional aliases: map a logged model id onto a `models` key.
+#   "claude-opus-4-8[1m]": "claude-opus-4-8"
+aliases: {}

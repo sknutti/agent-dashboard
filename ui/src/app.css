@@ -1,0 +1,132 @@
+/* Command Centre theme — master §22.
+   No web fonts: loading from a CDN would be an outbound call and the privacy
+   model is zero-outbound. We use Inter / JetBrains Mono IF installed locally,
+   otherwise fall back gracefully to the system stack. */
+
+:root {
+  /* Palette (§22) */
+  --bg: #0a0a0f;
+  --surface: #12121a;
+  --surface-2: #1a1a27;
+  --border: #2a2a3d;
+  --border-glow: #3d3d5c;
+  --text: #e8e8f0;
+  --text-dim: #8888a0;
+  --text-subtle: #5a5a70;
+
+  --accent-from: #4d7cff;
+  --accent-to: #8b5cf6;
+  --accent-gradient: linear-gradient(135deg, var(--accent-from), var(--accent-to));
+
+  --green: #10b981;
+  --amber: #f59e0b;
+  --red: #ef4444;
+  --cyan: #06b6d4;
+
+  /* Type */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo,
+    Consolas, monospace;
+
+  /* Shape & motion */
+  --radius: 15px;
+  --radius-sm: 10px;
+  --pad: 28px;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background-color: var(--bg);
+  /* Layered radial gradients for depth (§22). */
+  background-image:
+    radial-gradient(1200px 600px at 15% -10%, rgba(77, 124, 255, 0.08), transparent 60%),
+    radial-gradient(1000px 700px at 100% 0%, rgba(139, 92, 246, 0.07), transparent 55%),
+    radial-gradient(900px 900px at 50% 120%, rgba(6, 182, 212, 0.04), transparent 60%);
+  background-attachment: fixed;
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#app {
+  min-height: 100%;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* Uppercase mono section kickers (§22). */
+.kicker {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+}
+
+/* Numeric/code text. */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Visible focus ring (§22 keyboard). */
+:focus-visible {
+  outline: 2px solid var(--accent-from);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Tasteful scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-glow) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--border-glow);
+  background-clip: content-box;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

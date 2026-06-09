@@ -1,5 +1,12 @@
 # Multi-Agent Observability Command Centre — Master Guide & Build Spec
 
+> ⚠️ **Superseded in part — read with the phased build.** This document is the **reference** for the build, but three decisions have been overridden since it was written. Sequencing now lives in [`phases/INDEX.md`](phases/INDEX.md).
+> - **Stack** → TypeScript / Svelte 5 / Bun / Hono / `bun:sqlite`, *not* Python/FastAPI/React. See [ADR-0001](adr/0001-typescript-svelte-bun-stack.md). Treat all Python in Part III as pseudocode to port.
+> - **Sequencing** → built in phases (Foundation → Claude → Codex → Pi → Antigravity → long-tail → operations), *not* all at once. See [`phases/INDEX.md`](phases/INDEX.md).
+> - **Cost** → every agent gets a uniform **rack-rate estimated cost** (labeled `estimated`), alongside native cost where it exists; the two are never merged. This refines Resolved #7 / Open Q #2 below. See [ADR-0002](adr/0002-uniform-rack-rate-estimated-cost.md).
+>
+> **Still fully authoritative here:** the grounded field maps (§10.2), database schema (§14), API surface (§16), and panel specs (§17). Phase docs cite these sections rather than duplicating them. Domain language lives in [`../CONTEXT.md`](../CONTEXT.md).
+
 **Generated:** 2026-06-08
 **Source Documents:**
 - [Companion guide — "Reading Claude Code's Diary"](sources/build-your-own-dashboard-guide.html)

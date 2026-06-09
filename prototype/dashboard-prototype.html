@@ -1,0 +1,299 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway. Agent-first command page (ADR-0003) + drill-downs.
+  Iteration 2: icon-only fidelity badges · token mix as tooltip · all Activity items drill ·
+  cache info modal · OTEL indicator by model name · per-agent Burn dropdown.
+  Run: bun agent-dashboard/prototype/serve.ts → http://localhost:4321
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Command Centre — UI prototype (agent-first)</title>
+<style>
+  :root{
+    --bg:#0a0a0f;--surface:#12121a;--surface-2:#1a1a27;--border:#2a2a3d;--border-glow:#3d3d5c;
+    --text:#e8e8f0;--text-dim:#8888a0;--text-subtle:#5a5a70;
+    --green:#10b981;--amber:#f59e0b;--red:#ef4444;--cyan:#06b6d4;
+    --accent1:#4d7cff;--accent2:#8b5cf6;
+    --claude:#4d7cff;--codex:#10b981;--pi:#8b5cf6;--antigravity:#f59e0b;
+    --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;--sans:Inter,-apple-system,'Segoe UI',sans-serif;}
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 80% -10%,rgba(77,124,255,.08),transparent 60%),radial-gradient(900px 500px at 0% 110%,rgba(139,92,246,.08),transparent 60%),var(--bg);
+    color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased}
+  h1,h2,h3{margin:0;font-weight:650}
+  .kicker{font-family:var(--mono);text-transform:uppercase;letter-spacing:1.8px;font-size:10px;color:var(--text-subtle)}
+  .mono{font-family:var(--mono)} .dim{color:var(--text-dim)} .subtle{color:var(--text-subtle)}
+  .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .wrap{max-width:1440px;margin:0 auto;padding:20px 24px 80px}
+  header.app{display:flex;align-items:center;gap:16px;padding:14px 24px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,rgba(26,26,39,.6),transparent)}
+  .logo{font-weight:750} .logo .grad{background:linear-gradient(135deg,var(--accent1),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+  nav.app{display:flex;gap:4px;margin-left:8px} nav.app a{font-size:13px;color:var(--text-dim);padding:6px 12px;border-radius:8px} nav.app a.active{color:var(--text);background:var(--surface-2)}
+  .spacer{flex:1}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px}
+  .card.glow{border-color:var(--border-glow)}
+  .card h3{font-size:13px;display:flex;align-items:center;gap:8px}
+  .hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+  .grid{display:grid;gap:14px}
+  .pill{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:999px;border:1px solid var(--border);color:var(--text-dim);white-space:nowrap}
+  .pill.green{color:var(--green);border-color:rgba(16,185,129,.35);background:rgba(16,185,129,.08)}
+  .pill.amber{color:var(--amber);border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.08)}
+  .pill.red{color:var(--red);border-color:rgba(239,68,68,.35);background:rgba(239,68,68,.08)}
+  .pill.cyan{color:var(--cyan);border-color:rgba(6,182,212,.35);background:rgba(6,182,212,.08)}
+  .badge-est{color:var(--amber)}
+  /* iter2: icon-only fidelity badge */
+  .fb{display:inline-flex;width:17px;height:17px;border-radius:6px;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;cursor:help;vertical-align:middle}
+  .fb-exact{background:rgba(16,185,129,.15);color:var(--green);border:1px solid rgba(16,185,129,.45)}
+  .fb-est{background:rgba(245,158,11,.15);color:var(--amber);border:1px solid rgba(245,158,11,.45)}
+  .dot{width:8px;height:8px;border-radius:3px;display:inline-block}
+  .agentdot{width:9px;height:9px;border-radius:3px;display:inline-block;margin-right:6px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-subtle);font-weight:500;padding:6px 8px;border-bottom:1px solid var(--border)}
+  td{padding:7px 8px;border-bottom:1px solid rgba(42,42,61,.5)} td.r,th.r{text-align:right} tr:last-child td{border-bottom:none}
+  .bar{height:8px;border-radius:4px;background:var(--surface-2);overflow:hidden;display:flex;cursor:help} .bar>span{display:block;height:100%}
+  .big{font-family:var(--mono);font-size:24px;font-weight:600;letter-spacing:-.5px}
+  .strip{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .hpill{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11px;background:var(--surface-2);border:1px solid var(--border);border-radius:999px;padding:4px 10px}
+  .sectionlabel{font-family:var(--mono);text-transform:uppercase;letter-spacing:1.6px;font-size:10px;color:var(--text-subtle);margin:18px 2px 8px;display:flex;align-items:center;gap:6px}
+  .note{font-size:11px;color:var(--text-subtle);font-family:var(--mono)}
+  .savings{color:var(--green)} .muted-cost{color:var(--text-subtle);font-style:italic}
+  .heat{display:grid;grid-template-columns:repeat(30,1fr);gap:3px} .heat .cell{aspect-ratio:1;border-radius:3px;background:var(--surface-2);cursor:help}
+  .heataxis{display:grid;grid-template-columns:repeat(30,1fr);gap:3px;margin-top:4px}
+  .tick{font-family:var(--mono);font-size:9px;color:var(--text-subtle);text-align:center;white-space:nowrap;overflow:visible}
+  .legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--text-dim)}
+  .drill{cursor:pointer;border-bottom:1px dashed var(--border-glow);transition:color .12s}
+  .drill:hover{color:var(--accent1);border-bottom-color:var(--accent1)}
+  .hpill.drill:hover{color:var(--accent1);border-color:var(--accent1)}
+  .acard{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px}
+  .acard .top{border-top-width:3px;border-top-style:solid;margin:-16px -16px 12px;border-radius:14px 14px 0 0;padding:12px 16px;display:flex;align-items:center;justify-content:space-between}
+  .acard .top .ttl{display:flex;align-items:center;gap:8px}
+  /* iter2: otel indicator */
+  .otel{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:9px;letter-spacing:.5px;padding:2px 6px;border-radius:999px;cursor:help}
+  .otel.on{color:var(--green);background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.4)}
+  .otel.off{color:var(--text-subtle);background:var(--surface-2);border:1px solid var(--border)}
+  .otel .led{width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor}
+  /* iter2: info icon */
+  .info{display:inline-flex;width:15px;height:15px;border-radius:50%;align-items:center;justify-content:center;font-size:10px;font-weight:700;
+    background:var(--surface-2);border:1px solid var(--border);color:var(--text-dim);cursor:pointer}
+  .info:hover{color:var(--accent1);border-color:var(--accent1)}
+  select{font-family:var(--mono);font-size:11px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:4px 8px;cursor:pointer}
+  #scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);opacity:0;pointer-events:none;transition:.15s;z-index:80}
+  #scrim.open{opacity:1;pointer-events:auto}
+  #sheet{position:fixed;top:0;right:0;height:100%;width:480px;max-width:92vw;background:var(--surface);border-left:1px solid var(--border-glow);
+    transform:translateX(100%);transition:transform .18s ease-out;z-index:90;padding:20px;overflow:auto;box-shadow:-20px 0 60px rgba(0,0,0,.5)}
+  #sheet.open{transform:none}
+  #sheet .x{float:right;cursor:pointer;color:var(--text-dim);font-size:20px;line-height:1}
+  .act{margin-top:14px;padding:10px;border:1px dashed var(--border);border-radius:10px;color:var(--text-subtle);font-size:11px;font-family:var(--mono)}
+  .explain p{color:var(--text-dim);font-size:13px} .explain code{font-family:var(--mono);background:var(--surface-2);padding:1px 5px;border-radius:4px;color:var(--cyan)}
+  /* iter3: live session accordion */
+  details.live{border:1px solid var(--border);border-radius:10px;margin-bottom:8px;background:var(--surface-2)}
+  details.live summary{list-style:none;cursor:pointer;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+  details.live summary::-webkit-details-marker{display:none}
+  details.live summary:hover{background:rgba(255,255,255,.02)}
+  .lv-main{display:flex;align-items:center;gap:4px;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+  .lv-meta{display:flex;align-items:center;gap:12px;flex:none}
+  .chev{transition:transform .18s;color:var(--text-dim);font-size:16px}
+  details[open] .chev{transform:rotate(90deg)}
+  .jsonl{max-height:300px;overflow:auto;margin:0 10px 10px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-family:var(--mono);font-size:11.5px;line-height:1.5}
+  .jl{white-space:pre-wrap;word-break:break-word;color:var(--text-dim);padding:3px 0;border-bottom:1px solid rgba(42,42,61,.4)}
+  .jl:last-child{border-bottom:none}
+</style>
+</head>
+<body>
+<header class="app">
+  <div class="logo"><span class="grad">◆ Command</span> Centre</div>
+  <nav class="app"><a class="active">Command</a><a class="dim">Activity</a><a class="dim">Skills & MCP</a></nav>
+  <div class="spacer"></div><div class="pill cyan">prototype · agent-first · mock data</div>
+</header>
+<div class="wrap" id="app"></div>
+<div id="scrim"></div>
+<aside id="sheet"></aside>
+
+<script>
+//// ---------- MOCK DATA ----------
+const AGENTS={
+  claude_code:{name:'Claude Code',color:'var(--claude)',otelOn:true,otel:'built-in — logs+metrics+traces'},
+  codex:{name:'Codex',color:'var(--codex)',otelOn:true,otel:'opt-in [otel] in config.toml — enabled'},
+  pi:{name:'Pi',color:'var(--pi)',otelOn:true,otel:'plugin pi-otel — enabled'},
+  antigravity:{name:'Antigravity',color:'var(--antigravity)',otelOn:false,otel:'no local OTEL — tokens from protobuf'},
+};
+const D={
+  claude_code:{model:'claude-opus-4-8',sessions:461,input:48_200_000,output:6_400_000,reasoning:null,cacheRead:121_000_000,cacheCreate:9_800_000,nativeUsd:214.55,estUsd:642.10,cacheHit:.78,tools:18420,errors:142,branches:null},
+  codex:{model:'gpt-5.4',sessions:306,input:31_500_000,output:2_700_000,reasoning:1_400_000,cacheRead:54_000_000,cacheCreate:0,nativeUsd:null,estUsd:198.30,cacheHit:.63,tools:9900,errors:88,branches:null},
+  pi:{model:'claude-sonnet-4-6',sessions:13,input:2_300_000,output:410_000,reasoning:null,cacheRead:5_100_000,cacheCreate:220_000,nativeUsd:11.42,estUsd:17.80,cacheHit:.71,tools:540,errors:6,branches:9},
+  antigravity:{model:null,sessions:3,input:380_000,output:58_000,reasoning:38_000,cacheRead:0,cacheCreate:0,nativeUsd:null,estUsd:null,estUnknownReason:'model unknown',cacheHit:null,tools:120,errors:2,branches:null},
+};
+const tot=a=>{const d=D[a];return d.input+d.output+(d.reasoning||0)+d.cacheRead+d.cacheCreate};
+const sumTot=Object.keys(D).reduce((s,a)=>s+tot(a),0);
+const tools=[
+  {name:'mcp__notion__search',p50:1800,p95:14200,max:31000,n:212,err:.04},
+  {name:'Bash',p50:240,p95:2100,max:9000,n:6300,err:.02},
+  {name:'exec_command (shell)',p50:320,p95:5200,max:42000,n:2900,err:.05},
+  {name:'mcp__github__list_prs',p50:600,p95:3400,max:8800,n:140,err:.01},
+  {name:'Edit',p50:60,p95:180,max:900,n:4100,err:.00},
+  {name:'Read',p50:40,p95:120,max:600,n:8800,err:.00},
+];
+const burn30=Array.from({length:30},(_,i)=>Math.max(400000,6000000+Math.round(4000000*Math.sin(i/3))+(i%7<2?-3000000:0)+(i>24?5000000:0)+i*131000));
+const burnFor=a=>a==='all'?burn30:burn30.map(v=>Math.max(0,Math.round(v*tot(a)/sumTot)));
+const burnDrivers={shipping:.46,research:.27,review:.14,video:.08,admin:.05};
+const sysHealth=[{k:'uptime',v:'3d 14h'},{k:'last OTEL',v:'4s ago'},{k:'last sync',v:'38s ago'},{k:'mem',v:'94 MB'},{k:'tz',v:'America/Denver'}];
+const ERRORS={
+  claude_code:[{t:'refactor spec into phases',msg:'tool_use Edit: file not found ~/old/path.md',when:'1h ago',sid:'a1f3'},{t:'sync OTEL settings',msg:'api_error 529 overloaded (attempt 3/10)',when:'3h ago',sid:'b220'},{t:'MCP notion bulk fetch',msg:'mcp__notion__search timeout after 31s',when:'5h ago',sid:'c910'}],
+  codex:[{t:'cargo test run',msg:'exec_command exit_code=101 (test failed)',when:'20m ago',sid:'cx12'},{t:'rebase main',msg:'exec_command exit_code=1 merge conflict',when:'2h ago',sid:'cx44'}],
+  pi:[{t:'auth flow /tree',msg:'toolResult isError: ENOENT config.json',when:'1d ago',sid:'pi07'}],
+  antigravity:[{t:'gen aborted',msg:'gen_metadata empty (aborted) — tools-only',when:'2d ago',sid:'ag03'}],
+};
+const SESSIONS={
+  claude_code:[{t:'refactor spec into phases',tok:412000,when:'2m'},{t:'write ADR-0002',tok:88000,when:'1h'},{t:'build prototype',tok:256000,when:'3h'}],
+  codex:[{t:'add otel block',tok:88000,when:'6m'},{t:'cargo test',tok:120000,when:'20m'}],
+  pi:[{t:'/tree auth flow',tok:51000,when:'now',branches:3}],
+  antigravity:[{t:'scaffold component',tok:96000,when:'2d'}],
+};
+// live sessions + their raw JSONL (shapes deliberately differ per agent — validates the adapters)
+const LIVE=[
+  {a:'claude_code',t:'refactor spec into phases',cwd:'~/side_projects/playground/agent-dashboard',model:'opus-4-8',tok:412000,st:'running',jsonl:[
+    '{"type":"user","message":{"role":"user","content":"refactor the spec into phases"}}',
+    '{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"Splitting into Foundation + per-agent phases."}],"usage":{"input_tokens":18200,"output_tokens":420,"cache_read_input_tokens":121000,"cache_creation_input_tokens":9800}}}',
+    '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01","name":"Read","input":{"file_path":"docs/2026-06-08-command-centre.md"}}]}}',
+    '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"# Multi-Agent Observability Command Centre ..."}]}}',
+    '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_02","name":"Write","input":{"file_path":"docs/phases/phase-0-foundation.md"}}]}}',
+    '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_02","content":"File created successfully"}]}}',
+    '{"type":"assistant","message":{"content":[{"type":"text","text":"Phase 0 drafted. Continuing with Phase 1."}],"usage":{"output_tokens":180}}}']},
+  {a:'codex',t:'add otel block to config.toml',cwd:'~/.codex',model:'gpt-5.4',tok:88000,st:'tool · cargo test',jsonl:[
+    '{"type":"session_meta","payload":{"id":"cx-88f2","cwd":"~/.codex","model_provider":"openai"}}',
+    '{"type":"turn_context","payload":{"model":"gpt-5.4","cwd":"~/.codex"}}',
+    '{"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"cargo test","call_id":"fc_01"}}',
+    '{"type":"event_msg","payload":{"type":"exec_command_end","call_id":"fc_01","exit_code":0,"duration":4120,"command":"cargo test"}}',
+    '{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":78000,"cached_input_tokens":40000,"output_tokens":9000,"reasoning_output_tokens":1200,"total_tokens":88000}}}}']},
+  {a:'pi',t:'/tree explore auth flow',cwd:'~/work/api',model:'sonnet-4-6',tok:51000,st:'thinking',jsonl:[
+    '{"type":"session","id":"pi-07a","cwd":"~/work/api"}',
+    '{"type":"message","id":"m1","parentId":null,"message":{"role":"user","content":"explore the auth flow"}}',
+    '{"type":"message","id":"m2","parentId":"m1","message":{"role":"assistant","model":"claude-sonnet-4-6","usage":{"input":21000,"output":900,"cacheRead":5100,"totalTokens":27000,"cost":{"total":0.07}}}}',
+    '{"type":"message","id":"m3","parentId":"m2","message":{"role":"toolResult","toolName":"read_file","toolCallId":"tc1","isError":false}}',
+    '{"type":"message","id":"m4","parentId":"m2","message":{"role":"assistant","content":"branch B: alternative approach"}}']},
+];
+//// ---------- HELPERS ----------
+const fmt=n=>n==null?'—':Intl.NumberFormat('en',{notation:n>=100000?'compact':'standard',maximumFractionDigits:1}).format(n);
+const usd=n=>n==null?null:'$'+n.toFixed(2);
+const pct=n=>n==null?'—':Math.round(n*100)+'%';
+const adot=a=>`<span class="agentdot" style="background:${AGENTS[a].color}"></span>`;
+const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const FB_EXACT=`<span class="fb fb-exact" title="exact — counted directly from logs">✓</span>`;
+const FB_EST=`<span class="fb fb-est" title="estimated — rack-rate (tokens × API list price), not a measurement">~</span>`;
+function costLine(a){const d=D[a];
+  if(d.estUsd==null) return `<span class="muted-cost">est — ${d.estUnknownReason}</span> ${FB_EST}`;
+  const est=`<span class="badge-est mono">~${usd(d.estUsd)}</span> ${FB_EST}`;
+  if(d.nativeUsd==null) return est;
+  return `<span class="mono">${usd(d.nativeUsd)}</span> ${FB_EXACT} &nbsp; ${est}`;
+}
+function tokenBar(a){const d=D[a],T=tot(a);
+  const parts=[['input',d.input,'#4d7cff'],['output',d.output,'#8b5cf6'],['reasoning',d.reasoning,'#ec4899'],['cacheRead',d.cacheRead,'#06b6d4'],['cacheCreate',d.cacheCreate,'#f59e0b']];
+  const tip=parts.filter(p=>p[1]).map(p=>`${p[0]} ${fmt(p[1])}`).join(' · ')+(d.reasoning?'':' · (no reasoning split exposed)');
+  const seg=([_,v,c])=>v?`<span style="width:${v/T*100}%;background:${c}"></span>`:'';
+  return `<div class="bar" title="${tip}">${parts.map(seg).join('')}</div>`;
+}
+const heatColor=v=>{const t=(Math.log10(Math.max(1,v))-5.6)/(7.3-5.6),x=Math.max(0,Math.min(1,t));return `rgba(77,124,255,${0.12+0.85*x})`;};
+const DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const dayDate=(i,len)=>{const d=new Date();d.setHours(0,0,0,0);d.setDate(d.getDate()-(len-1-i));return d;};
+const md=d=>(d.getMonth()+1)+'/'+d.getDate();
+//// ---------- SHEET / MODAL ----------
+function openSheet(html){const s=document.getElementById('sheet');s.innerHTML=`<span class="x" onclick="closeSheet()">✕</span>`+html;
+  s.classList.add('open');document.getElementById('scrim').classList.add('open');}
+function closeSheet(){document.getElementById('sheet').classList.remove('open');document.getElementById('scrim').classList.remove('open');}
+document.getElementById('scrim').onclick=closeSheet;
+addEventListener('keydown',e=>{if(e.key==='Escape')closeSheet();});
+function drill(kind,a){
+  if(kind==='errors'){openSheet(`<div class="kicker">${AGENTS[a].name} · errors</div><h2 style="margin:4px 0 12px">${D[a].errors} errors · 30d</h2>
+    <div class="note" style="margin-bottom:10px">GET /api/sessions?agent=${a}&outcome=errored</div>
+    ${(ERRORS[a]||[]).map(r=>`<div class="card" style="margin-bottom:8px;padding:12px"><b>${r.t}</b> <span class="note">· ${r.when} · ${r.sid}</span><div class="mono" style="color:var(--red);font-size:12px;margin-top:4px">${r.msg}</div></div>`).join('')}
+    <div class="act">read-only drill-down. “Address” actions (re-run / dispatch fix) arrive in Phase 6 — the slot lives here ▸</div>`);}
+  else if(kind==='sessions'||kind==='tokens'){openSheet(`<div class="kicker">${AGENTS[a].name} · sessions</div><h2 style="margin:4px 0 12px">${D[a].sessions} sessions · ${fmt(tot(a))} tok</h2>
+    <table><thead><tr><th>session</th><th class="r">tokens</th><th class="r">when</th></tr></thead><tbody>
+    ${(SESSIONS[a]||[]).map(s=>`<tr><td>${s.t}${s.branches?` <span class="pill">${s.branches} branches</span>`:''}</td><td class="num r">${fmt(s.tok)}</td><td class="num r dim">${s.when}</td></tr>`).join('')}</tbody></table>`);}
+  else if(kind==='tools'){openSheet(`<div class="kicker">${AGENTS[a].name} · tool calls</div><h2 style="margin:4px 0 12px">${fmt(D[a].tools)} calls</h2>
+    <table><thead><tr><th>tool</th><th class="r">p95</th><th class="r">N</th></tr></thead><tbody>
+    ${tools.slice(0,5).map(t=>`<tr><td class="mono">${t.name}</td><td class="num r">${(t.p95/1000).toFixed(1)}s</td><td class="num r">${t.n}</td></tr>`).join('')}</tbody></table>`);}
+  else if(kind==='branches'){openSheet(`<div class="kicker">${AGENTS[a].name} · branches</div><h2 style="margin:4px 0 12px">${D[a].branches} branches</h2>
+    <div class="explain"><p>Pi stores re-runs / edits / <code>/tree</code> navigation as a parentId tree in one session file. Burn <b>sums every branch</b> — you were billed for abandoned branches, so that's true spend. Branch count is kept as metadata.</p></div>`);}
+}
+function cacheInfo(){openSheet(`<div class="kicker">metric · explained</div><h2 style="margin:4px 0 12px">Cache efficiency</h2>
+  <div class="explain">
+   <p>Prompt caching lets repeated context (system prompt, files, history) be re-read cheaply instead of re-sent at full price.</p>
+   <p><b>Hit rate</b> = <code>cache_read / (input + cache_read + cache_create)</code> — the share of input tokens served from cache.</p>
+   <p>Target <b>70%+</b>. Higher = you're reusing context well and paying less per turn. Below ~70% suggests context is being rebuilt each turn (cache misses).</p>
+   <p>Shown <b>n/a</b> for agents with no cache concept (Antigravity) — an honest empty, not 0%. A "low sample" note appears under ~10K billable tokens.</p>
+  </div>`);}
+//// ---------- PANELS ----------
+function healthStrip(){return `<div class="strip" style="margin-bottom:14px">${sysHealth.map(h=>`<div class="hpill"><span class="subtle">${h.k}</span><b>${h.v}</b></div>`).join('')}<div class="hpill"><span class="dot" style="background:var(--green)"></span>healthy</div></div>`;}
+function otelBadge(a){const on=AGENTS[a].otelOn;return `<span class="otel ${on?'on':'off'}" title="${AGENTS[a].otel}"><span class="led"></span>OTEL ${on?'on':'off'}</span>`;}
+function agentCard(a){const d=D[a];
+  return `<div class="acard"><div class="top" style="border-top-color:${AGENTS[a].color}">
+      <div class="ttl"><h3>${adot(a)}${AGENTS[a].name}</h3>${otelBadge(a)}</div><span class="note">${d.model||'model ?'}</span></div>
+    <div class="kicker">tokens · 30d ${FB_EXACT}</div>
+    <div class="big drill" onclick="drill('tokens','${a}')">${fmt(tot(a))}</div>
+    <div style="margin:6px 0 2px">${tokenBar(a)}</div>
+    <div class="sectionlabel">cost</div><div>${costLine(a)}</div>
+    <div class="sectionlabel">activity</div>
+    <div class="strip">
+      <span class="hpill drill" onclick="drill('sessions','${a}')">${d.sessions} sess</span>
+      <span class="hpill drill" onclick="drill('tools','${a}')">${fmt(d.tools)} tools</span>
+      <span class="hpill drill" onclick="drill('errors','${a}')" style="color:${d.errors>50?'var(--red)':'var(--text)'}">${d.errors} errors ▸</span>
+      ${d.branches?`<span class="hpill drill" onclick="drill('branches','${a}')" title="Pi tree branches (summed for totals)">${d.branches} branches</span>`:''}
+    </div>
+    <div class="sectionlabel">cache <span class="info" onclick="cacheInfo()" title="what is this?">i</span></div>
+    <div class="bar" style="cursor:default"><span style="width:${(d.cacheHit||0)*100}%;background:${(d.cacheHit||0)>=.7?'var(--green)':'var(--amber)'}"></span></div>
+    <div class="note">${d.cacheHit==null?'n/a (no cache concept)':pct(d.cacheHit)+' hit · target 70%'}</div></div>`;
+}
+function toolLatency(){return `<div class="card"><div class="hd"><h3>Tool latency</h3><span class="note">sort p95 desc</span></div>
+    <table><thead><tr><th>tool</th><th class="r">p50</th><th class="r">p95</th><th class="r">max</th><th class="r">N</th><th class="r">err</th></tr></thead>
+    <tbody>${tools.map(t=>`<tr><td class="mono">${t.name}</td><td class="num r dim">${t.p50}ms</td>
+      <td class="num r ${t.p95>=10000?'badge-est':''}">${(t.p95/1000).toFixed(1)}s ${t.p95>=10000?'<span class="pill red">slow</span>':t.p95<500?'<span class="pill green">fast</span>':''}</td>
+      <td class="num r dim">${(t.max/1000).toFixed(1)}s</td><td class="num r">${fmt(t.n)}</td><td class="num r ${t.err>=.04?'badge-est':'dim'}">${pct(t.err)}</td></tr>`).join('')}</tbody></table></div>`;}
+function savings(){return `<div class="card"><div class="hd"><h3>Subscription savings</h3><span class="note">est − native</span></div>
+    <table><tbody>
+      <tr><td>${adot('claude_code')}Claude</td><td class="num r savings">▼ ${usd(D.claude_code.estUsd-D.claude_code.nativeUsd)}</td></tr>
+      <tr><td>${adot('pi')}Pi</td><td class="num r savings">▼ ${usd(D.pi.estUsd-D.pi.nativeUsd)}</td></tr>
+      <tr><td>${adot('codex')}Codex</td><td class="num r subtle">no native — est only</td></tr>
+      <tr><td>${adot('antigravity')}Antigravity</td><td class="num r muted-cost">est unknown (model)</td></tr>
+    </tbody></table>
+    <div class="note" style="margin-top:8px">"on the API instead of a subscription, this would cost ~${usd(Object.values(D).reduce((s,d)=>s+(d.estUsd||0),0))}"</div></div>`;}
+function burnBody(sel){const series=burnFor(sel),T=series.reduce((a,b)=>a+b,0),len=series.length;
+  const rows=sel==='all'?Object.keys(D):[sel];
+  return `<div class="note" style="margin-bottom:6px">daily burn · last ${len} days — each box = one day (color = tokens, log scale)</div>
+    <div class="heat">${series.map((v,i)=>{const d=dayDate(i,len);return `<div class="cell" style="background:${heatColor(v)}" title="${DOW[d.getDay()]} ${md(d)} · ${fmt(v)} tok"></div>`;}).join('')}</div>
+    <div class="heataxis">${series.map((v,i)=>`<div class="tick">${(len-1-i)%7===0?md(dayDate(i,len)):''}</div>`).join('')}</div>
+    <div class="legend" style="margin-top:8px"><span>less</span><span class="dot" style="background:${heatColor(500000)}"></span><span class="dot" style="background:${heatColor(3000000)}"></span><span class="dot" style="background:${heatColor(12000000)}"></span><span>more</span><span class="subtle">· ${fmt(T)} tok ${sel==='all'?'· all agents':'· '+AGENTS[sel].name} · oldest ${md(dayDate(0,len))} → today ${md(dayDate(len-1,len))}</span></div>
+    <div class="sectionlabel">drivers</div><div class="strip">${Object.entries(burnDrivers).map(([k,v])=>`<span class="pill">${k} ${Math.round(v*100)}%</span>`).join('')}</div>
+    <div class="sectionlabel">scale</div><div class="note">≈ ${(T/120000).toFixed(0)} novels · ${fmt(T)} ÷ 120k tok/novel</div>
+    <div class="sectionlabel">receipts · native vs estimated (never merged)</div>
+    <table><thead><tr><th>agent</th><th class="r">tokens</th><th class="r">native $</th><th class="r">est $</th></tr></thead><tbody>
+    ${rows.map(a=>`<tr><td>${adot(a)}${AGENTS[a].name}</td><td class="num r">${fmt(tot(a))}</td>
+      <td class="num r">${D[a].nativeUsd==null?'<span class="subtle">—</span>':usd(D[a].nativeUsd)}</td>
+      <td class="num r badge-est">${D[a].estUsd==null?'<span class="muted-cost">? model</span>':'~'+usd(D[a].estUsd)} ${D[a].estUsd!=null?FB_EST:''}</td></tr>`).join('')}
+    ${sel==='all'?`<tr style="font-weight:650"><td>Σ comparable (est)</td><td class="num r">${fmt(sumTot)}</td><td class="num r subtle">not summed</td><td class="num r badge-est">~${usd(Object.values(D).reduce((s,d)=>s+(d.estUsd||0),0))}</td></tr>`:''}
+    </tbody></table>`;}
+function updateBurn(sel){document.getElementById('burnbody').innerHTML=burnBody(sel);}
+function burnCard(){return `<div class="card glow"><div class="hd"><h3>◆ Burn <span class="note">fluent, or just expensive?</span></h3>
+    <select onchange="updateBurn(this.value)"><option value="all">All agents</option>${Object.keys(D).map(a=>`<option value="${a}">${AGENTS[a].name}</option>`).join('')}</select></div>
+    <div id="burnbody">${burnBody('all')}</div></div>`;}
+function liveCard(){
+  return `<div class="card"><div class="hd"><h3>● Live sessions</h3><span class="note">${LIVE.length} active · 5m window · click a row for raw JSONL</span></div>
+    ${LIVE.map(s=>`<details class="live"><summary>
+        <span class="lv-main">${adot(s.a)}<b>${s.t}</b><span class="note">&nbsp;· ${s.cwd}</span></span>
+        <span class="lv-meta"><span class="num dim">${s.model}</span><span class="num">${fmt(s.tok)}</span>
+          <span class="pill ${s.st.startsWith('running')?'green':s.st.startsWith('tool')?'cyan':'amber'}">${s.st}</span><span class="chev">›</span></span>
+      </summary>
+      <div class="jsonl">${s.jsonl.map(l=>`<div class="jl">${esc(l)}</div>`).join('')}</div>
+    </details>`).join('')}</div>`;}
+//// ---------- RENDER ----------
+document.getElementById('app').innerHTML=`
+  ${healthStrip()}
+  <div style="display:flex;justify-content:space-between;align-items:center"><h2>Agents</h2><span class="note">primary axis = agent · click underlined cells to drill in</span></div>
+  <div class="grid" style="grid-template-columns:repeat(4,1fr);margin-top:12px">${Object.keys(D).map(agentCard).join('')}</div>
+  <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:16px">${toolLatency()}${savings()}</div>
+  <div class="sectionlabel">cross-agent</div>
+  ${burnCard()}
+  <div class="sectionlabel">live sessions</div>
+  ${liveCard()}`;
+</script>
+</body>
+</html>
