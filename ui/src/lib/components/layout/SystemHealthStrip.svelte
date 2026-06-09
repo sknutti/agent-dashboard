@@ -14,13 +14,15 @@
   }
 
   // Freshness thresholds. Sync ticks every 120s, so >300s is stale.
+  // "Good" is cyan, not green: cyan-vs-red/amber stays distinguishable for
+  // red/green colour vision, where green-vs-red would not.
   function otelTone(age: number | null): Tone {
     if (age === null) return "neutral";
-    return age < 180 ? "green" : "amber";
+    return age < 180 ? "cyan" : "amber";
   }
   function syncTone(age: number | null): Tone {
     if (age === null) return "amber";
-    return age < 300 ? "green" : "red";
+    return age < 300 ? "cyan" : "red";
   }
 </script>
 
@@ -31,7 +33,7 @@
     <StatePill tone="neutral" label="Connecting…" />
   {:else if health.data}
     {@const h = health.data}
-    <StatePill tone="green" label="Uptime" value={fmtDur(h.uptime_s)} />
+    <StatePill tone="cyan" label="Uptime" value={fmtDur(h.uptime_s)} />
     <StatePill
       tone={syncTone(h.last_sync_tick_age_s)}
       label="Sync tick"
@@ -46,7 +48,6 @@
         : fmtDur(h.last_otel_event_age_s)}
       title="Age of the most recent OTLP event received"
     />
-    <StatePill tone="neutral" label="TZ" value={h.tz} />
     <StatePill
       tone="cyan"
       label="Mem"

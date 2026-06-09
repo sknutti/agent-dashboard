@@ -8,7 +8,11 @@
 
   const name = $derived(AGENT_NAMES[agent.id] ?? agent.id);
   const hasData = $derived(agent.sessions > 0);
-  const ADAPTER_PHASE: Record<string, string> = { codex: "Phase 2", pi: "Phase 3", antigravity: "Phase 4" };
+  // Agents whose adapter hasn't shipped yet → show the roadmap phase. As each
+  // adapter lands, drop its entry here (claude_code + codex have shipped), so an
+  // implemented agent with no data in range reads "No sessions in range" instead
+  // of an outdated "Adapter ships in Phase …".
+  const ADAPTER_PHASE: Record<string, string> = { pi: "Phase 3", antigravity: "Phase 4" };
 
   // Token-mix segments (ADR-0003 gap #2: reasoning is first-class). The bar shows
   // segments; the input·output·reasoning·cacheR·cacheC breakdown is on hover.
@@ -51,7 +55,7 @@
 
   {#if !hasData}
     <p class="not-detected">
-      {#if agent.id === "claude_code"}No sessions in range{:else}Adapter ships in {ADAPTER_PHASE[agent.id] ?? "a later phase"}{/if}
+      {#if ADAPTER_PHASE[agent.id]}Adapter ships in {ADAPTER_PHASE[agent.id]}{:else}No sessions in range{/if}
     </p>
   {:else}
     <!-- Tokens + mix bar -->
@@ -112,7 +116,7 @@
   .agent-card {
     display: flex;
     flex-direction: column;
-    gap: 13px;
+    gap: 20px;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);

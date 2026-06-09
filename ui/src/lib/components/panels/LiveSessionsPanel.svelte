@@ -12,12 +12,20 @@
   $effect(() => () => clearInterval(timer));
 
   const res = resource(() => `live:${tick}`, () => getLive());
-  const sessions = $derived(res.data?.sessions ?? []);
+  const allSessions = $derived(res.data?.sessions ?? []);
+  // Backend already orders by started_at DESC; cap the list to the 10 newest.
+  const sessions = $derived(allSessions.slice(0, 10));
+
+  // Single-open accordion: opening one row closes any other.
+  let openId = $state<string | null>(null);
+  function toggle(id: string) {
+    openId = openId === id ? null : id;
+  }
 </script>
 
 <Card title="Live sessions" icon="circle-dot" kicker="active in the last 5 min">
   {#snippet actions()}
-    {#if sessions.length}<Badge tone="cyan">{sessions.length} active</Badge>{/if}
+    {#if allSessions.length}<Badge tone="cyan">{allSessions.length} active</Badge>{/if}
   {/snippet}
 
   {#if res.loading && !res.data}
@@ -27,7 +35,11 @@
   {:else}
     <div class="rows">
       {#each sessions as s (s.session_id)}
-        <LiveSessionRow session={s} />
+        <LiveSessionRow
+          session={s}
+          open={openId === s.session_id}
+          onToggle={() => toggle(s.session_id)}
+        />
       {/each}
     </div>
   {/if}

@@ -41,9 +41,9 @@
             </span>
             <span class="c-n mono">{compact(t.calls)}</span>
             <span class="c-num mono">{ms(t.p50)}</span>
-            <span class="c-num mono" class:red={flag(t.p95) === "slow"} class:green={flag(t.p95) === "fast"}>{ms(t.p95)}</span>
+            <span class="c-num mono" class:bad={flag(t.p95) === "slow"} class:good={flag(t.p95) === "fast"}>{ms(t.p95)}</span>
             <span class="c-num mono dim">{ms(t.max)}</span>
-            <span class="c-num mono" class:red={t.errorRate > 0}>{t.errors ? pct(t.errorRate, 0) : "0"}</span>
+            <span class="c-num mono" class:bad={t.errorRate > 0}>{t.errors ? pct(t.errorRate, 0) : "0"}</span>
           </div>
         {/each}
       </div>
@@ -76,9 +76,9 @@
   .c-tool { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
   .c-n, .c-num { text-align: right; }
   .dim { color: var(--text-subtle); }
-  .red { color: var(--red); }
-  .green { color: var(--green); }
+  .bad { color: var(--red); }
+  .good { color: var(--cyan); } /* "good/fast" is cyan, not green (colourblind-safe vs red) */
   .tag { font-size: 9.5px; font-weight: 600; }
   .tag.slow { color: var(--red); }
-  .tag.fast { color: var(--green); }
+  .tag.fast { color: var(--cyan); }
 </style>

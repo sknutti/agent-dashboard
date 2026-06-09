@@ -49,7 +49,7 @@
   {#snippet actions()}
     <RangeToggle value={range} options={["7d", "30d", "90d"]} onChange={(r) => (range = r)} />
     <InfoModal title="Why MCP is the centerpiece">
-      <p class="modal-p">Each server expands to a per-tool table (p50 / p95 / max / error / N). A p95 ≥ 10s reads red (<code>· slow</code>); sub-500ms reads green (<code>· fast</code>). Attribution is OTEL-precise when telemetry is on (server &amp; tool names pre-tagged), falling back to parsing <code>mcp__server__tool</code> from JSONL — this is where the dashboard earns its keep.</p>
+      <p class="modal-p">Each server expands to a per-tool table (p50 / p95 / max / error / N). A p95 ≥ 10s reads red (<code>· slow</code>); sub-500ms reads cyan (<code>· fast</code>). Attribution is OTEL-precise when telemetry is on (server &amp; tool names pre-tagged), falling back to parsing <code>mcp__server__tool</code> from JSONL — this is where the dashboard earns its keep.</p>
     </InfoModal>
   {/snippet}
 
@@ -73,7 +73,7 @@
               <span class="m">{compact(s.calls)} calls</span>
               {#if s.errors > 0}<Badge tone="red">{s.errors} err</Badge>{/if}
             </span>
-            <span class="srv-p95 mono" class:red={flag(s.p95) === "slow"} class:green={flag(s.p95) === "fast"}>
+            <span class="srv-p95 mono" class:bad={flag(s.p95) === "slow"} class:good={flag(s.p95) === "fast"}>
               {ms(s.p95)}
               {#if flag(s.p95) === "slow"}<span class="tag slow">· slow</span>{:else if flag(s.p95) === "fast"}<span class="tag fast">· fast</span>{/if}
             </span>
@@ -93,9 +93,9 @@
                     <span class="t-name" title={t.tool}>{t.tool}</span>
                     <span class="mono num">{t.calls}</span>
                     <span class="mono num">{ms(t.p50)}</span>
-                    <span class="mono num" class:red={flag(t.p95) === "slow"} class:green={flag(t.p95) === "fast"}>{ms(t.p95)}</span>
+                    <span class="mono num" class:bad={flag(t.p95) === "slow"} class:good={flag(t.p95) === "fast"}>{ms(t.p95)}</span>
                     <span class="mono num dim">{ms(t.max)}</span>
-                    <span class="mono num" class:red={t.errorRate > 0}>{t.errors ? pct(t.errorRate, 0) : "0"}</span>
+                    <span class="mono num" class:bad={t.errorRate > 0}>{t.errors ? pct(t.errorRate, 0) : "0"}</span>
                   </div>
                 {/each}
               {/if}
@@ -134,7 +134,7 @@
   .srv-p95 { font-size: 13px; color: var(--text-dim); white-space: nowrap; }
   .tag { font-size: 9.5px; font-weight: 600; }
   .tag.slow { color: var(--red); }
-  .tag.fast { color: var(--green); }
+  .tag.fast { color: var(--cyan); }
   .tools { border-top: 1px solid var(--border); background: var(--surface); }
   .trow {
     display: grid;
@@ -149,6 +149,6 @@
   .t-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
   .num { text-align: right; }
   .dim { color: var(--text-subtle); }
-  .red { color: var(--red); }
-  .green { color: var(--green); }
+  .bad { color: var(--red); }
+  .good { color: var(--cyan); } /* "good/fast" is cyan, not green (colourblind-safe vs red) */
 </style>

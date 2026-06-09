@@ -1,5 +1,6 @@
-// Minimal history-API router (no SvelteKit). Three routes; everything else
-// falls through to the command page. Reactive via Svelte 5 runes.
+// Minimal history-API router (no SvelteKit). Three top-level nav routes plus
+// dynamic `/session/:id` detail pages; everything else falls through to the
+// command page. Reactive via Svelte 5 runes.
 
 export type RoutePath = "/" | "/activity" | "/skills";
 
@@ -9,18 +10,22 @@ export const ROUTES: { path: RoutePath; label: string; icon: string }[] = [
   { path: "/skills", label: "Skills & MCP", icon: "sparkles" },
 ];
 
-function normalize(p: string): RoutePath {
-  return ROUTES.some((r) => r.path === p) ? (p as RoutePath) : "/";
+// Store the raw pathname so dynamic routes (e.g. /session/abc) survive — nav
+// highlighting still matches on the three known ROUTES paths.
+export const router = $state({ path: window.location.pathname });
+
+/** Extract the session id from a `/session/:id` path, else null. */
+export function sessionIdFromPath(path: string): string | null {
+  const m = /^\/session\/([^/]+)$/.exec(path);
+  return m ? decodeURIComponent(m[1]!) : null;
 }
 
-export const router = $state({ path: normalize(window.location.pathname) });
-
-export function navigate(path: RoutePath): void {
+export function navigate(path: string): void {
   if (path === router.path) return;
   history.pushState({}, "", path);
   router.path = path;
 }
 
 window.addEventListener("popstate", () => {
-  router.path = normalize(window.location.pathname);
+  router.path = window.location.pathname;
 });

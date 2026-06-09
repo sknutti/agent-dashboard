@@ -10,13 +10,15 @@
   const days = $derived(res.data?.days ?? []);
   const max = $derived(Math.max(1, ...days.map((d) => d.total)));
 
-  // Segments rendered bottom-up in reverse-priority so 'ok' (green) is the base.
+  // Segments rendered bottom-up in reverse-priority so 'ok' is the base. Colours
+  // are the Okabe-Ito colourblind-safe palette: ok=blue vs errored=vermillion is
+  // unmistakable for red/green colour vision (no green-vs-red pairing).
   const SEGS = [
-    { key: "ok", label: "ok", color: "var(--green)" },
-    { key: "unfinished", label: "unfinished", color: "var(--text-subtle)" },
-    { key: "truncated", label: "truncated", color: "#fb923c" },
-    { key: "rate_limited", label: "rate-limited", color: "var(--amber)" },
-    { key: "errored", label: "errored", color: "var(--red)" },
+    { key: "ok", label: "ok", color: "#0072b2" }, // blue
+    { key: "unfinished", label: "unfinished", color: "#999999" }, // grey
+    { key: "truncated", label: "truncated", color: "#f0e442" }, // yellow
+    { key: "rate_limited", label: "rate-limited", color: "#e69f00" }, // orange
+    { key: "errored", label: "errored", color: "#d55e00" }, // vermillion
   ] as const;
 </script>
 
@@ -28,12 +30,12 @@
   {:else}
     <div class="chart">
       {#each days as d (d.date)}
-        {@const title = `${shortDate(d.date)} — ${d.total} sessions\n` + SEGS.map((s) => `${s.label}: ${(d as any)[s.key]}`).filter((_, i) => (d as any)[SEGS[i].key] > 0).join("\n")}
+        {@const title = `${shortDate(d.date)} — ${d.total} sessions\n` + SEGS.filter((s) => d[s.key] > 0).map((s) => `${s.label}: ${d[s.key]}`).join("\n")}
         <div class="col" {title}>
           <div class="bar" style="height:{(d.total / max) * 100}%">
             {#each SEGS as s (s.key)}
-              {#if (d as any)[s.key] > 0}
-                <span class="seg" style="flex:{(d as any)[s.key]};background:{s.color}"></span>
+              {#if d[s.key] > 0}
+                <span class="seg" style="flex:{d[s.key]};background:{s.color}"></span>
               {/if}
             {/each}
           </div>

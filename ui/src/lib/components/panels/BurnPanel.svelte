@@ -43,11 +43,24 @@
     return weeks;
   });
 
-  // Logarithmic intensity (master §11.1): per-day total tokens, log color scale.
-  const logMax = $derived(Math.log1p(Math.max(1, ...(d?.daily ?? []).map((x) => x.tokens))));
-  function intensity(tokens: number): number {
-    if (tokens <= 0) return 0;
-    return Math.max(0.08, Math.log1p(tokens) / (logMax || 1));
+  // Log color scale (master §11.1): per-day total tokens. Colourblind-safe
+  // cividis-like blue→yellow ramp — luminance rises monotonically per step, so
+  // heavier days read as brighter without relying on hue, and there is no
+  // red/green pairing. Discrete buckets make adjacent levels easier to tell apart.
+  // Normalise across the observed spread (min→max of populated days) so the full
+  // ramp is used and day-to-day differences are visible — otherwise every day
+  // pins to the top bucket, since the counts share a magnitude. Log scale §11.1.
+  const logVals = $derived(
+    (d?.daily ?? []).map((x) => x.tokens).filter((t) => t > 0).map((t) => Math.log1p(t)),
+  );
+  const logMin = $derived(logVals.length ? Math.min(...logVals) : 0);
+  const logMax = $derived(logVals.length ? Math.max(...logVals) : 1);
+  const RAMP = ["#12376c", "#3f5e8c", "#7c8385", "#bcab5e", "#ffe945"]; // low → high
+  function cellColor(tokens: number): string {
+    if (tokens <= 0) return "var(--surface-2)";
+    const span = logMax - logMin;
+    const t = span > 1e-9 ? (Math.log1p(tokens) - logMin) / span : 0.5; // 0..1 across spread
+    return RAMP[Math.min(RAMP.length - 1, Math.floor(t * RAMP.length))]!;
   }
 
   const recent = $derived((d?.daily ?? []).slice(-10).reverse());
@@ -72,7 +85,7 @@
   {:else if !d || !d.daily.length}
     <EmptyState icon="gauge" title="Nothing to burn yet" message="A bill tells you what happened — a burn view changes what you hand the computer tomorrow." />
   {:else}
-    <p class="caption">Each box is one local day. Color is log-scaled per-day token spend — darker is heavier.</p>
+    <p class="caption">Each box is one local day. Color is log-scaled per-day token spend — brighter (yellow) is heavier, deep blue is lighter.</p>
     <div class="heat">
       <div class="dow">
         <span></span><span>M</span><span></span><span>W</span><span></span><span>F</span><span></span>
@@ -84,7 +97,7 @@
               {#if cell}
                 <div
                   class="cell"
-                  style="--i:{intensity(cell.tokens)}"
+                  style="background:{cellColor(cell.tokens)}"
                   title="{shortDate(cell.date)} — {compact(cell.tokens)} tokens · {usd(cell.est)} est{cell.native != null ? ` · ${usd(cell.native)} native` : ''}"
                 ></div>
               {:else}
@@ -150,8 +163,8 @@
     width: 13px;
     height: 13px;
     border-radius: 3px;
-    background: color-mix(in srgb, var(--accent-from) calc(var(--i) * 85%), var(--surface-2));
-    border: 1px solid color-mix(in srgb, var(--accent-from) calc(var(--i) * 40%), var(--border));
+    /* background is set inline from the colourblind-safe ramp (cellColor). */
+    border: 1px solid color-mix(in srgb, #000 22%, transparent);
   }
   .cell.empty { background: transparent; border-color: transparent; }
   .receipts { margin: 18px 0 14px; }
