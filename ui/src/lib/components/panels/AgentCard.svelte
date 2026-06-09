@@ -12,7 +12,7 @@
   // adapter lands, drop its entry here (claude_code + codex have shipped), so an
   // implemented agent with no data in range reads "No sessions in range" instead
   // of an outdated "Adapter ships in Phase …".
-  const ADAPTER_PHASE: Record<string, string> = { pi: "Phase 3", antigravity: "Phase 4" };
+  const ADAPTER_PHASE: Record<string, string> = { antigravity: "Phase 4" };
 
   // Token-mix segments (ADR-0003 gap #2: reasoning is first-class). The bar shows
   // segments; the input·output·reasoning·cacheR·cacheC breakdown is on hover.
