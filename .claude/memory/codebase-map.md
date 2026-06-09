@@ -19,6 +19,13 @@
   normalized to disjoint buckets (see [[gotchas]]). Tool latency via `function_call`/
   `custom_tool_call` ↔ `*_output` by call_id; precise duration + exit_code from
   `exec_command_end`. No native cost. `supportsOtel()`=false (opt-in, not yet wired).
+- `adapters/pi.ts` (Phase 3) — Pi JSONL parser. Globs `~/.pi/agent/sessions/**/*.jsonl`
+  (one dir per cwd-slug). Records `{type,id,parentId,timestamp,...}` form a parentId tree;
+  emits ONE `tokens` event per assistant row (branch-summed by construction, no traversal)
+  with DISJOINT buckets mapped directly (cacheWrite→cacheCreate) + per-message native
+  `usage.cost.total`. Tool pairing via `toolCallId`; errorCount from `toolResult.isError`.
+  branchCount = message-record tips only. Multi-provider (models are provider ids). See [[gotchas]].
+  `adapters/pi.test.ts` — first unit tests in repo (`bun test`), branch-summation fixture.
 - `sync_agents.ts` (Phase 1; Phase 2 generalized seam) — worker-thread orchestrator. Owns ALL
   DB writes: upserts `sessions` (totals = Σ token events, est cost via cost.ts), replaces
   `tool_calls`, re-derives `token_usage` (DELETE+INSERT…SELECT) + `burn_daily` (UPSERT

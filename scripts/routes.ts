@@ -159,7 +159,7 @@ export function registerApiRoutes(app: Hono): void {
       SELECT session_id, agent, model, cwd, git_branch, title, started_at, ended_at,
              input_tokens, output_tokens, cache_read_tokens, cache_create_tokens,
              reasoning_tokens, total_tokens, effective_tokens, error_count, rate_limit_hit,
-             stop_reason, cost_usd, cost_estimated_usd, duration_ms, fidelity,
+             stop_reason, branch_count, cost_usd, cost_estimated_usd, duration_ms, fidelity,
              ${OUTCOME_CASE} AS outcome
       FROM sessions WHERE session_id = ?`).get(id);
     if (!session) return c.json({ error: "not found" }, 404);

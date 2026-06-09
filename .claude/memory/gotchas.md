@@ -84,6 +84,39 @@
 - Spec glob `*/*.jsonl` captures the 228 main sessions; subagent transcripts live
   deeper at `<proj>/<sid>/subagents/agent-*.jsonl` (Phase 5, out of Phase-1 scope).
 
+## Pi (Phase 3): buckets DISJOINT, native==est, branchCount counts MESSAGES only
+- **Disjoint buckets — the INVERSE of Codex.** Pi's `message.usage` is
+  `{input, output, cacheRead, cacheWrite, totalTokens}` and validated 285/285
+  assistant rows that `totalTokens == input+output+cacheRead+cacheWrite` with
+  cacheRead ADDED on top of input (not a subset). So `adapters/pi.ts` maps the four
+  buckets DIRECTLY (cacheWrite→cacheCreate), NO Codex-style `input -= cached`.
+  Copying codex.ts's subtraction here would undercount. Don't.
+- **Pi native USD == rack-rate estimate, exactly** ($8.3512575 both, delta 0).
+  Pi is a multi-PROVIDER client (openai-codex/gpt-5.4 dominates; also bedrock
+  opus-4-6, gemini-3.1-pro-preview) and its per-message `usage.cost.total` is
+  computed at the provider's METERED LIST rate — the same rates in prices.yaml.
+  So Pi's "subscription-savings delta" (native − estimated) is genuinely ~$0,
+  unlike Claude (subscription billing → native < rack-rate → real savings). The
+  dual-cost machinery is reused correctly; it just resolves to zero. NOT a bug —
+  don't contrive a delta. gemini-3.1-pro-preview is left UNPRICED (never-guess
+  rule); its 2 rows still carry exact native cost, only the estimate is NULL.
+- **branchCount must count MESSAGE-record tips only.** Every record has `{id,
+  parentId}`, but the `session` record is a disconnected ISLAND (the real chain
+  starts at a `model_change` with parentId null) and control records
+  (model_change/thinking_level_change) are a preamble. Counting any non-message
+  node as a "tip" (id never used as a parentId) over-reports every linear session
+  as 2. Fix: tip candidates = `message` ids only; collect parentId refs from all
+  records. Real data is 100% linear (zero parentId fan-out) → branchCount=1.
+- **Branch summation needs NO tree traversal.** Master §10.6's "sum all branches"
+  is satisfied by emitting one `tokens` event per assistant ROW (unique `id`,
+  counted once regardless of branch topology). Never traverse leaf-paths — that's
+  the double-counting hazard. Proven by `adapters/pi.test.ts` on a synthetic
+  multi-branch fixture (real data can't exercise it).
+- Latent (not hit): the all-agents `/api/burn` overlay gates Claude's OTEL native
+  on `d.nativeUsd == null`; now that Pi populates `burn_daily.cost_usd`, a date
+  shared by a Pi session AND a Claude-OTEL day would drop Claude's OTEL native.
+  No collision today (Pi data Mar–Apr, Claude OTEL June). Watch if Pi runs live.
+
 ## Schema init ownership: getDb() inits, openDb() does NOT
 - `scripts/db.ts`: `openDb()` only opens a WAL connection; `getDb()` opens +
   runs `initSchema()` (thread-local singleton). Any entrypoint that touches the

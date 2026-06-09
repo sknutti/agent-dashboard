@@ -25,8 +25,21 @@ Stack: Bun + Hono + bun:sqlite (WAL) + Svelte 5 SPA (ADR-0001). Built in phases
   Verified against real data: 306 Codex sessions ingested `agent='codex' fidelity='exact'`,
   cost_usd NULL + estimated rack-rate present, reasoning a first-class token segment, no
   Claude regression; `/api/usage/tokens` returns both agents. Codex OTEL `[otel]` block in
-  `~/.codex/config.toml` NOT yet wired (opt-in, deferred). Next: Phase 3 (Pi — per-message
-  NATIVE cost, parentId branch tree).
+  `~/.codex/config.toml` NOT yet wired (opt-in, deferred).
+- Phase 3 ✅ Done — Pi adapter (`adapters/pi.ts`), registered in `sync_agents.ts`, prices.yaml
+  alias `anthropic.claude-opus-4-6-v1`→`claude-opus-4-6`, `branch_count` surfaced (detail route +
+  api.ts + DrillSheet chip when >1), 5 unit tests (`adapters/pi.test.ts`, first tests in repo;
+  `bun test`). Verified against all 13 real sessions vs a jq oracle: tokens/native/errors/tools
+  match exactly (native total $8.3513, 386 tools, 12 errors), branch_count=1 for all (linear),
+  3 agents in /api/agents + /api/usage/tokens + /api/burn, doctor detects pi, NO Claude/Codex
+  regression. THREE spec-vs-reality departures (see [[gotchas]]): (1) Pi buckets are DISJOINT
+  (inverse of Codex) → direct map, no subtraction; (2) ZERO real branches → sum-by-unique-row
+  is branch-safe AND linear-correct, no tree traversal (branch summation proven by synthetic
+  fixture test, not real data); (3) Pi native == rack-rate est EXACTLY ($8.3512575 both) because
+  Pi pays METERED API list rates → savings delta is genuinely ~$0 (unlike Claude's subscription
+  delta). Pi is multi-PROVIDER (models are gpt-5.4/gpt-5.5/opus-4-6/gemini ids); gemini-3.1-pro-
+  preview left unpriced (never-guess rule) — its rows still get native cost. Pi OTEL plugin
+  (pi-otel) NOT wired (opt-in, deferred). Next: Phase 4 (Antigravity — tokens from protobuf .db).
 - Verify the app by running the server (`bun start`) + a `claude -p` probe to generate OTEL,
   then screenshot via a playwright-bowser agent. I (Claude) can't restart my own CC session.
 

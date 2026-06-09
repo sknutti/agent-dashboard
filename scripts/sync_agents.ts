@@ -24,6 +24,7 @@ import { parse as parseYaml } from "yaml";
 import type { AdapterRegistry, AgentAdapter, NormalizedEvent } from "./adapters/base.ts";
 import { ClaudeCodeAdapter } from "./adapters/claude_code.ts";
 import { CodexAdapter } from "./adapters/codex.ts";
+import { PiAdapter } from "./adapters/pi.ts";
 import { estimateCostUsd } from "./cost.ts";
 import { getDb } from "./db.ts";
 import { CONFIG_DIR } from "./paths.ts";
@@ -44,6 +45,7 @@ function buildRegistry(): AdapterRegistry {
   }
   const cc = cfg?.agents?.claude_code ?? {};
   const cx = cfg?.agents?.codex ?? {};
+  const pi = cfg?.agents?.pi ?? {};
   return [
     new ClaudeCodeAdapter({
       baseDir: typeof cc.path === "string" ? cc.path : undefined,
@@ -54,6 +56,11 @@ function buildRegistry(): AdapterRegistry {
       baseDir: typeof cx.path === "string" ? cx.path : undefined,
       glob: typeof cx.glob === "string" ? cx.glob : undefined,
       enabled: cx.enabled !== false,
+    }),
+    new PiAdapter({
+      baseDir: typeof pi.path === "string" ? pi.path : undefined,
+      glob: typeof pi.glob === "string" ? pi.glob : undefined,
+      enabled: pi.enabled !== false,
     }),
   ];
 }

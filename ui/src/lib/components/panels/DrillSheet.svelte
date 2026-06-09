@@ -65,6 +65,7 @@
           <Badge tone={OUTCOME_TONE[s.outcome] ?? "default"}>{s.outcome}</Badge>
           {#if s.model}<span class="mono dim">{s.model}</span>{/if}
           <span class="dim">{projectName(s.cwd)}</span>
+          {#if s.branch_count != null && s.branch_count > 1}<span class="dim">· {s.branch_count} branches</span>{/if}
         </div>
       </div>
       <div class="tokgrid">

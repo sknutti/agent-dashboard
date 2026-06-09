@@ -6,6 +6,7 @@
   "description": "Multi-agent observability command centre — Bun + Hono + bun:sqlite + Svelte 5",
   "scripts": {
     "start": "bun run scripts/server.ts",
+    "test": "bun test scripts",
     "dev": "bun run --watch scripts/server.ts",
     "doctor": "bun run scripts/doctor.ts",
     "sync": "bun run scripts/sync_agents.ts --once",

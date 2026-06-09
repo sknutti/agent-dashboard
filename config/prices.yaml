@@ -126,7 +126,16 @@ models:
 # Map a logged model id onto a `models` key. The 1M-context variants log/emit a
 # `[1m]` suffix (e.g. OTEL may carry `claude-opus-4-8[1m]`); they bill at the same
 # rate as the base model. Date-suffixed snapshots resolve to their alias.
+#
+# Pi (Phase 3) is a multi-PROVIDER client: it logs the underlying provider's model
+# id, so gpt-5.4 / gpt-5.5 already resolve, and Bedrock-format Anthropic ids alias
+# onto the same Claude rate (Bedrock list price matches the Anthropic API list for
+# Anthropic models). NOT priced on purpose: `gemini-3.1-pro-preview` (2 rows, one
+# tiny session) — no authoritative Google list rate cached, and the never-guess rule
+# (header) wins. Those rows still carry exact native USD from Pi's per-message cost;
+# only their rack-rate ESTIMATE is NULL. Add a real Gemini rate here to price them.
 aliases:
+  "anthropic.claude-opus-4-6-v1": "claude-opus-4-6"
   "claude-opus-4-8[1m]": "claude-opus-4-8"
   "claude-opus-4-7[1m]": "claude-opus-4-7"
   "claude-opus-4-6[1m]": "claude-opus-4-6"

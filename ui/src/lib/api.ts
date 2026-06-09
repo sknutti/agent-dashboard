@@ -73,6 +73,7 @@ export interface SessionDetail {
     reasoning_tokens: number | null;
     rate_limit_hit: number;
     stop_reason: string | null;
+    branch_count: number | null;
   };
   tools: { tool_use_id: string | null; tool_name: string; ts: string; duration_ms: number | null; error: string | null }[];
 }
