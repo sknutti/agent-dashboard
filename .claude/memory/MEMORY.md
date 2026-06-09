@@ -47,7 +47,28 @@ Stack: Bun + Hono + bun:sqlite (WAL) + Svelte 5 SPA (ADR-0001). Built in phases
   Mar–Apr (>30d old), so Pi is INVISIBLE on the Command page (agent grid + token-usage are
   capped at the global 7d/30d range and read "No sessions in range"); Pi only renders in the
   Burn panel, which has its own 30d/90d toggle. Not a bug — old data + recency-focused ranges.
-  Next: Phase 4 (Antigravity — tokens from protobuf .db).
+- Phase 4 ✅ Done — Antigravity adapter (`adapters/antigravity.ts`, the 4th/hardest agent),
+  registered in `sync_agents.ts`, `agents.yaml` glob → `conversations/*.db`. Tokens decoded
+  from a PROTOBUF BLOB (`gen_metadata`) via a hand-ported wire reader; tools from a SIBLING
+  transcript JSONL, merged per conversation — the seam's hardest case (non-JSONL tokens +
+  multi-source-per-session), and **the adapter seam HELD again** (no panel changes). QA
+  surfaced TWO things: (1) a stale UI placeholder dropped — `AgentCard.svelte`
+  `ADAPTER_PHASE` now `{}`, all 4 shipped; (2) a LATENT `/api/burn` bug — it coerced
+  unpriced daily est to `$0` (a fabricated figure) instead of NULL/"—"; Antigravity is
+  the first uniformly-unpriced agent so it exposed it. Fixed `estUsd` to be NULL-preserving
+  like `nativeUsd` (one route change, no regression to priced agents). See [[gotchas]]. 5 unit tests (`adapters/antigravity.test.ts`). Verified vs the Python extractor
+  oracle EXACTLY: in=618135, out(f10)+reasoning(f9)=22559, total=640694 across 2 real convs;
+  cwd decoded, model `gemini-3-flash-a` pinned but UNPRICED → both cost columns NULL (tokens
+  `exact`, money-blind by design — never guessed a Gemini rate). 83 tools merged with
+  created_at-delta latency, 0 errors. Empty conv `8217e2ca` (0 gen rows + no transcript)
+  correctly yields no session row. `cc doctor` detects antigravity, NO regression to the
+  other 3 agents. THREE departures-from-reality (see [[gotchas]]): (1) WAL .db needs
+  `file:…?immutable=1` open (`{readonly:true}` → SQLITE_CANTOPEN); (2) glob the `.db` (clean
+  conv-id session_id + token source), not the colliding transcript — costs a reparse-every-
+  tick (harmless); (3) f9/f10 split is disjoint so total=input+f3 stays the verification
+  anchor, labels inferred. **Data-recency:** unlike Pi, Antigravity data is Jun 5–8 (within
+  7d of today) → it DOES render on the Command page agent grid + token-usage, not just Burn.
+  Next: Phase 5 (long-tail agents) or Phase 6 (operations).
 - Verify the app by running the server (`bun start`) + a `claude -p` probe to generate OTEL,
   then screenshot via a playwright-bowser agent. I (Claude) can't restart my own CC session.
 

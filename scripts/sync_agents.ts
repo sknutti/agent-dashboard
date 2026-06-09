@@ -25,6 +25,7 @@ import type { AdapterRegistry, AgentAdapter, NormalizedEvent } from "./adapters/
 import { ClaudeCodeAdapter } from "./adapters/claude_code.ts";
 import { CodexAdapter } from "./adapters/codex.ts";
 import { PiAdapter } from "./adapters/pi.ts";
+import { AntigravityAdapter } from "./adapters/antigravity.ts";
 import { estimateCostUsd } from "./cost.ts";
 import { getDb } from "./db.ts";
 import { CONFIG_DIR } from "./paths.ts";
@@ -46,6 +47,7 @@ function buildRegistry(): AdapterRegistry {
   const cc = cfg?.agents?.claude_code ?? {};
   const cx = cfg?.agents?.codex ?? {};
   const pi = cfg?.agents?.pi ?? {};
+  const agy = cfg?.agents?.antigravity ?? {};
   return [
     new ClaudeCodeAdapter({
       baseDir: typeof cc.path === "string" ? cc.path : undefined,
@@ -61,6 +63,11 @@ function buildRegistry(): AdapterRegistry {
       baseDir: typeof pi.path === "string" ? pi.path : undefined,
       glob: typeof pi.glob === "string" ? pi.glob : undefined,
       enabled: pi.enabled !== false,
+    }),
+    new AntigravityAdapter({
+      baseDir: typeof agy.path === "string" ? agy.path : undefined,
+      glob: typeof agy.glob === "string" ? agy.glob : undefined,
+      enabled: agy.enabled !== false,
     }),
   ];
 }

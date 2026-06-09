@@ -117,6 +117,53 @@
   shared by a Pi session AND a Claude-OTEL day would drop Claude's OTEL native.
   No collision today (Pi data Mar–Apr, Claude OTEL June). Watch if Pi runs live.
 
+## /api/burn coerced unpriced est to $0 (latent, surfaced by Antigravity)
+- `routes.ts /api/burn` summed daily estimate with `estUsd += cost_estimated_usd ?? 0`,
+  so a day with NO priced rows reported `estUsd: 0` → the Burn panel rendered "**$0**
+  est" (a FABRICATED money figure) while the AgentCard correctly showed "—". Invisible
+  for the first 3 agents (Claude/Codex/Pi all have ≥1 priced model/day, so est was never
+  a whole-day NULL); Antigravity is the FIRST uniformly-UNPRICED agent (gemini-3-flash-a),
+  so it's the first to expose it — same "agent N+1 surfaces a latent single-/priced-agent
+  assumption" pattern as the Phase-2/3 burn bugs. Fix: make `estUsd` NULL-preserving,
+  EXACTLY mirroring `nativeUsd` (`if (cost_estimated_usd != null) estUsd = (estUsd ?? 0)
+  + …`); `totalEst` = null when every day is unpriced. `usd(null)` already renders "—".
+  ADR-0002: an unpriced figure is "—" (unknown), NEVER "$0" (a claim it's free).
+
+## Antigravity (Phase 4): reading another app's WAL .db needs `immutable=1`
+- Antigravity tokens live in a protobuf BLOB in `conversations/<conv>.db` (table
+  `gen_metadata`), and those DBs are **WAL mode**. `new Database(path,{readonly:true})`
+  throws **SQLITE_CANTOPEN** on a WAL file with no live `-wal` sidecar (bun:sqlite).
+  Plain RW open throws SQLITE_MISUSE; `Database.deserialize(readFileSync)` also
+  CANTOPENs (WAL file header). The ONE mode that works AND doesn't mutate the user's
+  DB: the URI form `new Database(\`file:${encodeURI(path)}?immutable=1\`)` — no locks,
+  no -wal/-shm created, treats the file as read-only immutable (reads a checkpointed
+  snapshot; live -wal data is ignored, fine for an observability re-read each tick).
+- **Token field map (gen_metadata BLOB, path top→f1→f4):** input = f1(system)+f2(ctx)+
+  f6(overhead); f3 = total output with the invariant **f3 == f9+f10 (verified 89/89
+  on this machine)**. We split disjointly: `reasoning = f9`, `output = f10` (so schema
+  total = input+output+reasoning = input+f3 — the extractor's anchor). f9/f10 LABELS
+  and f1-as-cache are INFERRED (gap #2) — surface input/total as solid, don't over-claim.
+  Model id is a string at **top→f1→f19** (`gemini-3-flash-a`); pinned but UNPRICED (no
+  Gemini rate in prices.yaml, never-guess) → both cost columns NULL = "model known,
+  money-blind" (NOT "model unknown"). Verified vs `docs/antigravity_token_extractor.py`:
+  in=618135, out+reason=22559, total=640694, exact.
+- **Glob the .db, NOT the transcript** (departs from phase-4 doc's literal transcript
+  glob). The .db basename = conv-id = session_id (clean id) AND is the token source;
+  the transcript (`brain/<conv>/.system_generated/logs/transcript_full.jsonl`) is a
+  SIBLING resolved for tools/latency. Globbing `transcript_full.jsonl` would collide
+  (every file same basename → orchestrator's basename-keyed reparse gate can't tell
+  sessions apart) and miss any .db-only conv. Cost: the .db basename (`<conv>.db`) ≠
+  session_id (`<conv>`), so `reparseDecision` never short-circuits → antigravity
+  re-parses **every tick**. Harmless at 2–3 sub-MB files; did NOT touch the shared
+  gate (no regression risk to the other 3 agents).
+- **Tool latency** = `created_at` delta between a `PLANNER_RESPONSE` step (carries
+  `tool_calls:[{name}]`) and the very next step (the execution). No explicit durations;
+  status is always `DONE` → errorCount stays 0 (no error signal in the transcript).
+- **Empty/aborted conv** (0 gen rows AND no transcript, e.g. `8217e2ca`) → adapter
+  yields nothing → no session row (parseAndWrite skips on `!agg.meta`). cwd ←
+  `trajectory_metadata_blob` `file://` URI (decode via the same protobuf reader for
+  exact length-delimited bounds; greedy regex over-captures the next tag byte).
+
 ## Schema init ownership: getDb() inits, openDb() does NOT
 - `scripts/db.ts`: `openDb()` only opens a WAL connection; `getDb()` opens +
   runs `initSchema()` (thread-local singleton). Any entrypoint that touches the

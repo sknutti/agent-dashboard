@@ -387,11 +387,15 @@ export function registerApiRoutes(app: Hono): void {
       ORDER BY date ASC`).all(...params) as any[];
 
     // Per-date totals (cross-agent; one agent today, built to take more).
-    const byDate = new Map<string, { tokens: number; estUsd: number; nativeUsd: number | null }>();
+    // estUsd is NULL-preserving just like nativeUsd: a day whose rows are ALL
+    // unpriced (e.g. Antigravity's gemini-3-flash-a — the first uniformly-unpriced
+    // agent) stays null → renders "—", NOT a fabricated "$0" (ADR-0002: never claim
+    // a money figure we don't have). A day with any priced row sums those rows.
+    const byDate = new Map<string, { tokens: number; estUsd: number | null; nativeUsd: number | null }>();
     for (const r of rows) {
-      const d = byDate.get(r.date) ?? { tokens: 0, estUsd: 0, nativeUsd: null };
+      const d = byDate.get(r.date) ?? { tokens: 0, estUsd: null, nativeUsd: null };
       d.tokens += r.tokens ?? 0;
-      d.estUsd += r.cost_estimated_usd ?? 0;
+      if (r.cost_estimated_usd != null) d.estUsd = (d.estUsd ?? 0) + r.cost_estimated_usd;
       if (r.cost_usd != null) d.nativeUsd = (d.nativeUsd ?? 0) + r.cost_usd;
       byDate.set(r.date, d);
     }
@@ -404,14 +408,18 @@ export function registerApiRoutes(app: Hono): void {
     if (agent === null || agent === "claude_code") {
       const otelNative = otelNativeByDate(db, range);
       for (const [date, v] of otelNative) {
-        const d = byDate.get(date) ?? { tokens: 0, estUsd: 0, nativeUsd: null };
+        const d = byDate.get(date) ?? { tokens: 0, estUsd: null, nativeUsd: null };
         if (d.nativeUsd == null) d.nativeUsd = v;
         byDate.set(date, d);
       }
     }
     const daily = [...byDate.entries()].map(([date, d]) => ({ date, ...d })).sort((a, b) => a.date.localeCompare(b.date));
     const totalTokens = daily.reduce((a, d) => a + d.tokens, 0);
-    const totalEst = daily.reduce((a, d) => a + d.estUsd, 0);
+    // Null when EVERY day is unpriced (→ "—"); otherwise the sum of priced days.
+    const pricedDays = daily.filter((d) => d.estUsd != null);
+    const totalEst = pricedDays.length
+      ? pricedDays.reduce((a, d) => a + (d.estUsd ?? 0), 0)
+      : null;
 
     // 7-day moving average of daily total tokens.
     const movingAvg = daily.map((d, i) => {

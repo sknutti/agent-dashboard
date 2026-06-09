@@ -9,10 +9,10 @@
   const name = $derived(AGENT_NAMES[agent.id] ?? agent.id);
   const hasData = $derived(agent.sessions > 0);
   // Agents whose adapter hasn't shipped yet → show the roadmap phase. As each
-  // adapter lands, drop its entry here (claude_code + codex have shipped), so an
-  // implemented agent with no data in range reads "No sessions in range" instead
-  // of an outdated "Adapter ships in Phase …".
-  const ADAPTER_PHASE: Record<string, string> = { antigravity: "Phase 4" };
+  // adapter lands, drop its entry here, so an implemented agent with no data in
+  // range reads "No sessions in range" instead of an outdated "Adapter ships in
+  // Phase …". All four adapters (claude_code, codex, pi, antigravity) have shipped.
+  const ADAPTER_PHASE: Record<string, string> = {};
 
   // Token-mix segments (ADR-0003 gap #2: reasoning is first-class). The bar shows
   // segments; the input·output·reasoning·cacheR·cacheC breakdown is on hover.

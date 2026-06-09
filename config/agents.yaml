@@ -36,7 +36,10 @@ agents:
   antigravity:
     enabled: true
     path: "~/.gemini/antigravity-cli"
-    glob: "brain/*/.system_generated/logs/transcript_full.jsonl"
+    # Session index = the conversation .db (basename = conv-id = session_id, and the
+    # token source). Tools are resolved from the sibling transcript
+    # brain/<conv-id>/.system_generated/logs/transcript_full.jsonl.
+    glob: "conversations/*.db"
     otel: false # no usable local OTLP — do NOT enable the Google toggle
     cost: none
     tokens: protobuf_db

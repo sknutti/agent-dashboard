@@ -26,12 +26,22 @@
   `usage.cost.total`. Tool pairing via `toolCallId`; errorCount from `toolResult.isError`.
   branchCount = message-record tips only. Multi-provider (models are provider ids). See [[gotchas]].
   `adapters/pi.test.ts` — first unit tests in repo (`bun test`), branch-summation fixture.
+- `adapters/antigravity.ts` (Phase 4) — the hardest agent: tokens from a PROTOBUF BLOB
+  in `conversations/<conv>.db` (table `gen_metadata`), tools from a SIBLING transcript
+  JSONL, merged per conv. Hand-ported wire reader (varint + length-delimited; exported
+  `decodeGen`). Globs `conversations/*.db` (NOT the transcript). Opens the WAL DB via
+  `file:…?immutable=1`. No native USD; model `gemini-3-flash-a` pinned but unpriced →
+  both cost columns NULL. `reasoning=f9`/`output=f10` disjoint split. See [[gotchas]].
+  `adapters/antigravity.test.ts` — protobuf field-map + two-source-merge fixture tests.
 - `sync_agents.ts` (Phase 1; Phase 2 generalized seam) — worker-thread orchestrator. Owns ALL
   DB writes: upserts `sessions` (totals = Σ token events, est cost via cost.ts), replaces
   `tool_calls`, re-derives `token_usage` (DELETE+INSERT…SELECT) + `burn_daily` (UPSERT
   preserving user driver/evidence). `writeSession`/`parseAndWrite` now take `agentId`+
   `fidelity` (no longer hardcoded `claude_code`); `buildRegistry` reads each agent's
-  `agents.yaml` entry. Re-parse gate: new file | `ended_at IS NULL` | mtime > synced_at.
+  `agents.yaml` entry (now 4 adapters incl antigravity). Re-parse gate: new file |
+  `ended_at IS NULL` | mtime > synced_at — keys on FILE BASENAME == session_id, so
+  antigravity (.db basename ≠ conv-id) never short-circuits → re-parses every tick
+  (harmless; see [[gotchas]]).
 - `routes.ts` (Phase 1) — all `/api/*` reads (master §16): summary, agents, sessions(+detail),
   live(+SSE stream), usage/tokens, usage/cache, tools/latency, sessions/outcomes,
   mcp(+/{server}/tools), burn(+PATCH). Local-time bucketing; range today/7d/30d/90d.
