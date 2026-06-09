@@ -1,6 +1,5 @@
 <script lang="ts">
   import Card from "../ui/Card.svelte";
-  import FidelityBadge from "../ui/FidelityBadge.svelte";
   import EmptyState from "../ui/EmptyState.svelte";
   import { getBurn, getAgents, type AgentId } from "../../api";
   import { resource } from "../../resource.svelte";
@@ -66,7 +65,6 @@
       <option value="30d">30 days</option>
       <option value="90d">90 days</option>
     </select>
-    <FidelityBadge fidelity="estimated" />
   {/snippet}
 
   {#if res.loading && !res.data}
@@ -101,7 +99,7 @@
     <div class="receipts">
       <div class="totline">
         <span class="big mono">{compact(d.totals.tokens)}</span>
-        <span class="sub">tokens · {usd(d.totals.estimatedUsd)} <FidelityBadge fidelity="estimated" /> over {range}</span>
+        <span class="sub">tokens · {usd(d.totals.estimatedUsd)} est over {range}</span>
       </div>
       <div class="scales">
         {#each d.scaleEquivalents as s (s.label)}
@@ -118,7 +116,7 @@
         <div class="ma-row">
           <span>{shortDate(r.date)}</span>
           <span class="mono">{compact(r.tokens)}</span>
-          <span class="mono est">{usd(r.estUsd)} <FidelityBadge fidelity="estimated" /></span>
+          <span class="mono est">{usd(r.estUsd)}</span>
           <span class="mono nat">{r.nativeUsd != null ? usd(r.nativeUsd) : "—"}</span>
         </div>
       {/each}

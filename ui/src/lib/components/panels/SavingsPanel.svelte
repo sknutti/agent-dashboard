@@ -1,6 +1,5 @@
 <script lang="ts">
   import Card from "../ui/Card.svelte";
-  import FidelityBadge from "../ui/FidelityBadge.svelte";
   import Badge from "../ui/Badge.svelte";
   import { getAgents } from "../../api";
   import { resource } from "../../resource.svelte";
@@ -23,9 +22,7 @@
   const anyNative = $derived(rows.some((r) => r.native != null));
 </script>
 
-<Card title="Subscription savings" icon="dollar" kicker="rack-rate − native · {ui.range}">
-  {#snippet actions()}<FidelityBadge fidelity="estimated" />{/snippet}
-
+<Card title="Subscription savings" icon="dollar" kicker="rack-rate (est) − native · {ui.range}">
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !anyNative}
@@ -39,7 +36,7 @@
       {#each rows as r (r.id)}
         <div class="est-only">
           <span class="name">{r.name}</span>
-          <span class="mono est">{usd(r.est)} <FidelityBadge fidelity="estimated" /></span>
+          <span class="mono est">{usd(r.est)} <span class="tag">est</span></span>
           <Badge tone="amber">native pending OTEL</Badge>
         </div>
       {/each}
@@ -49,7 +46,7 @@
       <div class="srow">
         <span class="name">{r.name}</span>
         <div class="figs">
-          <span class="fig"><span class="lbl">rack-rate</span><span class="mono est">{usd(r.est)}</span></span>
+          <span class="fig"><span class="lbl">rack-rate · est</span><span class="mono est">{usd(r.est)}</span></span>
           <span class="fig"><span class="lbl">native</span><span class="mono nat">{usd(r.native)}</span></span>
           <span class="fig save"><span class="lbl">saved</span><span class="mono">{usd(r.savings)}</span></span>
         </div>
@@ -69,7 +66,8 @@
   .teach .body { margin: 0 0 14px; font-size: 12.5px; line-height: 1.6; color: var(--text-subtle); }
   .est-only, .srow { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; border-top: 1px solid var(--border); }
   .name { font-size: 13px; font-weight: 560; color: var(--text); }
-  .est { color: var(--amber); display: inline-flex; align-items: center; gap: 5px; }
+  .est { color: var(--amber); display: inline-flex; align-items: baseline; gap: 5px; }
+  .tag { font-family: var(--font-sans); font-size: 9.5px; color: var(--text-subtle); }
   .nat { color: var(--cyan); }
   .figs { display: flex; gap: 16px; }
   .fig { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }

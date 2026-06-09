@@ -1,6 +1,5 @@
 <script lang="ts">
   import Card from "../ui/Card.svelte";
-  import FidelityBadge from "../ui/FidelityBadge.svelte";
   import EmptyState from "../ui/EmptyState.svelte";
   import { getTokenUsage } from "../../api";
   import { resource } from "../../resource.svelte";
@@ -11,11 +10,11 @@
 
   // Roll the per-(date,model) rows up to per-day stacks.
   const SEGS = [
-    { key: "output", label: "output", color: "var(--accent-from)" },
-    { key: "input", label: "input", color: "var(--cyan)" },
-    { key: "reasoning", label: "reasoning", color: "#a78bfa" },
-    { key: "cacheCreate", label: "cache write", color: "var(--amber)" },
-    { key: "cacheRead", label: "cache read", color: "var(--text-subtle)" },
+    { key: "output", label: "output", color: "var(--tok-output)" },
+    { key: "input", label: "input", color: "var(--tok-input)" },
+    { key: "reasoning", label: "reasoning", color: "var(--tok-reasoning)" },
+    { key: "cacheCreate", label: "cache write", color: "var(--tok-cache-write)" },
+    { key: "cacheRead", label: "cache read", color: "var(--tok-cache-read)" },
   ] as const;
 
   const days = $derived.by(() => {
@@ -41,8 +40,6 @@
 </script>
 
 <Card title="Token usage" icon="cpu" kicker="stacked daily · {ui.range}">
-  {#snippet actions()}<FidelityBadge fidelity="exact" />{/snippet}
-
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !days.length}

@@ -14,14 +14,28 @@
   --text-dim: #8888a0;
   --text-subtle: #5a5a70;
 
-  --accent-from: #4d7cff;
-  --accent-to: #8b5cf6;
+  /* Warm orange→gold brand accent (§22). Flows to logo, nav, links, focus,
+     hovers via these tokens — single source of truth. */
+  --accent-from: #ff7a3c;
+  --accent-to: #ffb83d;
   --accent-gradient: linear-gradient(135deg, var(--accent-from), var(--accent-to));
 
   --green: #10b981;
   --amber: #f59e0b;
   --red: #ef4444;
-  --cyan: #06b6d4;
+  /* Teal: the deliberate cool complement to the warm accent (native-cost pop). */
+  --cyan: #22d3ee;
+
+  /* Token-mix ramp — one harmonious "sunset → sea" scale shared by every
+     token breakdown viz (AgentCard, TokenUsagePanel). Warm pair anchors on the
+     brand; cool trio fans out so all five segments stay legible on dark — and
+     the cache-read segment (often ~95%+ of the bar) is a calm steel-blue, not
+     a dead gray slab. */
+  --tok-output: #ff7a3c;
+  --tok-reasoning: #ffc24d;
+  --tok-input: #2dd4bf;
+  --tok-cache-write: #22a3c4;
+  --tok-cache-read: #5f86a8;
 
   /* Type */
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
@@ -53,9 +67,9 @@ body {
   background-color: var(--bg);
   /* Layered radial gradients for depth (§22). */
   background-image:
-    radial-gradient(1200px 600px at 15% -10%, rgba(77, 124, 255, 0.08), transparent 60%),
-    radial-gradient(1000px 700px at 100% 0%, rgba(139, 92, 246, 0.07), transparent 55%),
-    radial-gradient(900px 900px at 50% 120%, rgba(6, 182, 212, 0.04), transparent 60%);
+    radial-gradient(1200px 600px at 15% -10%, rgba(255, 122, 60, 0.08), transparent 60%),
+    radial-gradient(1000px 700px at 100% 0%, rgba(255, 184, 61, 0.06), transparent 55%),
+    radial-gradient(900px 900px at 50% 120%, rgba(34, 211, 238, 0.04), transparent 60%);
   background-attachment: fixed;
   color: var(--text);
   font-family: var(--font-sans);
@@ -77,6 +91,15 @@ a {
 button {
   font-family: inherit;
   cursor: pointer;
+  /* Strip native button chrome app-wide. Without this, any button that doesn't
+     set its own background renders the UA ButtonFace fill — which some browsers
+     paint light-gray even under color-scheme: dark, producing stray gray slabs
+     (range toggle, token block). Components that want a fill/border set their
+     own; bare action buttons stay transparent. */
+  appearance: none;
+  background: none;
+  border: none;
+  color: inherit;
 }
 
 /* Uppercase mono section kickers (§22). */

@@ -1,7 +1,6 @@
 <script lang="ts">
   import Sheet from "../ui/Sheet.svelte";
   import Badge from "../ui/Badge.svelte";
-  import FidelityBadge from "../ui/FidelityBadge.svelte";
   import Icon from "../ui/Icon.svelte";
   import { drill, closeDrill } from "../../stores.svelte";
   import { getSessions, getSessionDetail, type SessionRow, type SessionDetail } from "../../api";
@@ -75,8 +74,8 @@
         <div class="tk"><span class="tk-v mono">{compact(s.cache_create_tokens)}</span><span class="tk-l">cache write</span></div>
       </div>
       <div class="costline">
-        <span class="mono est">{usd(s.cost_estimated_usd)} <FidelityBadge fidelity="estimated" /></span>
-        {#if s.cost_usd != null}<span class="mono nat">{usd(s.cost_usd)} <FidelityBadge fidelity="exact" /></span>{/if}
+        <span class="mono est">{usd(s.cost_estimated_usd)} <span class="tag">est</span></span>
+        {#if s.cost_usd != null}<span class="mono nat">{usd(s.cost_usd)} <span class="tag">native</span></span>{/if}
       </div>
       <p class="tl-title">Tool timeline · {detail.tools.length}</p>
       <div class="timeline">
@@ -141,8 +140,9 @@
   .tk-v { font-size: 14px; font-weight: 600; color: var(--text); }
   .tk-l { font-size: 9.5px; color: var(--text-subtle); }
   .costline { display: flex; gap: 16px; margin-bottom: 18px; }
-  .est { color: var(--amber); display: inline-flex; gap: 5px; align-items: center; }
-  .nat { color: var(--cyan); display: inline-flex; gap: 5px; align-items: center; }
+  .est { color: var(--amber); display: inline-flex; gap: 5px; align-items: baseline; }
+  .nat { color: var(--cyan); display: inline-flex; gap: 5px; align-items: baseline; }
+  .tag { font-family: var(--font-sans); font-size: 9.5px; color: var(--text-subtle); }
   .tl-title { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-subtle); }
   .timeline { display: flex; flex-direction: column; max-height: 320px; overflow-y: auto; }
   .tl-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 2px; border-bottom: 1px solid var(--border); font-size: 12px; }

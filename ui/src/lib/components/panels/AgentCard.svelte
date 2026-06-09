@@ -1,7 +1,5 @@
 <script lang="ts">
-  import FidelityBadge from "../ui/FidelityBadge.svelte";
   import OtelIndicator from "../ui/OtelIndicator.svelte";
-  import Badge from "../ui/Badge.svelte";
   import { openDrill } from "../../stores.svelte";
   import { compact, usd, pct, AGENT_NAMES } from "../../format";
   import type { AgentCardData } from "../../api";
@@ -15,11 +13,11 @@
   // Token-mix segments (ADR-0003 gap #2: reasoning is first-class). The bar shows
   // segments; the input·output·reasoning·cacheR·cacheC breakdown is on hover.
   const SEG_DEFS = [
-    { key: "output", label: "output", color: "var(--accent-from)" },
-    { key: "input", label: "input", color: "var(--cyan)" },
-    { key: "reasoning", label: "reasoning", color: "#a78bfa" },
-    { key: "cacheCreate", label: "cache write", color: "var(--amber)" },
-    { key: "cacheRead", label: "cache read", color: "var(--text-subtle)" },
+    { key: "output", label: "output", color: "var(--tok-output)" },
+    { key: "input", label: "input", color: "var(--tok-input)" },
+    { key: "reasoning", label: "reasoning", color: "var(--tok-reasoning)" },
+    { key: "cacheCreate", label: "cache write", color: "var(--tok-cache-write)" },
+    { key: "cacheRead", label: "cache read", color: "var(--tok-cache-read)" },
   ] as const;
   const segs = $derived.by(() => {
     const t = agent.tokens;
@@ -47,17 +45,8 @@
 
 <div class="agent-card" class:dim={!hasData}>
   <header>
-    <div class="name-row">
-      <span class="name">{name}</span>
-      <OtelIndicator on={agent.otel} />
-    </div>
-    <div class="meta-row">
-      {#if agent.cost === "native"}
-        <Badge tone="green">native $</Badge>
-      {:else}
-        <Badge tone="amber">est $ only</Badge>
-      {/if}
-    </div>
+    <span class="name">{name}</span>
+    <OtelIndicator on={agent.otel} />
   </header>
 
   {#if !hasData}
@@ -69,7 +58,6 @@
     <button class="block-btn" onclick={() => drill("tokens")} title="Open this agent's sessions">
       <div class="tok-head">
         <span class="tok-total mono">{compact(agent.tokens.total)}</span>
-        <FidelityBadge fidelity="exact" />
         <span class="tok-label">tokens</span>
       </div>
       <div class="mixbar" title={mixTitle} aria-label={mixTitle}>
@@ -79,17 +67,16 @@
       </div>
     </button>
 
-    <!-- Cost: native + estimated, each badged by its own fidelity -->
+    <!-- Cost: estimated rack-rate (amber) + native (cyan). Fidelity reads from
+         the value colour and the label text — no badges. -->
     <div class="cost-row">
       <div class="cost">
         <span class="cost-val mono">{usd(agent.costEstimatedUsd)}</span>
-        <FidelityBadge fidelity="estimated" />
-        <span class="cost-lbl">rack-rate</span>
+        <span class="cost-lbl">rack-rate · est</span>
       </div>
       <div class="cost">
         {#if agent.costUsd != null}
           <span class="cost-val mono native">{usd(agent.costUsd)}</span>
-          <FidelityBadge fidelity="exact" />
           <span class="cost-lbl">native</span>
         {:else}
           <span class="cost-val mono muted">—</span>
@@ -144,15 +131,10 @@
     justify-content: space-between;
     gap: 8px;
   }
-  .name-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-  }
   .name {
     font-size: 14px;
     font-weight: 620;
+    min-width: 0;
   }
   .not-detected {
     margin: 0;
@@ -165,6 +147,12 @@
     gap: 7px;
     text-align: left;
     width: 100%;
+    /* Bare action button: strip the UA button chrome (ButtonFace fill, border,
+       padding) that otherwise paints a gray slab behind the token total. */
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
   }
   .tok-head {
     display: flex;

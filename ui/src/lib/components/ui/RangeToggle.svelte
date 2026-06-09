@@ -41,8 +41,11 @@
     color: var(--text-dim);
   }
   .seg-btn.active {
-    color: var(--text);
-    background: color-mix(in srgb, var(--accent-from) 18%, var(--surface));
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-from) 35%, transparent);
+    /* Any low-opacity orange over a dark base reads as muddy brown, so the
+       active pill is a neutral raised surface — the warmth lives in the accent
+       text and the orange ring, not in the fill. */
+    color: var(--accent-from);
+    background: var(--border-glow);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-from) 50%, transparent);
   }
 </style>
