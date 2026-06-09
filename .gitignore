@@ -1,0 +1,35 @@
+# ── Python ──────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Node / Vite / React (UI) ────────────────────────
+node_modules/
+ui/dist/
+*.tsbuildinfo
+.vite/
+
+# ── SQLite (the dashboard DB lives on disk) ─────────
+*.db
+*.db-wal
+*.db-shm
+data/
+
+# ── Secrets / local config ──────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Logs / runtime ──────────────────────────────────
+*.log
+.tmp/
+
+# ── Editor / OS ─────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
