@@ -39,7 +39,15 @@ Stack: Bun + Hono + bun:sqlite (WAL) + Svelte 5 SPA (ADR-0001). Built in phases
   Pi pays METERED API list rates → savings delta is genuinely ~$0 (unlike Claude's subscription
   delta). Pi is multi-PROVIDER (models are gpt-5.4/gpt-5.5/opus-4-6/gemini ids); gemini-3.1-pro-
   preview left unpriced (never-guess rule) — its rows still get native cost. Pi OTEL plugin
-  (pi-otel) NOT wired (opt-in, deferred). Next: Phase 4 (Antigravity — tokens from protobuf .db).
+  (pi-otel) NOT wired (opt-in, deferred). UI screenshot-verified (playwright-bowser): Burn@90d
+  filtered to Pi shows BOTH native+est columns, est==native every row (savings $0), totals
+  match oracle (~16M tok/$8.35), zero console errors. Fixed a stale UI placeholder caught in
+  QA: `AgentCard.svelte` `ADAPTER_PHASE` still said "Adapter ships in Phase 3" for empty Pi
+  cards → dropped `pi` (Antigravity stays for Phase 4). **Data-recency caveat:** Pi data is
+  Mar–Apr (>30d old), so Pi is INVISIBLE on the Command page (agent grid + token-usage are
+  capped at the global 7d/30d range and read "No sessions in range"); Pi only renders in the
+  Burn panel, which has its own 30d/90d toggle. Not a bug — old data + recency-focused ranges.
+  Next: Phase 4 (Antigravity — tokens from protobuf .db).
 - Verify the app by running the server (`bun start`) + a `claude -p` probe to generate OTEL,
   then screenshot via a playwright-bowser agent. I (Claude) can't restart my own CC session.
 
