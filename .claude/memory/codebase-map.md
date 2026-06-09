@@ -14,10 +14,17 @@
 - `adapters/claude_code.ts` (Phase 1) — reference JSONL parser. Globs
   `~/.claude/projects/*/*.jsonl`, streams lines, pairs tool_use/tool_result (10-min cap),
   emits normalized events. Parses only — orchestrator owns DB writes + live/ended decision.
-- `sync_agents.ts` (Phase 1) — worker-thread orchestrator. Owns ALL DB writes: upserts
-  `sessions` (totals = Σ token events, est cost via cost.ts), replaces `tool_calls`,
-  re-derives `token_usage` (DELETE+INSERT…SELECT) + `burn_daily` (UPSERT preserving
-  user driver/evidence). Re-parse gate: new file | `ended_at IS NULL` | mtime > synced_at.
+- `adapters/codex.ts` (Phase 2) — Codex JSONL parser. Globs `$CODEX_HOME/sessions/**/*.jsonl`
+  (date-bucketed). ONE cumulative `tokens` event from the LAST non-null `total_token_usage`,
+  normalized to disjoint buckets (see [[gotchas]]). Tool latency via `function_call`/
+  `custom_tool_call` ↔ `*_output` by call_id; precise duration + exit_code from
+  `exec_command_end`. No native cost. `supportsOtel()`=false (opt-in, not yet wired).
+- `sync_agents.ts` (Phase 1; Phase 2 generalized seam) — worker-thread orchestrator. Owns ALL
+  DB writes: upserts `sessions` (totals = Σ token events, est cost via cost.ts), replaces
+  `tool_calls`, re-derives `token_usage` (DELETE+INSERT…SELECT) + `burn_daily` (UPSERT
+  preserving user driver/evidence). `writeSession`/`parseAndWrite` now take `agentId`+
+  `fidelity` (no longer hardcoded `claude_code`); `buildRegistry` reads each agent's
+  `agents.yaml` entry. Re-parse gate: new file | `ended_at IS NULL` | mtime > synced_at.
 - `routes.ts` (Phase 1) — all `/api/*` reads (master §16): summary, agents, sessions(+detail),
   live(+SSE stream), usage/tokens, usage/cache, tools/latency, sessions/outcomes,
   mcp(+/{server}/tools), burn(+PATCH). Local-time bucketing; range today/7d/30d/90d.

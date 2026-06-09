@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { AdapterRegistry, AgentAdapter, NormalizedEvent } from "./adapters/base.ts";
 import { ClaudeCodeAdapter } from "./adapters/claude_code.ts";
+import { CodexAdapter } from "./adapters/codex.ts";
 import { estimateCostUsd } from "./cost.ts";
 import { getDb } from "./db.ts";
 import { CONFIG_DIR } from "./paths.ts";
@@ -42,11 +43,17 @@ function buildRegistry(): AdapterRegistry {
     /* missing config → defaults below */
   }
   const cc = cfg?.agents?.claude_code ?? {};
+  const cx = cfg?.agents?.codex ?? {};
   return [
     new ClaudeCodeAdapter({
       baseDir: typeof cc.path === "string" ? cc.path : undefined,
       glob: typeof cc.glob === "string" ? cc.glob : undefined,
       enabled: cc.enabled !== false,
+    }),
+    new CodexAdapter({
+      baseDir: typeof cx.path === "string" ? cx.path : undefined,
+      glob: typeof cx.glob === "string" ? cx.glob : undefined,
+      enabled: cx.enabled !== false,
     }),
   ];
 }
@@ -154,7 +161,8 @@ function emptyAgg(): SessionAgg {
   };
 }
 
-const writeSession = db.transaction((agg: SessionAgg, endedAt: string | null) => {
+const writeSession = db.transaction(
+  (agg: SessionAgg, endedAt: string | null, agent: string, fidelity: string) => {
   const m = agg.meta;
   if (!m) return;
   const total = agg.input + agg.output + agg.cacheRead + agg.cacheCreate + agg.reasoning;
@@ -172,8 +180,8 @@ const writeSession = db.transaction((agg: SessionAgg, endedAt: string | null) =>
   upsertSession.run({
     $session_id: m.sessionId,
     $source: m.source ?? null,
-    $agent: "claude_code",
-    $fidelity: "exact",
+    $agent: agent,
+    $fidelity: fidelity,
     $cwd: m.cwd ?? null,
     $git_branch: m.gitBranch ?? null,
     $model: m.model ?? null,
@@ -201,7 +209,7 @@ const writeSession = db.transaction((agg: SessionAgg, endedAt: string | null) =>
   for (const t of agg.tools) {
     insertToolCall.run({
       $session_id: m.sessionId,
-      $agent: "claude_code",
+      $agent: agent,
       $tool_use_id: t.toolUseId ?? null,
       $tool_name: t.toolName,
       $ts: t.ts,
@@ -239,7 +247,7 @@ async function parseAndWrite(adapter: AgentAdapter, path: string, liveActive: bo
   // Orchestrator owns the live/ended decision: a recently-touched file is still
   // active → ended_at NULL (keeps it in the re-parse set next tick).
   const endedAt = liveActive ? null : (agg.meta.endedAt ?? null);
-  writeSession(agg, endedAt);
+  writeSession(agg, endedAt, adapter.agentId, adapter.fidelity);
 }
 
 /** Decide whether a file needs (re)parsing, and whether it's currently live. */

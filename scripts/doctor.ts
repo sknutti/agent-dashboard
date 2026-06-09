@@ -61,11 +61,23 @@ add("UI build", existsSync(indexHtml) ? "ok" : "warn", existsSync(indexHtml) ? U
 // ── Agent dirs (informational in Phase 0; pre-enable is auto-detected) ───────
 try {
   const cfg = parseYaml(await Bun.file(join(CONFIG_DIR, "agents.yaml")).text()) as {
-    agents: Record<string, { path: string }>;
+    agents: Record<string, { path: string; glob?: string }>;
   };
   for (const [id, a] of Object.entries(cfg.agents ?? {})) {
     const dir = expandHome(a.path);
-    add(`agent: ${id}`, existsSync(dir) ? "ok" : "warn", existsSync(dir) ? `detected (${dir})` : `not present (${dir})`);
+    if (!existsSync(dir)) {
+      add(`agent: ${id}`, "warn", `not present (${dir})`);
+      continue;
+    }
+    // Count session files via the configured glob so detection reflects real data.
+    let files = 0;
+    try {
+      const g = new Bun.Glob(a.glob ?? "**/*.jsonl");
+      for (const _ of g.scanSync({ cwd: dir, onlyFiles: true })) files += 1;
+    } catch {
+      /* unreadable dir → report detected with no count */
+    }
+    add(`agent: ${id}`, "ok", `detected (${dir}) · ${files} session file${files === 1 ? "" : "s"}`);
   }
 } catch (err) {
   add("agents.yaml parse", "warn", String(err));

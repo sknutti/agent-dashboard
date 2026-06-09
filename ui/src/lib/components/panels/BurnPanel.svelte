@@ -2,9 +2,9 @@
   import Card from "../ui/Card.svelte";
   import FidelityBadge from "../ui/FidelityBadge.svelte";
   import EmptyState from "../ui/EmptyState.svelte";
-  import { getBurn, type AgentId } from "../../api";
+  import { getBurn, getAgents, type AgentId } from "../../api";
   import { resource } from "../../resource.svelte";
-  import { compact, usd, shortDate } from "../../format";
+  import { compact, usd, shortDate, AGENT_NAMES } from "../../format";
 
   // Burn has its OWN range (30/90d) + agent selector (All / per-agent), master §11.
   let range = $state<"30d" | "90d">("30d");
@@ -14,6 +14,13 @@
     () => getBurn(range, agent === "all" ? undefined : agent),
   );
   const d = $derived(res.data);
+
+  // Per-agent filter is data-driven (agent-generic): list only agents with burn
+  // data in this window, so each agent appears automatically as its adapter lands.
+  const agents = resource(() => `burn-agents:${range}`, () => getAgents(range));
+  const agentOpts = $derived(
+    (agents.data?.agents ?? []).filter((a) => a.sessions > 0).map((a) => a.id),
+  );
 
   // Build a Sunday-aligned week grid over the range window ending today.
   const cells = $derived.by(() => {
@@ -51,7 +58,9 @@
   {#snippet actions()}
     <select class="sel" bind:value={agent} aria-label="Agent">
       <option value="all">All agents</option>
-      <option value="claude_code">Claude Code</option>
+      {#each agentOpts as id (id)}
+        <option value={id}>{AGENT_NAMES[id] ?? id}</option>
+      {/each}
     </select>
     <select class="sel" bind:value={range} aria-label="Range">
       <option value="30d">30 days</option>

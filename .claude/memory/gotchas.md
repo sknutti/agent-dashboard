@@ -1,5 +1,36 @@
 # Gotchas
 
+## Two latent Phase-1 bugs surfaced when Codex (2nd agent) landed
+- Adding a 2nd agent exposed two single-agent assumptions invisible while Claude was
+  the only agent (filter == total). BOTH were UI/aggregation, NOT the adapter seam:
+  1. `BurnPanel.svelte` hardcoded the agent dropdown to `[all, claude_code]` → now
+     data-driven from `getAgents` (agents with sessions>0).
+  2. `routes.ts /api/burn` applied the `claude_code.cost.usage` OTEL native overlay
+     UNCONDITIONALLY, so Claude's native $ bled into a Codex-filtered burn view.
+     Fixed: overlay only when `agent === null || agent === "claude_code"`. The OTEL
+     native metric is Claude-specific — any per-agent native overlay must be scoped
+     to its agent. (Watch this in Phase 3: Pi has per-MESSAGE native in JSONL, a
+     different path — don't route it through the Claude OTEL overlay.)
+- Lesson: when adding agent N+1, audit every per-agent FILTER path (dropdowns,
+  cross-agent overlays/totals), not just the ingest adapter.
+
+## Codex token buckets OVERLAP — normalize to disjoint (Phase 2)
+- Codex's cumulative `total_token_usage` buckets are NOT disjoint like Claude's:
+  validated 300/300 files that `total_tokens == input_tokens + output_tokens`,
+  `cached_input_tokens ⊆ input_tokens`, `reasoning_output_tokens ⊆ output_tokens`.
+- The schema + cost engine assume DISJOINT buckets (`total = Σ buckets`, each bucket
+  priced additively). `adapters/codex.ts` therefore subtracts: `input -= cached`,
+  `output -= reasoning`, `cacheRead = cached`, `reasoning` kept, `cacheCreate = 0`.
+  Mapping raw values would DOUBLE-price cached + reasoning tokens. Don't "simplify"
+  by passing the raw fields.
+- Use the LAST `token_count` whose `payload.info` is non-null (the FIRST token_count
+  record carries `info: null`). 6/306 files have no token_count at all → 0 tokens,
+  est cost NULL (handled).
+- Codex `error_count` = count of `exec_command_end.exit_code ≠ 0` (181 in the test
+  set). This is the SAME semantic as Claude's `tool_result.is_error` count, so a
+  grep/test that exits non-zero flags the session 'errored' for BOTH agents — by
+  design, consistent with `OUTCOME_CASE` in routes.ts. Not a Codex-only quirk.
+
 ## esbuild binary fails to install (corporate registry) + Svelte 5 incompat
 - `bun install` in `ui/` 403s on scoped `@esbuild/darwin-arm64` from the default
   (corporate jfrog) registry → Vite build dies with "host version does not match

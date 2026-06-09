@@ -104,6 +104,25 @@ models:
     cache_write: 12.50
     reasoning: 50.00
 
+  # ── OpenAI Codex (gpt-5.x) — tokens-only, no native USD (ADR-0002) ──
+  # Source: OpenAI API docs (developers.openai.com/api/docs/models/gpt-5.5,
+  #   .../gpt-5.4), fetched 2026-06-09. cache_read is the published cached-input
+  #   tier (0.1× input). No cache_write — Codex has no cache-create concept, so
+  #   the adapter never emits cacheCreate tokens. reasoning = output rate (Codex
+  #   bills reasoning_output_tokens as output). The >272K-context premium
+  #   (2× in / 1.5× out) is NOT modelled — single tier, same simplification as
+  #   Claude's long-context tiers (see header note).
+  gpt-5.5:
+    input: 5.00
+    output: 30.00
+    cache_read: 0.50
+    reasoning: 30.00
+  gpt-5.4:
+    input: 2.50
+    output: 15.00
+    cache_read: 0.25
+    reasoning: 15.00
+
 # Map a logged model id onto a `models` key. The 1M-context variants log/emit a
 # `[1m]` suffix (e.g. OTEL may carry `claude-opus-4-8[1m]`); they bill at the same
 # rate as the base model. Date-suffixed snapshots resolve to their alias.

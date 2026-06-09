@@ -396,12 +396,18 @@ export function registerApiRoutes(app: Hono): void {
       byDate.set(r.date, d);
     }
     // OTEL-first native cost overlay (master §12.3): interactive burn_daily has no
-    // native cost; the cost.usage metric supplies it where telemetry was on.
-    const otelNative = otelNativeByDate(db, range);
-    for (const [date, v] of otelNative) {
-      const d = byDate.get(date) ?? { tokens: 0, estUsd: 0, nativeUsd: null };
-      if (d.nativeUsd == null) d.nativeUsd = v;
-      byDate.set(date, d);
+    // native cost; the `claude_code.cost.usage` metric supplies it where telemetry
+    // was on. This metric is Claude-specific, so it must NOT bleed into a non-Claude
+    // filter (e.g. Codex/Antigravity have no native cost). Apply it only to the
+    // all-agents total or an explicit Claude filter. (Latent since Phase 1, when
+    // Claude was the only agent and the filter was a no-op.)
+    if (agent === null || agent === "claude_code") {
+      const otelNative = otelNativeByDate(db, range);
+      for (const [date, v] of otelNative) {
+        const d = byDate.get(date) ?? { tokens: 0, estUsd: 0, nativeUsd: null };
+        if (d.nativeUsd == null) d.nativeUsd = v;
+        byDate.set(date, d);
+      }
     }
     const daily = [...byDate.entries()].map(([date, d]) => ({ date, ...d })).sort((a, b) => a.date.localeCompare(b.date));
     const totalTokens = daily.reduce((a, d) => a + d.tokens, 0);
