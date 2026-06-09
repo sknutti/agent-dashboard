@@ -13,6 +13,7 @@ import { join, normalize } from "node:path";
 import { Hono } from "hono";
 import { getDb } from "./db.ts";
 import { ingestLogs, ingestMetrics, ingestTraces, type IngestResult } from "./otel.ts";
+import { registerApiRoutes } from "./routes.ts";
 import { PORT, UI_DIST, tzName } from "./paths.ts";
 
 const STARTED_AT = Date.now();
@@ -84,6 +85,9 @@ function otelHandler(ingest: (db: any, body: any) => IngestResult) {
 app.post("/v1/logs", otelHandler(ingestLogs));
 app.post("/v1/metrics", otelHandler(ingestMetrics));
 app.post("/v1/traces", otelHandler(ingestTraces));
+
+// ── Core observability API (master §16) ─────────────────────────────────────
+registerApiRoutes(app);
 
 // ── Static SPA (registered last; falls through to index.html for client routes) ──
 const INDEX_HTML = join(UI_DIST, "index.html");

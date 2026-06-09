@@ -1,30 +1,120 @@
-# Rack-rate price table (ADR-0002) — STUB.
+# Rack-rate price table (ADR-0002).
 #
-# Phase 0 ships the STRUCTURE only; no rates are wired. The rack-rate cost
-# engine debuts in Phase 1 with Claude (first real tokens) and reads this file
-# to compute `cost_estimated_usd = tokens x API list price`, ALWAYS badged
-# `estimated`. Until then every estimate stays NULL.
+# The rack-rate cost engine (scripts/cost.ts) reads this file to compute
+#   cost_estimated_usd = Σ(tokens × API list price)
+# ALWAYS badged `estimated`. This is the uniform cross-agent money axis (CONTEXT.md).
 #
 # Rules baked into the engine that consumes this file:
 #   • Rates are USD per 1,000,000 tokens (API list / "rack" rate).
-#   • A model absent from `models` => cost_estimated_usd NULL + "model unknown"
-#     flag. NEVER guess a rate.
+#   • A model absent from `models` (after alias resolution) => cost_estimated_usd
+#     NULL + "model unknown" flag. NEVER guess a rate. (e.g. `<synthetic>` quota
+#     responses stay unpriced.)
 #   • Estimated cost is NEVER summed into a headline total with native cost.
 #   • This table drifts; stale rates silently skew estimates. Maintain it.
+#
+# Source: Anthropic API list prices, claude-api skill catalogue (cached 2026-05-26),
+#   cross-checked against platform.claude.com/docs/en/pricing.
+# Last updated: 2026-06-09.
+# Cache derivation (Anthropic standard, see claude-api prompt-caching):
+#   cache_read  = 0.10 × input   (~0.1× base input price)
+#   cache_write = 1.25 × input   (5-minute ephemeral TTL; the 1h TTL is 2× but
+#                                 Claude Code's cache_creation is predominantly 5m)
+# Simplification: Opus 4.7/4.8 are 1M-context at standard pricing (no long-context
+#   premium). Sonnet's >200K long-context premium is NOT modelled — single tier per
+#   model keeps the rack-rate estimate uniform and legible; note if that ever matters.
 
-version: 0              # bumped when the schema of this file changes
+version: 1               # bumped when the schema of this file changes
 currency: USD
 unit: per_million_tokens
 
-# Phase 1 will populate real rates here, e.g.:
-#   "claude-opus-4-8":
-#     input: 0.00
-#     output: 0.00
-#     cache_read: 0.00
-#     cache_write: 0.00
-#     reasoning: 0.00   # priced as output unless a model splits it
-models: {}
+models:
+  # ── Opus (current) ── $5 / $25
+  claude-opus-4-8:
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write: 6.25
+    reasoning: 25.00      # priced as output (Claude folds thinking into output)
+  claude-opus-4-7:
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write: 6.25
+    reasoning: 25.00
+  claude-opus-4-6:
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write: 6.25
+    reasoning: 25.00
+  claude-opus-4-5:        # legacy, still active — same $5/$25 tier
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write: 6.25
+    reasoning: 25.00
 
-# Optional aliases: map a logged model id onto a `models` key.
-#   "claude-opus-4-8[1m]": "claude-opus-4-8"
-aliases: {}
+  # ── Opus (older $15/$75 tier) ──
+  claude-opus-4-1:
+    input: 15.00
+    output: 75.00
+    cache_read: 1.50
+    cache_write: 18.75
+    reasoning: 75.00
+  claude-opus-4-0:
+    input: 15.00
+    output: 75.00
+    cache_read: 1.50
+    cache_write: 18.75
+    reasoning: 75.00
+
+  # ── Sonnet ── $3 / $15
+  claude-sonnet-4-6:
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write: 3.75
+    reasoning: 15.00
+  claude-sonnet-4-5:
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write: 3.75
+    reasoning: 15.00
+  claude-sonnet-4-0:
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write: 3.75
+    reasoning: 15.00
+
+  # ── Haiku ── $1 / $5
+  claude-haiku-4-5:
+    input: 1.00
+    output: 5.00
+    cache_read: 0.10
+    cache_write: 1.25
+    reasoning: 5.00
+
+  # ── Fable (top tier) ── $10 / $50
+  claude-fable-5:
+    input: 10.00
+    output: 50.00
+    cache_read: 1.00
+    cache_write: 12.50
+    reasoning: 50.00
+
+# Map a logged model id onto a `models` key. The 1M-context variants log/emit a
+# `[1m]` suffix (e.g. OTEL may carry `claude-opus-4-8[1m]`); they bill at the same
+# rate as the base model. Date-suffixed snapshots resolve to their alias.
+aliases:
+  "claude-opus-4-8[1m]": "claude-opus-4-8"
+  "claude-opus-4-7[1m]": "claude-opus-4-7"
+  "claude-opus-4-6[1m]": "claude-opus-4-6"
+  "claude-sonnet-4-6[1m]": "claude-sonnet-4-6"
+  "claude-haiku-4-5-20251001": "claude-haiku-4-5"
+  "claude-opus-4-5-20251101": "claude-opus-4-5"
+  "claude-opus-4-1-20250805": "claude-opus-4-1"
+  "claude-opus-4-20250514": "claude-opus-4-0"
+  "claude-sonnet-4-5-20250929": "claude-sonnet-4-5"
+  "claude-sonnet-4-20250514": "claude-sonnet-4-0"

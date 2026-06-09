@@ -14,7 +14,7 @@ This is the mapping index for the phased build of the multi-agent observability 
 | | Phase / slice | Status | Notes |
 |---|---|---|---|
 | ✅ | **0 — Foundation** | Done | all 6 stop conditions pass; launchd verified then unloaded |
-| ⬜ | **1 — Claude Code** | Planned | |
+| ✅ | **1 — Claude Code** | Done | adapter + cost engine + orchestrator + all core API routes + Svelte panels, verified against real JSONL (228 sessions) and live OTEL (probe → `cost.usage` native cost flows). UI screenshot-verified, zero console errors. Two stop-cond caveats are data-limited not impl gaps: a *slow* MCP (p95≥10s) needs a slow server in the data (none present), and OTEL MCP tool-latency lights up once a real MCP tool is called under telemetry. |
 | ⬜ | **2 — Codex** | Planned | |
 | ⬜ | **3 — Pi** | Planned | |
 | ⬜ | **4 — Antigravity** | Planned | model-id risk → cost may stay NULL |

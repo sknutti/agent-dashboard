@@ -1,6 +1,12 @@
 // Shared reactive state (Svelte 5 runes in a .svelte.ts module).
 
-import { getSystemHealth, type SystemHealth } from "./api";
+import { getSystemHealth, type SystemHealth, type Range } from "./api";
+
+// ── Global range toggle (today / 7d / 30d), master §16 ──────────────────────
+export const ui = $state<{ range: Range }>({ range: "7d" });
+export function setRange(r: Range): void {
+  ui.range = r;
+}
 
 // ── System health (polled, master §17 SystemHealthStrip) ────────────────────
 export const health = $state<{
@@ -40,7 +46,10 @@ export interface DrillContext {
   title: string;
   /** Human description of the filter, e.g. "Claude Code · errored sessions". */
   subtitle?: string;
-  /** The query this drill-down maps to in Phase 1 (shown for transparency). */
+  /** Filters the drill-down session list resolves to (read-only; Phase 6 adds act). */
+  agent?: string;
+  outcome?: string;
+  /** The query this maps to, shown for transparency. */
   query?: string;
 }
 

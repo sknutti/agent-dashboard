@@ -17,6 +17,24 @@
 //
 // No Phase 0 code constructs a NormalizedEvent; the orchestrator runs an empty
 // registry. This file exists so phases 1–4 only fill it in.
+//
+// ── Finalized in Phase 1 against the running Claude Code adapter (INDEX invariant
+//    #2). One refinement was forced by reality: a session-level `nativeCostUsd`
+//    (below). Written re-confirmation that the interface still admits the other
+//    three field maps (master §10.2) with NO further change:
+//      • Codex      — no native cost (session.nativeCostUsd + token.costUsd both
+//                     omitted → cost NULL); tokens from the last cumulative
+//                     `total_token_usage` → one `tokens` event; `reasoning` segment
+//                     carried by TokenCounts.reasoning. ✓ admits.
+//      • Pi         — PER-MESSAGE native USD → emit one `tokens` event per assistant
+//                     row with `costUsd` set; branchCount on SessionMeta; tokens
+//                     summed across all branches by the orchestrator. ✓ admits.
+//      • Antigravity— tokens decoded from a sibling protobuf `.db` (not the JSONL):
+//                     `sessionGlob()` returns conversation roots, `parseSession`
+//                     resolves the `.db` for tokens + transcript for tools; no USD.
+//                     The async-iterable contract is source-agnostic. ✓ admits.
+//    No tree/branch or multi-file shape needed a signature change — only the
+//    whole-session native-cost figure, which Pi also benefits from.
 
 export type AgentId = "claude_code" | "codex" | "pi" | "antigravity";
 
@@ -57,6 +75,15 @@ export interface SessionMeta {
   branchCount?: number;
   /** Ingest origin where it still applies (Claude Code): "ide" | "cowork". */
   source?: string;
+  /**
+   * Whole-session native USD where the vendor stamps it once per session rather
+   * than per message — Claude Code `result.total_cost_usd` (print mode only;
+   * absent for interactive sessions → cost stays NULL). The orchestrator's native
+   * cost for a session is `nativeCostUsd ?? Σ(token.costUsd)` — so an adapter uses
+   * EITHER this (Claude) OR per-message `tokens.costUsd` (Pi), never both.
+   * Exact when present; rack-rate `cost_estimated_usd` is computed downstream.
+   */
+  nativeCostUsd?: number | null;
 }
 
 /**

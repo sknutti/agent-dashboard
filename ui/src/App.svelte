@@ -3,6 +3,7 @@
   import Command from "./routes/Command.svelte";
   import Activity from "./routes/Activity.svelte";
   import Skills from "./routes/Skills.svelte";
+  import DrillSheet from "./lib/components/panels/DrillSheet.svelte";
   import { router, ROUTES } from "./lib/router.svelte";
 
   const title = $derived(
@@ -24,3 +25,6 @@
     <Command />
   {/if}
 </AppShell>
+
+<!-- App-wide read-only drill-down drawer (ADR-0003) -->
+<DrillSheet />
