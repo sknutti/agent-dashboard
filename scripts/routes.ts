@@ -18,6 +18,7 @@ import { Glob } from "bun";
 import type { Database } from "bun:sqlite";
 import { getDb } from "./db.ts";
 import { syncSkills } from "./skills.ts";
+import { mergeBurnByDate, type BurnRow } from "./burn.ts";
 
 const AGENT_IDS = ["claude_code", "codex", "pi", "antigravity"] as const;
 
@@ -99,13 +100,15 @@ export function registerApiRoutes(app: Hono): void {
         SELECT COUNT(*) n FROM tool_calls WHERE agent = ? AND ${rangePred(range, "ts")}`).get(id) as any;
       const billable = tok.input + tok.cacheRead + tok.cacheCreate;
       const otel = (db.query(
-        `SELECT COUNT(*) n FROM otel_events WHERE agent = ? AND received_at >= datetime('now','-7 days')`,
+        `SELECT COUNT(*) n FROM otel_events WHERE agent = ? AND datetime(received_at) >= datetime('now','-7 days')`,
       ).get(id) as any).n > 0;
-      // Native cost — OTEL-first / JSONL-fallback (master §12.3). Interactive JSONL
-      // carries no native cost, so the `claude_code.cost.usage` metric supplies it
-      // (delta temporality → SUM is correct). JSONL print-mode cost wins if present.
+      // Native cost — OTEL-first / JSONL-fallback (master §12.3). The two sources
+      // describe the SAME spend and must NEVER be summed; OTEL wins when present
+      // because it is complete, whereas JSONL native is print-mode-only and partial
+      // (a single `claude -p` stamps e.g. $0.42 while OTEL holds the day's full $35).
+      // Earlier this was JSONL-first, so one print session suppressed the OTEL total.
       const otelNative = otelNativeCost(db, id, range);
-      const nativeUsd = tok.costUsd != null ? tok.costUsd : otelNative;
+      const nativeUsd = otelNative != null ? otelNative : tok.costUsd;
       return {
         id,
         detected: detected[id],
@@ -181,7 +184,7 @@ export function registerApiRoutes(app: Hono): void {
              total_tokens, error_count, cost_estimated_usd
       FROM sessions
       WHERE ended_at IS NULL
-         OR ended_at >= datetime('now','-5 minutes')
+         OR datetime(ended_at) >= datetime('now','-5 minutes')
       ORDER BY started_at DESC`).all();
     return c.json({ sessions: rows });
   });
@@ -394,36 +397,21 @@ export function registerApiRoutes(app: Hono): void {
     const rows = db.query(/* sql */ `
       SELECT date, agent, tokens, cost_usd, cost_estimated_usd, fidelity, driver, evidence
       FROM burn_daily WHERE ${where.join(" AND ")}
-      ORDER BY date ASC`).all(...params) as any[];
+      ORDER BY date ASC`).all(...params) as (BurnRow & {
+        fidelity: string; driver: string | null; evidence: string | null;
+      })[];
 
-    // Per-date totals (cross-agent; one agent today, built to take more).
-    // estUsd is NULL-preserving just like nativeUsd: a day whose rows are ALL
-    // unpriced (e.g. Antigravity's gemini-3-flash-a — the first uniformly-unpriced
-    // agent) stays null → renders "—", NOT a fabricated "$0" (ADR-0002: never claim
-    // a money figure we don't have). A day with any priced row sums those rows.
-    const byDate = new Map<string, { tokens: number; estUsd: number | null; nativeUsd: number | null }>();
-    for (const r of rows) {
-      const d = byDate.get(r.date) ?? { tokens: 0, estUsd: null, nativeUsd: null };
-      d.tokens += r.tokens ?? 0;
-      if (r.cost_estimated_usd != null) d.estUsd = (d.estUsd ?? 0) + r.cost_estimated_usd;
-      if (r.cost_usd != null) d.nativeUsd = (d.nativeUsd ?? 0) + r.cost_usd;
-      byDate.set(r.date, d);
-    }
-    // OTEL-first native cost overlay (master §12.3): interactive burn_daily has no
-    // native cost; the `claude_code.cost.usage` metric supplies it where telemetry
-    // was on. This metric is Claude-specific, so it must NOT bleed into a non-Claude
-    // filter (e.g. Codex/Antigravity have no native cost). Apply it only to the
-    // all-agents total or an explicit Claude filter. (Latent since Phase 1, when
-    // Claude was the only agent and the filter was a no-op.)
-    if (agent === null || agent === "claude_code") {
-      const otelNative = otelNativeByDate(db, range);
-      for (const [date, v] of otelNative) {
-        const d = byDate.get(date) ?? { tokens: 0, estUsd: null, nativeUsd: null };
-        if (d.nativeUsd == null) d.nativeUsd = v;
-        byDate.set(date, d);
-      }
-    }
-    const daily = [...byDate.entries()].map(([date, d]) => ({ date, ...d })).sort((a, b) => a.date.localeCompare(b.date));
+    // Per-date totals via the pure, unit-tested fold (see scripts/burn.ts).
+    // estUsd is null-preserving (all-unpriced day → "—", never "$0"). Native is
+    // per-agent: Claude is OTEL-first / JSONL-print fallback (never summed), every
+    // other agent's native adds on top. The Claude-only OTEL overlay must NOT bleed
+    // into a non-Claude filter, so we pass an empty map unless the filter is
+    // all-agents or claude_code.
+    const claudeOtelByDate =
+      agent === null || agent === "claude_code"
+        ? otelNativeByDate(db, range)
+        : new Map<string, number>();
+    const daily = mergeBurnByDate(rows, claudeOtelByDate);
     const totalTokens = daily.reduce((a, d) => a + d.tokens, 0);
     // Null when EVERY day is unpriced (→ "—"); otherwise the sum of priced days.
     const pricedDays = daily.filter((d) => d.estUsd != null);

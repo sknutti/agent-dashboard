@@ -77,20 +77,21 @@ const registry: AdapterRegistry = buildRegistry();
 // ── Prepared statements ─────────────────────────────────────────────────────
 const upsertSession = db.prepare(/* sql */ `
   INSERT INTO sessions (
-    session_id, source, agent, fidelity, cwd, git_branch, model,
+    session_id, source, source_path, agent, fidelity, cwd, git_branch, model,
     started_at, ended_at, input_tokens, output_tokens, cache_read_tokens,
     cache_create_tokens, reasoning_tokens, total_tokens, effective_tokens,
     cost_usd, cost_estimated_usd, duration_ms, error_count, rate_limit_hit,
     stop_reason, branch_count, title, synced_at
   ) VALUES (
-    $session_id, $source, $agent, $fidelity, $cwd, $git_branch, $model,
+    $session_id, $source, $source_path, $agent, $fidelity, $cwd, $git_branch, $model,
     $started_at, $ended_at, $input_tokens, $output_tokens, $cache_read_tokens,
     $cache_create_tokens, $reasoning_tokens, $total_tokens, $effective_tokens,
     $cost_usd, $cost_estimated_usd, $duration_ms, $error_count, $rate_limit_hit,
     $stop_reason, $branch_count, $title, $synced_at
   )
   ON CONFLICT(session_id) DO UPDATE SET
-    source=excluded.source, agent=excluded.agent, fidelity=excluded.fidelity,
+    source=excluded.source, source_path=excluded.source_path, agent=excluded.agent,
+    fidelity=excluded.fidelity,
     cwd=excluded.cwd, git_branch=excluded.git_branch, model=excluded.model,
     started_at=excluded.started_at, ended_at=excluded.ended_at,
     input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
@@ -110,8 +111,11 @@ const insertToolCall = db.prepare(/* sql */ `
   VALUES ($session_id, $agent, $tool_use_id, $tool_name, $ts, $duration_ms, $error)
 `);
 
+// Gate lookup keys on the source FILE PATH, not the basename: codex/pi/antigravity
+// session_ids never equal their filenames, so a basename key made all three
+// re-parse every tick forever (see db.ts idx_sessions_source_path).
 const selectSyncState = db.prepare(
-  `SELECT synced_at, ended_at FROM sessions WHERE session_id = ?`,
+  `SELECT synced_at, ended_at FROM sessions WHERE source_path = ?`,
 );
 
 // token_usage is a pure derivation of sessions → full rebuild per agent.
@@ -176,7 +180,7 @@ function emptyAgg(): SessionAgg {
 }
 
 const writeSession = db.transaction(
-  (agg: SessionAgg, endedAt: string | null, agent: string, fidelity: string) => {
+  (agg: SessionAgg, endedAt: string | null, agent: string, fidelity: string, sourcePath: string) => {
   const m = agg.meta;
   if (!m) return;
   const total = agg.input + agg.output + agg.cacheRead + agg.cacheCreate + agg.reasoning;
@@ -194,6 +198,7 @@ const writeSession = db.transaction(
   upsertSession.run({
     $session_id: m.sessionId,
     $source: m.source ?? null,
+    $source_path: sourcePath,
     $agent: agent,
     $fidelity: fidelity,
     $cwd: m.cwd ?? null,
@@ -261,7 +266,7 @@ async function parseAndWrite(adapter: AgentAdapter, path: string, liveActive: bo
   // Orchestrator owns the live/ended decision: a recently-touched file is still
   // active → ended_at NULL (keeps it in the re-parse set next tick).
   const endedAt = liveActive ? null : (agg.meta.endedAt ?? null);
-  writeSession(agg, endedAt, adapter.agentId, adapter.fidelity);
+  writeSession(agg, endedAt, adapter.agentId, adapter.fidelity, path);
 }
 
 /** Decide whether a file needs (re)parsing, and whether it's currently live. */
@@ -273,8 +278,7 @@ function reparseDecision(path: string): { reparse: boolean; liveActive: boolean 
     return { reparse: false, liveActive: false };
   }
   const liveActive = Date.now() - mtimeMs < LIVE_WINDOW_MS;
-  const stem = path.split("/").pop()?.replace(/\.jsonl$/, "") ?? path;
-  const row = selectSyncState.get(stem) as { synced_at: string | null; ended_at: string | null } | null;
+  const row = selectSyncState.get(path) as { synced_at: string | null; ended_at: string | null } | null;
   if (!row) return { reparse: true, liveActive };
   if (row.ended_at === null) return { reparse: true, liveActive }; // still active
   const syncedMs = row.synced_at ? Date.parse(row.synced_at) : 0;
@@ -294,8 +298,10 @@ async function syncAdapter(adapter: AgentAdapter): Promise<number> {
       console.error(`[sync] ${adapter.agentId} file ${path} failed:`, err);
     }
   }
-  // Re-derive rollups from the now-current `sessions` rows.
-  rederiveRollups(adapter.agentId);
+  // Re-derive rollups only when a session actually changed. token_usage/burn_daily
+  // are pure derivations of `sessions`; if nothing re-parsed they're already
+  // current, and skipping avoids a per-tick DELETE+INSERT against a quiet DB.
+  if (synced > 0) rederiveRollups(adapter.agentId);
   return synced;
 }
 
@@ -321,25 +327,40 @@ const rederiveRollups = db.transaction((agentId: string) => {
 
 // ── Tick loop (unchanged scaffolding from Phase 0) ──────────────────────────
 let tickCount = 0;
+/** Reentrancy guard: the interval fires on a fixed clock, but a tick can run
+ *  longer than the interval (large history, slow disk). Without this, ticks
+ *  overlap and pile up, each re-globbing every file concurrently. */
+let tickRunning = false;
 
 async function tick(): Promise<void> {
+  if (tickRunning) {
+    console.warn(`[sync] tick ${tickCount} still running; skipping this interval`);
+    return;
+  }
+  tickRunning = true;
+  const startedMs = Date.now();
   tickCount += 1;
   let synced = 0;
   let sessions = 0;
-  for (const adapter of registry) {
-    if (!adapter.enabled) continue;
-    try {
-      sessions += await syncAdapter(adapter);
-      synced += 1;
-    } catch (err) {
-      console.error(`[sync] adapter ${adapter.agentId} failed:`, err);
+  try {
+    for (const adapter of registry) {
+      if (!adapter.enabled) continue;
+      try {
+        sessions += await syncAdapter(adapter);
+        synced += 1;
+      } catch (err) {
+        console.error(`[sync] adapter ${adapter.agentId} failed:`, err);
+      }
     }
+  } finally {
+    tickRunning = false;
   }
 
+  const elapsedMs = Date.now() - startedMs;
   const now = new Date().toISOString();
   insertHeartbeat.run(
-    `tick ${tickCount}: ${synced}/${registry.length} adapters, ${sessions} sessions parsed`,
-    JSON.stringify({ tick: tickCount, adapters: registry.length, synced, sessions }),
+    `tick ${tickCount}: ${synced}/${registry.length} adapters, ${sessions} sessions parsed in ${elapsedMs}ms`,
+    JSON.stringify({ tick: tickCount, adapters: registry.length, synced, sessions, elapsedMs }),
     now,
   );
   parentPort?.postMessage({ type: "tick", tick: tickCount, at: now });

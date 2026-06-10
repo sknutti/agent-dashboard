@@ -77,6 +77,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   title               TEXT,
   synced_at           TEXT
 );
+-- The re-parse gate looks sessions up by their source FILE PATH (basename ≠
+-- session_id for codex/pi/antigravity), and most list/rollup queries filter by
+-- (agent, started_at). Without these the gate lookup and every range scan are
+-- full-table scans.
+CREATE INDEX IF NOT EXISTS idx_sessions_agent_started ON sessions (agent, started_at);
 
 -- Daily token rollup. [+MA] key gains 'agent': (date, agent, model, source).
 CREATE TABLE IF NOT EXISTS token_usage (
@@ -104,6 +109,9 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   error       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tool_calls_agent_name_ts ON tool_calls (agent, tool_name, ts);
+-- Per-session DELETE (orchestrator re-parse) + the session-detail drill both
+-- filter by session_id; without this they full-scan tool_calls.
+CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls (session_id);
 
 -- Normalized cross-agent daily burn rollup (master §11.2 + ADR-0002 estimated col).
 CREATE TABLE IF NOT EXISTS burn_daily (
@@ -263,6 +271,14 @@ export function initSchema(db: Database): void {
   migrateAddColumn(db, "token_usage", "reasoning_tokens", "INTEGER NOT NULL DEFAULT 0");
   migrateAddColumn(db, "tool_calls", "agent", "TEXT NOT NULL DEFAULT 'claude_code'");
   migrateAddColumn(db, "burn_daily", "cost_estimated_usd", "REAL");
+
+  // The source file path each session was parsed from — the stable key the
+  // re-parse gate looks up (basename ≠ session_id for codex/pi/antigravity).
+  // Added here (not in SCHEMA) so its index can be created after the column
+  // exists on a pre-existing DB. Index, not unique: in the rare two-files-one-id
+  // case the gate just degrades to redundant re-parse, never to wrong data.
+  migrateAddColumn(db, "sessions", "source_path", "TEXT");
+  db.run("CREATE INDEX IF NOT EXISTS idx_sessions_source_path ON sessions (source_path);");
 }
 
 let singleton: Database | null = null;

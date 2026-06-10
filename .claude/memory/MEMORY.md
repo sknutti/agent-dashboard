@@ -8,6 +8,16 @@ Stack: Bun + Hono + bun:sqlite (WAL) + Svelte 5 SPA (ADR-0001). Built in phases
 ## Topic files
 - [codebase-map.md](codebase-map.md) — key modules & entry points (backend + UI).
 - [gotchas.md](gotchas.md) — native cost not in JSONL, real model IDs, schema init ownership, esbuild.
+- [2026-06-10 adversarial review](../../docs/notes/2026-06-10-adversarial-review.md) — 5-lens audit, ~30 verified
+  findings. **Batch 1 FIXED (commit pending):** (1) native-cost merge now OTEL-first per-agent — extracted to pure
+  `scripts/burn.ts` (`mergeBurnByDate`) + `burn.test.ts` (8 tests); (2) re-parse gate keys on new `source_path`
+  column, not basename — measured 560→4 sessions/tick, 1060ms→33ms; rollups now gated on `synced>0`; (3) overlap-tick
+  guard + `elapsedMs` in heartbeat; (4) indexes `idx_tool_calls_session`, `idx_sessions_agent_started`,
+  `idx_sessions_source_path`; (5) live-session + OTEL-badge use `datetime(col)` not lexical string compare.
+  **Still open:** resume/continue double-counts Claude tokens (no msg-id dedup); antigravity no-transcript →
+  started_at NULL → tokens vanish; DNS rebinding + drive-by OTLP poisoning (Host/Origin middleware = Batch 2);
+  api.ts↔routes.ts type drift; 26/28 panels show fetch-fail as "no data"; no last-seen (Pi reads as broken);
+  duplicate Phase-0 AppShell drill sheet; CachePanel amber/green CVD.
 
 ## Status
 - Phase 0 ✅ Done. Phase 1 ✅ Done — adapter, cost engine, orchestrator, all core API routes,
