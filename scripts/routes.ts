@@ -19,8 +19,26 @@ import type { Database } from "bun:sqlite";
 import { getDb } from "./db.ts";
 import { syncSkills } from "./skills.ts";
 import { mergeBurnByDate, type BurnRow } from "./burn.ts";
+import type {
+  AgentCardData,
+  AgentsResponse,
+  BurnResponse,
+  SessionRow,
+  SessionsResponse,
+} from "./wire.ts";
 
 const AGENT_IDS = ["claude_code", "codex", "pi", "antigravity"] as const;
+
+// ── DB row shapes for the typed (non-`as any`) reads (review #15) ───────────
+// bun:sqlite's query<Row, Params> returns typed rows, so a column typo or a
+// shape mismatch is a compile error instead of an `any` that silently flows to
+// the wire. Aggregates (SUM/COUNT) always return one row, so `.get(...)!` is safe.
+interface CountRow { n: number }
+interface AgentTokRow {
+  input: number; output: number; cacheRead: number; cacheCreate: number;
+  reasoning: number; total: number; sessions: number; errors: number;
+  costUsd: number | null; costEstimatedUsd: number | null;
+}
 
 /** Local-date lower bound for a range, as a SQL expression (safe constant). */
 function rangeStartSql(range: string): string {
@@ -88,20 +106,20 @@ export function registerApiRoutes(app: Hono): void {
       pi: existsSync(join(homedir(), ".pi", "agent", "sessions")),
       antigravity: existsSync(join(homedir(), ".gemini", "antigravity-cli")),
     };
-    const out = AGENT_IDS.map((id) => {
-      const tok = db.query(/* sql */ `
+    const out: AgentCardData[] = AGENT_IDS.map((id) => {
+      const tok = db.query<AgentTokRow, [string]>(/* sql */ `
         SELECT COALESCE(SUM(input_tokens),0) input, COALESCE(SUM(output_tokens),0) output,
                COALESCE(SUM(cache_read_tokens),0) cacheRead, COALESCE(SUM(cache_create_tokens),0) cacheCreate,
                COALESCE(SUM(reasoning_tokens),0) reasoning, COALESCE(SUM(total_tokens),0) total,
                COUNT(*) sessions, COALESCE(SUM(error_count),0) errors,
                SUM(cost_usd) costUsd, SUM(cost_estimated_usd) costEstimatedUsd
-        FROM sessions WHERE agent = ? AND ${rangePred(range)}`).get(id) as any;
-      const tools = db.query(/* sql */ `
-        SELECT COUNT(*) n FROM tool_calls WHERE agent = ? AND ${rangePred(range, "ts")}`).get(id) as any;
+        FROM sessions WHERE agent = ? AND ${rangePred(range)}`).get(id)!;
+      const tools = db.query<CountRow, [string]>(/* sql */ `
+        SELECT COUNT(*) n FROM tool_calls WHERE agent = ? AND ${rangePred(range, "ts")}`).get(id)!;
       const billable = tok.input + tok.cacheRead + tok.cacheCreate;
-      const otel = (db.query(
+      const otel = db.query<CountRow, [string]>(
         `SELECT COUNT(*) n FROM otel_events WHERE agent = ? AND datetime(received_at) >= datetime('now','-7 days')`,
-      ).get(id) as any).n > 0;
+      ).get(id)!.n > 0;
       // Native cost — OTEL-first / JSONL-fallback (master §12.3). The two sources
       // describe the SAME spend and must NEVER be summed; OTEL wins when present
       // because it is complete, whereas JSONL native is print-mode-only and partial
@@ -112,12 +130,12 @@ export function registerApiRoutes(app: Hono): void {
       // Un-windowed last activity: lets the card distinguish "no data ever" (broken
       // / not installed) from "data exists, just outside the current range" — e.g.
       // Pi's Mar–Apr data is invisible at 7d/30d and otherwise reads as broken.
-      const lastSessionAt = (db.query(
+      const lastSessionAt = db.query<{ at: string | null }, [string]>(
         `SELECT MAX(started_at) at FROM sessions WHERE agent = ?`,
-      ).get(id) as { at: string | null }).at;
+      ).get(id)!.at;
       return {
         id,
-        detected: detected[id],
+        detected: detected[id]!,
         otel,
         lastSessionAt,
         cost: id === "claude_code" || id === "pi" ? "native" : "none",
@@ -134,7 +152,7 @@ export function registerApiRoutes(app: Hono): void {
         fidelity: "exact",
       };
     });
-    return c.json({ range, agents: out });
+    return c.json({ range, agents: out } satisfies AgentsResponse);
   });
 
   // ── Sessions list (drill-downs) ───────────────────────────────────────────
@@ -157,14 +175,14 @@ export function registerApiRoutes(app: Hono): void {
     if (q) { where.push("(title LIKE ? OR cwd LIKE ?)"); params.push(`%${q}%`, `%${q}%`); }
     const whereSql = where.join(" AND ");
 
-    const total = (db.query(`SELECT COUNT(*) n FROM sessions WHERE ${whereSql}`).get(...params) as any).n;
-    const rows = db.query(/* sql */ `
+    const total = db.query<CountRow, any[]>(`SELECT COUNT(*) n FROM sessions WHERE ${whereSql}`).get(...params)!.n;
+    const rows = db.query<SessionRow, any[]>(/* sql */ `
       SELECT session_id, agent, model, cwd, git_branch, title, started_at, ended_at,
              total_tokens, effective_tokens, error_count, cost_usd, cost_estimated_usd,
              duration_ms, fidelity, ${OUTCOME_CASE} AS outcome
       FROM sessions WHERE ${whereSql}
       ORDER BY started_at DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
-    return c.json({ total, limit, offset, sessions: rows });
+    return c.json({ total, limit, offset, sessions: rows } satisfies SessionsResponse);
   });
 
   // ── Session detail (timeline + token breakdown) ───────────────────────────
@@ -413,12 +431,10 @@ export function registerApiRoutes(app: Hono): void {
     const where = [rangePred(range, "date")];
     const params: any[] = [];
     if (agent) { where.push("agent = ?"); params.push(agent); }
-    const rows = db.query(/* sql */ `
+    const rows = db.query<BurnRow & { fidelity: string; driver: string | null; evidence: string | null }, any[]>(/* sql */ `
       SELECT date, agent, tokens, cost_usd, cost_estimated_usd, fidelity, driver, evidence
       FROM burn_daily WHERE ${where.join(" AND ")}
-      ORDER BY date ASC`).all(...params) as (BurnRow & {
-        fidelity: string; driver: string | null; evidence: string | null;
-      })[];
+      ORDER BY date ASC`).all(...params);
 
     // Per-date totals via the pure, unit-tested fold (see scripts/burn.ts).
     // estUsd is null-preserving (all-unpriced day → "—", never "$0"). Native is
@@ -453,7 +469,7 @@ export function registerApiRoutes(app: Hono): void {
     return c.json({
       range, rows, daily, movingAvg, scaleEquivalents,
       totals: { tokens: totalTokens, estimatedUsd: totalEst },
-    });
+    } satisfies BurnResponse);
   });
 
   app.patch("/api/burn/:date", async (c) => {

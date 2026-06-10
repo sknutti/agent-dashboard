@@ -1,5 +1,11 @@
 // Typed client for the Command Centre API (master §16). Phase 1 wires every core
 // panel; all reads are GET JSON, local-time bucketed server-side.
+//
+// The money-bearing response shapes (AgentCardData, SessionRow, Burn, …) mirror
+// scripts/wire.ts, which the server now annotates its handlers against (review
+// #15) — so the SERVER can't drift from that contract. These client copies are
+// kept in sync by hand (the Vite build is a separate package); when you change a
+// response shape, change it in scripts/wire.ts AND here.
 
 export type Range = "today" | "7d" | "30d" | "90d";
 export type AgentId = "claude_code" | "codex" | "pi" | "antigravity";
