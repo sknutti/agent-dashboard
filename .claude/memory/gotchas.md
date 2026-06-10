@@ -204,3 +204,22 @@
 - **Operational:** an adapter parsing-logic change does NOT auto-correct already-
   ended sessions (the mtime gate won't re-parse them). Force once with
   `UPDATE sessions SET synced_at=NULL WHERE agent='claude_code'` then `bun run sync`.
+
+## resource.svelte.ts — NEVER read reactive state inside the $effect's run() path
+- **Froze the entire app** (blank page, NO console error — a frozen main thread).
+  `resource()` runs `run()` synchronously inside its `$effect`. Batch 8 added
+  `if (state.data === null) state.loading = true` to avoid skeleton flicker — that
+  READ of `state.data` made it a DEPENDENCY of the effect. The fetch `.then` SETS
+  `state.data` → effect re-runs → refetch → set → ∞. Because each cycle crosses a
+  fetch `.then` (microtask), Svelte's SYNC effect-depth guard never trips, so it
+  spins SILENTLY instead of throwing `effect_update_depth_exceeded`.
+- **Rule:** inside the `$effect`/`run()` path, only READ keyFn() + dataEpoch (the
+  intended deps) and WRITE state. The "first load?" gate must be a plain closure
+  flag (`loadedOnce`), never a read of `state.data`/`state.loading`/`state.error`.
+- **Debugging without a browser** (Chrome is TCC-blocked from localhost on this
+  Mac): mount the built bundle in `@happy-dom/global-registrator` headlessly;
+  bisect real-vs-`{}`-stubbed fetch to prove data-triggered; trip-wire
+  `Array.prototype.push` at ~2M calls to catch a silent spin's stack; build with
+  `build.sourcemap=true` + `source-map` pkg to resolve minified frames to source.
+- No Svelte-runes unit-test seam exists (bun test can't compile `.svelte.ts`); a
+  vitest + @testing-library/svelte harness would let this be locked with a test.
