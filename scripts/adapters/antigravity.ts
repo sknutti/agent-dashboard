@@ -318,6 +318,19 @@ export class AntigravityAdapter implements AgentAdapter {
       toolEvents.push({ kind: "tool", toolName: t.name, ts: t.startTs, durationMs: null, error: null });
     }
 
+    // Fallback time window for a transcript-less conversation: the .db mtime, a
+    // single bucket (Antigravity is low-volume). The transcript is the authoritative
+    // window when present; without it BOTH the token events AND the session meta must
+    // still get a timestamp, or started_at lands NULL and the whole session is
+    // excluded from every rollup and range predicate despite having decoded tokens.
+    let fileTs: string | undefined;
+    const fileMtime = (): string => {
+      if (fileTs === undefined) {
+        try { fileTs = statSync(path).mtime.toISOString(); } catch { fileTs = new Date(0).toISOString(); }
+      }
+      return fileTs;
+    };
+
     // ── 2. Tokens: decode the gen_metadata protobuf rows; cwd from trajectory. ──
     const tokenEvents: Extract<NormalizedEvent, { kind: "tokens" }>[] = [];
     let model: string | undefined;
@@ -342,16 +355,8 @@ export class AntigravityAdapter implements AgentAdapter {
           /* trajectory blob absent/garbled → cwd stays undefined (best-effort). */
         }
 
-        // Fallback timestamp for token events when the transcript was empty/absent:
-        // the .db mtime (a single bucket; Antigravity is low-volume by nature).
-        let tokenTs = startedAt;
-        if (!tokenTs) {
-          try {
-            tokenTs = statSync(path).mtime.toISOString();
-          } catch {
-            tokenTs = new Date(0).toISOString();
-          }
-        }
+        // Token events bucket by the transcript start when present, else the .db mtime.
+        const tokenTs = startedAt ?? fileMtime();
 
         const rows = db.query("SELECT data FROM gen_metadata ORDER BY idx").all() as {
           data: Uint8Array | null;
@@ -392,8 +397,10 @@ export class AntigravityAdapter implements AgentAdapter {
       sessionId: convId,
       cwd,
       model, // gemini-3-flash-a: pinned but unpriced → estimated cost NULL
-      startedAt,
-      endedAt: endedAt ?? null,
+      // Fall back to the .db mtime so a transcript-less conversation (tokens but no
+      // transcript) still gets a non-NULL start day and appears in rollups/ranges.
+      startedAt: startedAt ?? fileMtime(),
+      endedAt: endedAt ?? fileMtime(),
       source: "cli",
       // No branchCount (Antigravity is linear), no native cost, no rate-limit signal.
     };

@@ -22,14 +22,40 @@ const STARTED_AT = Date.now();
 // connection, so we never race two connections on CREATE TABLE.
 const db = getDb();
 
-// ── Ingest worker ─────────────────────────────────────────────────────────
-const worker = new Worker(fileURLToPath(new URL("./sync_agents.ts", import.meta.url)));
+// ── Ingest worker (supervised: respawn on death with bounded backoff) ───────
+// A throw outside the worker's per-adapter try/catch (e.g. a SQLITE_BUSY past the
+// busy_timeout) would otherwise silently kill ingest while the server serves ever-
+// staler data. We respawn it; doctor's heartbeat-AGE check catches a give-up.
+const WORKER_URL = fileURLToPath(new URL("./sync_agents.ts", import.meta.url));
+let worker: Worker;
 let lastWorkerTickAt: string | null = null;
-worker.on("message", (msg: { type?: string; at?: string }) => {
-  if (msg?.type === "tick" && msg.at) lastWorkerTickAt = msg.at;
-});
-worker.on("error", (err) => console.error("[worker] error:", err));
-worker.unref(); // don't keep the process alive on the worker alone
+let shuttingDown = false;
+let restarts = 0;
+let lastRestartMs = 0;
+
+function spawnWorker(): void {
+  worker = new Worker(WORKER_URL);
+  worker.on("message", (msg: { type?: string; at?: string }) => {
+    if (msg?.type === "tick" && msg.at) lastWorkerTickAt = msg.at;
+  });
+  worker.on("error", (err) => console.error("[worker] error:", err));
+  worker.on("exit", (code) => {
+    if (shuttingDown) return;
+    const now = Date.now();
+    if (now - lastRestartMs > 60_000) restarts = 0; // healthy stretch → reset budget
+    lastRestartMs = now;
+    restarts += 1;
+    if (restarts > 10) {
+      console.error(`[worker] exited (code ${code}); ${restarts} restarts in <60s — giving up. INGEST IS DOWN (heartbeat will go stale; doctor will flag it).`);
+      return;
+    }
+    const delay = Math.min(30_000, 500 * 2 ** (restarts - 1));
+    console.error(`[worker] exited (code ${code}); respawning in ${delay}ms (restart #${restarts})`);
+    setTimeout(() => { if (!shuttingDown) spawnWorker(); }, delay).unref();
+  });
+  worker.unref(); // don't keep the process alive on the worker alone
+}
+spawnWorker();
 
 // ── App ─────────────────────────────────────────────────────────────────────
 const app = new Hono();
@@ -179,6 +205,7 @@ const server = Bun.serve({
 console.log(`Command Centre listening on http://127.0.0.1:${server.port}`);
 
 function shutdown() {
+  shuttingDown = true; // stop the exit handler from respawning the worker
   try {
     worker.postMessage({ type: "stop" });
   } catch {}

@@ -20,9 +20,12 @@ Stack: Bun + Hono + bun:sqlite (WAL) + Svelte 5 SPA (ADR-0001). Built in phases
   Claude JSONL repeats `usage` on every split line of a message → was 2× over-counting. Measured 3.66B→1.76B
   (51.9% phantom) on this machine; deduped by message.id+requestId, live DB corrected via forced resync. See
   [[gotchas]] + `adapters/claude_code.test.ts` (first reference-adapter test).
-  **Still open:** antigravity no-transcript → started_at NULL → tokens vanish; api.ts↔routes.ts type drift
-  (Burn nullability, McpServers.source:0); 26/28 panels show fetch-fail as "no data"; no last-seen (Pi reads as
-  broken); duplicate Phase-0 AppShell drill sheet; CachePanel amber/green CVD; worker respawn + doctor heartbeat-age.
+  **Batch 4 FIXED (commit pending):** antigravity startedAt falls back to .db mtime when transcript absent (was
+  NULL → tokens excluded from all rollups/ranges); Burn type estUsd/estimatedUsd now `number|null` (was lying
+  `number`); McpServers.source no longer emits literal `0`; supervised worker respawn (backoff, give-up logs);
+  doctor checks heartbeat AGE not just count. Tests `antigravity.test.ts` no-transcript case; svelte-check clean.
+  **Still open (Batch 5 = frontend UX):** 26/28 panels show fetch-fail as "no data"; no last-seen (Pi reads as
+  broken); duplicate Phase-0 AppShell drill sheet; CachePanel amber/green CVD.
 
 ## Status
 - Phase 0 ✅ Done. Phase 1 ✅ Done — adapter, cost engine, orchestrator, all core API routes,

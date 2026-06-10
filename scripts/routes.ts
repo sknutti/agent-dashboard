@@ -359,7 +359,9 @@ export function registerApiRoutes(app: Hono): void {
       };
     });
     servers.sort((a, b) => (b.p95 ?? -1) - (a.p95 ?? -1));
-    return c.json({ range, servers, source: calls.length && calls[0]!.otel ? "otel" : "jsonl" });
+    // `calls.length && …` would put the NUMBER 0 on the wire when empty (the
+    // declared type is "otel" | "jsonl"); compare explicitly so source is a string.
+    return c.json({ range, servers, source: calls.length > 0 && calls[0]!.otel ? "otel" : "jsonl" });
   });
 
   // ── MCP: per-tool breakdown (the centerpiece drill-down) ──────────────────

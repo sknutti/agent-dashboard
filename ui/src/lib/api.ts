@@ -132,10 +132,13 @@ export interface McpTools {
 export interface Burn {
   range: string;
   rows: { date: string; agent: string; tokens: number; cost_usd: number | null; cost_estimated_usd: number | null; fidelity: string; driver: string | null; evidence: string | null }[];
-  daily: { date: string; tokens: number; estUsd: number; nativeUsd: number | null }[];
+  // estUsd / totals.estimatedUsd are NULL when a day (or all days) are unpriced —
+  // ADR-0002: never fabricate "$0". The route really returns null here; the type
+  // must say so or a consumer doing `.toFixed()` crashes (was declared `number`).
+  daily: { date: string; tokens: number; estUsd: number | null; nativeUsd: number | null }[];
   movingAvg: { date: string; avgTokens: number }[];
   scaleEquivalents: { label: string; value: number; divisor: number; note: string }[];
-  totals: { tokens: number; estimatedUsd: number };
+  totals: { tokens: number; estimatedUsd: number | null };
 }
 
 // ── Phase 5 long-tail ───────────────────────────────────────────────────────

@@ -150,6 +150,34 @@ test("parseSession merges .db tokens with transcript tools under one session", a
   expect(session.endedAt).toBe("2026-01-01T00:00:05Z");
 });
 
+test("tokens-but-no-transcript: session still gets a non-NULL start (from .db mtime)", async () => {
+  // A conversation whose .db carries decoded tokens but has NO transcript. The
+  // transcript is the only source of started_at, so without a fallback the session
+  // row lands started_at NULL and is excluded from every rollup + range query — its
+  // exact tokens silently vanish. The .db mtime must backfill the window.
+  const baseDir = mkdtempSync(join(tmpdir(), "antigravity-cli-"));
+  const convId = "abcd1234-0000-0000-0000-000000000000";
+  mkdirSync(join(baseDir, "conversations"), { recursive: true });
+  const dbPath = join(baseDir, "conversations", `${convId}.db`);
+  const db = new Database(dbPath);
+  db.run("CREATE TABLE gen_metadata (idx integer, data blob, size integer)");
+  const g = genBlob({ f1: 1020, f2: 5000, f6: 24, f3: 300, f9: 250, f10: 50, model: "gemini-3-flash-a" });
+  db.query("INSERT INTO gen_metadata (idx, data, size) VALUES (?, ?, ?)").run(0, g, g.length);
+  db.close();
+  // No brain/<id>/.../transcript_full.jsonl is written.
+
+  const events = await collect(new AntigravityAdapter({ baseDir }), dbPath);
+  const session = events.find((e) => e.kind === "session") as Extract<NormalizedEvent, { kind: "session" }>;
+  const tokens = events.filter((e) => e.kind === "tokens") as Extract<NormalizedEvent, { kind: "tokens" }>[];
+  expect(tokens).toHaveLength(1);
+  expect(session).toBeDefined();
+  expect(session.startedAt).toBeTruthy();
+  expect(session.endedAt).toBeTruthy();
+  // Token events bucket to the same fallback timestamp as the session start.
+  expect(tokens[0]!.timestamp).toBe(session.startedAt!);
+  expect(Number.isFinite(Date.parse(session.startedAt!))).toBe(true);
+});
+
 test("parseSession emits nothing for an empty conversation (no tokens, no transcript)", async () => {
   const baseDir = mkdtempSync(join(tmpdir(), "antigravity-cli-"));
   const convId = "deadbeef-0000-0000-0000-000000000000";

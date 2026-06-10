@@ -48,8 +48,30 @@ try {
       .query("SELECT COUNT(*) AS c FROM activities WHERE event_type='sync_loop_heartbeat'")
       .get() as { c: number }
   ).c;
+  const lastBeat = (
+    db
+      .query("SELECT MAX(created_at) AS at FROM activities WHERE event_type='sync_loop_heartbeat'")
+      .get() as { at: string | null }
+  ).at;
   db.close();
   add("SQLite database", tables > 0 ? "ok" : "fail", `${DB_PATH} · ${tables} tables · ${beats} heartbeats`, true);
+
+  // Heartbeat AGE, not just count: a worker that died/zombied stops beating while
+  // the server keeps serving stale data. Critical-fail if the newest beat is older
+  // than 3 sync intervals (the worker missed multiple ticks).
+  const intervalMs = Number(process.env.CC_SYNC_INTERVAL_MS ?? 120_000);
+  const staleMs = intervalMs * 3;
+  if (lastBeat === null) {
+    add("Ingest worker", "warn", "no heartbeat yet (fresh DB or server not started)");
+  } else {
+    const ageMs = Date.now() - Date.parse(lastBeat);
+    const ageDesc = `last tick ${Math.round(ageMs / 1000)}s ago`;
+    if (Number.isFinite(ageMs) && ageMs <= staleMs) {
+      add("Ingest worker", "ok", ageDesc);
+    } else {
+      add("Ingest worker", "fail", `${ageDesc} — stale (> ${Math.round(staleMs / 1000)}s); worker may be dead`, true);
+    }
+  }
 } catch (err) {
   add("SQLite database", "fail", String(err), true);
 }
