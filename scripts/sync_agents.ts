@@ -156,6 +156,33 @@ const insertHeartbeat = db.prepare(
    VALUES ('sync_loop_heartbeat', ?, ?, ?)`,
 );
 
+// ── Retention sweep ─────────────────────────────────────────────────────────
+// Without this, otel_* and activities grow forever (~720 heartbeat rows/day plus
+// every telemetry event). The cutoff is computed as an ISO-Z string in JS and
+// compared against the RAW column: both received_at and created_at are stored via
+// toISOString(), so a raw lexical `< ?` is correct AND uses the received_at index.
+// (A naive `< datetime('now','-90 days')` would compare an ISO 'T…Z' string to a
+// space-separated 'YYYY-MM-DD HH:MM:SS' and silently match nothing — the #5 bug.)
+const RETENTION_DAYS = (() => {
+  const n = Number(process.env.CC_RETENTION_DAYS ?? 90);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 90;
+})();
+const delOtelEvents = db.prepare(`DELETE FROM otel_events WHERE received_at < ?`);
+const delOtelMetrics = db.prepare(`DELETE FROM otel_metrics WHERE received_at < ?`);
+const delOtelSpans = db.prepare(`DELETE FROM otel_spans WHERE received_at < ?`);
+const delActivities = db.prepare(`DELETE FROM activities WHERE created_at < ?`);
+const sweepRetention = db.transaction((cutoff: string) => {
+  delOtelEvents.run(cutoff);
+  delOtelMetrics.run(cutoff);
+  delOtelSpans.run(cutoff);
+  delActivities.run(cutoff);
+});
+
+// Distinguish "this source genuinely has no sessions" from "the directory just
+// disappeared / Full Disk Access was revoked": warn once when a previously
+// non-empty adapter glob goes empty, instead of silently reporting zero data.
+const lastFileCount = new Map<string, number>();
+
 // ── Per-session aggregation + write ─────────────────────────────────────────
 interface SessionAgg {
   input: number;
@@ -287,6 +314,11 @@ function reparseDecision(path: string): { reparse: boolean; liveActive: boolean 
 
 async function syncAdapter(adapter: AgentAdapter): Promise<number> {
   const files = await adapter.sessionGlob();
+  const prev = lastFileCount.get(adapter.agentId);
+  if (files.length === 0 && prev !== undefined && prev > 0) {
+    console.warn(`[sync] ${adapter.agentId}: source went from ${prev} files to 0 — directory removed or Full Disk Access revoked? (not the same as 'no sessions')`);
+  }
+  lastFileCount.set(adapter.agentId, files.length);
   let synced = 0;
   for (const path of files) {
     const { reparse, liveActive } = reparseDecision(path);
@@ -354,6 +386,16 @@ async function tick(): Promise<void> {
     }
   } finally {
     tickRunning = false;
+  }
+
+  // Retention sweep ~hourly (every 30 ticks at the 120s default) and on first
+  // boot — cheap range-deletes off the received_at/created_at indexes.
+  if (tickCount === 1 || tickCount % 30 === 0) {
+    try {
+      sweepRetention(new Date(Date.now() - RETENTION_DAYS * 86_400_000).toISOString());
+    } catch (err) {
+      console.error("[sync] retention sweep failed:", err);
+    }
   }
 
   const elapsedMs = Date.now() - startedMs;

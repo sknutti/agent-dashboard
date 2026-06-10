@@ -122,11 +122,14 @@ function ageSeconds(sql: string): number | null {
 app.get("/api/health", (c) => c.json({ ok: true, status: "ok" }));
 
 app.get("/api/system/health", (c) => {
+  // MAX of three per-table MAXes: each inner MAX(received_at) is a single index
+  // seek (idx_otel_*_received), vs. the old UNION-ALL of raw rows which scanned
+  // all three tables in full every 30s per connected client.
   const otelAge = ageSeconds(
-    `SELECT MAX(received_at) AS latest FROM (
-       SELECT received_at FROM otel_events
-       UNION ALL SELECT received_at FROM otel_metrics
-       UNION ALL SELECT received_at FROM otel_spans)`,
+    `SELECT MAX(latest) AS latest FROM (
+       SELECT MAX(received_at) AS latest FROM otel_events
+       UNION ALL SELECT MAX(received_at) FROM otel_metrics
+       UNION ALL SELECT MAX(received_at) FROM otel_spans)`,
   );
   const syncAge = ageSeconds(
     `SELECT MAX(created_at) AS latest FROM activities WHERE event_type = 'sync_loop_heartbeat'`,

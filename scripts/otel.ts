@@ -85,6 +85,27 @@ function asBoolInt(x: unknown): number | null {
   return null;
 }
 
+// OTLP resource service.name (or an explicit agent attr) → our agent id. Claude
+// Code sets service.name="claude-code"; other emitters (pi-otel, codex) carry
+// their own. Hardcoding "claude_code" here misattributes every non-Claude event
+// with NO error — Pi's cost/usage would silently land under Claude. Defaults to
+// claude_code (the only emitter wired today) so existing data is unchanged.
+const SERVICE_TO_AGENT: Record<string, string> = {
+  "claude-code": "claude_code",
+  claude_code: "claude_code",
+  pi: "pi",
+  "pi-otel": "pi",
+  codex: "codex",
+  antigravity: "antigravity",
+};
+function agentOf(attrs: Record<string, unknown>): string {
+  const explicit = asStr(pick(attrs, "agent", "agent.id", "agent_id"));
+  if (explicit && Object.values(SERVICE_TO_AGENT).includes(explicit)) return explicit;
+  const svc = asStr(pick(attrs, "service.name", "service_name"));
+  if (svc && SERVICE_TO_AGENT[svc]) return SERVICE_TO_AGENT[svc];
+  return "claude_code";
+}
+
 export function ingestLogs(db: Database, body: any): IngestResult {
   const insert = db.prepare(/* sql */ `
     INSERT INTO otel_events (
@@ -111,6 +132,10 @@ export function ingestLogs(db: Database, body: any): IngestResult {
   let received = 0;
   let dropped = 0;
 
+  // One transaction per batch: a 500-record batch was 500 fsync commits, since
+  // each insert.run auto-commits outside a txn. Per-row try/catch stays inside so
+  // a single bad record still only drops itself (its run() threw before writing).
+  const runBatch = db.transaction(() => {
   for (const rl of body?.resourceLogs ?? []) {
     const resAttrs = flattenAttrs(rl?.resource?.attributes);
     for (const sl of rl?.scopeLogs ?? []) {
@@ -123,7 +148,7 @@ export function ingestLogs(db: Database, body: any): IngestResult {
 
           insert.run({
             $event_name: eventName,
-            $agent: "claude_code",
+            $agent: agentOf(a),
             $session_id: asStr(pick(a, "session.id", "session_id")),
             $prompt_id: asStr(pick(a, "prompt_id", "prompt.id")),
             $timestamp:
@@ -170,6 +195,8 @@ export function ingestLogs(db: Database, body: any): IngestResult {
       }
     }
   }
+  });
+  runBatch();
   return { received, dropped };
 }
 
@@ -183,6 +210,7 @@ export function ingestMetrics(db: Database, body: any): IngestResult {
   let received = 0;
   let dropped = 0;
 
+  const runBatch = db.transaction(() => {
   for (const rm of body?.resourceMetrics ?? []) {
     const resAttrs = flattenAttrs(rm?.resource?.attributes);
     for (const sm of rm?.scopeMetrics ?? []) {
@@ -211,7 +239,7 @@ export function ingestMetrics(db: Database, body: any): IngestResult {
               $metric_name: asStr(m?.name),
               $metric_type: kind.type,
               $value: value,
-              $agent: "claude_code",
+              $agent: agentOf(a),
               $session_id: asStr(pick(a, "session.id", "session_id")),
               $model: asStr(pick(a, "model")),
               $attributes: JSON.stringify(a),
@@ -227,6 +255,8 @@ export function ingestMetrics(db: Database, body: any): IngestResult {
       }
     }
   }
+  });
+  runBatch();
   return { received, dropped };
 }
 
@@ -242,6 +272,7 @@ export function ingestTraces(db: Database, body: any): IngestResult {
   let received = 0;
   let dropped = 0;
 
+  const runBatch = db.transaction(() => {
   for (const rs of body?.resourceSpans ?? []) {
     const resAttrs = flattenAttrs(rs?.resource?.attributes);
     for (const ss of rs?.scopeSpans ?? []) {
@@ -259,7 +290,7 @@ export function ingestTraces(db: Database, body: any): IngestResult {
             $trace_id: asStr(sp?.traceId),
             $parent_span_id: asStr(sp?.parentSpanId),
             $name: asStr(sp?.name),
-            $agent: "claude_code",
+            $agent: agentOf(a),
             $session_id: asStr(pick(a, "session.id", "session_id")),
             $start_time: nanoToIso(sp?.startTimeUnixNano),
             $end_time: nanoToIso(sp?.endTimeUnixNano),
@@ -275,5 +306,7 @@ export function ingestTraces(db: Database, body: any): IngestResult {
       }
     }
   }
+  });
+  runBatch();
   return { received, dropped };
 }

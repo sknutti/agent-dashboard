@@ -204,28 +204,38 @@ export function registerApiRoutes(app: Hono): void {
     if (!file) return c.json({ error: "not found" }, 404);
 
     return streamSSE(c, async (stream) => {
-      // Emit the last ~300 lines, then tail appended lines until disconnect.
-      let offset = 0;
-      const emitFrom = async (tailOnly: boolean) => {
-        const text = await Bun.file(file).text();
-        const all = text.split("\n").filter((l) => l.length > 0);
-        const start = tailOnly ? 0 : Math.max(0, all.length - 300);
-        for (let i = offset > 0 ? offset : start; i < all.length; i++) {
-          await stream.writeSSE({ data: all[i]!, event: "line" });
+      // Tail by BYTE offset, reading only the appended range each poll. The old
+      // code re-read the ENTIRE file (Bun.file().text() + split) every 1.5s per
+      // viewer on the synchronous main thread — a multi-MB transcript stalled the
+      // event loop on every tick. `carry` holds a trailing partial line (a session
+      // mid-write may append a half line) until its newline arrives next poll.
+      let bytePos = 0;
+      let carry = "";
+      const emit = async (initial: boolean) => {
+        const size = statSync(file).size;
+        if (size <= bytePos) return;
+        const slice = await Bun.file(file).slice(bytePos, size).text();
+        bytePos = size;
+        const lines = (carry + slice).split("\n");
+        carry = lines.pop() ?? ""; // last chunk is "" (ended on \n) or a partial line
+        // On connect, only replay the last ~300 complete lines (one full read);
+        // subsequent polls read just the new bytes.
+        const toEmit = initial && lines.length > 300 ? lines.slice(-300) : lines;
+        for (const line of toEmit) {
+          if (line.length > 0) await stream.writeSSE({ data: line, event: "line" });
         }
-        offset = all.length;
       };
-      await emitFrom(false);
-      // Poll for growth (mtime-cheap) up to 5 minutes. A keepalive on every idle
-      // tick keeps bytes flowing < Bun.serve's 10s idleTimeout, which would
-      // otherwise close a quiet session mid-stream (same bug as /api/firehose —
-      // see gotchas). The client only listens for `line` events, ignoring these.
+      await emit(true);
+      // Poll up to 5 minutes. A keepalive on every idle tick keeps bytes flowing
+      // < Bun.serve's 10s idleTimeout, which would otherwise close a quiet session
+      // mid-stream (same bug as /api/firehose — see gotchas). The client only
+      // listens for `line` events, ignoring these.
       for (let i = 0; i < 200 && !stream.aborted; i++) {
         await stream.sleep(1500);
         try {
-          const before = offset;
-          if (statSync(file).size > 0) await emitFrom(true);
-          if (offset === before) await stream.writeSSE({ data: "", event: "keepalive" });
+          const before = bytePos;
+          await emit(false);
+          if (bytePos === before) await stream.writeSSE({ data: "", event: "keepalive" });
         } catch {
           break;
         }

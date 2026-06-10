@@ -183,6 +183,9 @@ CREATE TABLE IF NOT EXISTS otel_metrics (
   received_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_otel_metrics_name ON otel_metrics (metric_name);
+-- /api/system/health reads MAX(received_at) across events+metrics+spans every 30s
+-- per client; without a received_at index on each, that is three full scans.
+CREATE INDEX IF NOT EXISTS idx_otel_metrics_received ON otel_metrics (received_at);
 
 -- OTLP trace spans (beta; guard against schema drift). Attributes kept as JSON.
 CREATE TABLE IF NOT EXISTS otel_spans (
@@ -200,6 +203,7 @@ CREATE TABLE IF NOT EXISTS otel_spans (
   received_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_otel_spans_trace ON otel_spans (trace_id);
+CREATE INDEX IF NOT EXISTS idx_otel_spans_received ON otel_spans (received_at);
 
 -- Append-only system/activity log. Phase 0 writes 'sync_loop_heartbeat'.
 CREATE TABLE IF NOT EXISTS activities (
