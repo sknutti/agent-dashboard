@@ -47,6 +47,14 @@ The agent-agnostic substrate every Agent rides on: the multi-agent schema, the A
 **Phase**:
 One self-contained delivery slice, documented in its own file under `docs/phases/`. Phase 0 = Foundation; Phases 1–4 = one Agent each (Claude → Codex → Pi → Antigravity); Phase 5 = Operations layer.
 
+**Error**:
+A single failed tool call within a session — a `tool_result` the Agent marked `is_error` (a command that exit-coded non-zero, an Edit whose match failed, etc.). Code-actionable: it has a locatable point in the transcript, a failing tool input, and captured error text. Counted as `error_count`; the `errored` outcome means `error_count > 0`.
+_Avoid_: using "error" for session-level operational stoppages (those are a Failure).
+
+**Failure**:
+The umbrella for any session that didn't finish cleanly — the union of three disjoint **outcomes**: `errored` (has Errors), `rate_limited` (hit a provider rate limit), and `truncated` (cut off at the token limit). Rate-limited and truncated Failures carry **no** Error — there's no failed tool call to point at, just a session-level signal. The Failures panel lists all three; the Errors view only opens windows on `errored` Failures.
+_Avoid_: treating "Failure" and "Error" as synonyms — every Error implies a Failure, but not every Failure has an Error.
+
 ## Relationships
 
 - The **Foundation** defines the **Adapter** seam; each **Agent** contributes exactly one **Adapter**.
@@ -65,3 +73,4 @@ One self-contained delivery slice, documented in its own file under `docs/phases
 ## Flagged ambiguities
 
 - "the dashboard" was used to mean both the whole product and the read-only Observability half — resolved: **Observability layer** vs **Operations layer** are distinct, and Phase ordering deliberately ships all Observability (Phases 0–4) before any Operations (Phase 5).
+- "error" vs "failure" were used interchangeably (the Failures panel spans crashes/rate-limits/truncations, while the AgentCard "errors" cell counts only `error_count`) — resolved: an **Error** is one failed tool call (code-actionable); a **Failure** is any unclean session outcome (`errored` · `rate_limited` · `truncated`). The Errors view anchors context windows only on **Errors**; rate-limited/truncated **Failures** show a one-line explanation and defer to the Messages feed.
