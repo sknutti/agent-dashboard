@@ -1,17 +1,26 @@
 <script lang="ts">
   import Icon from "../lib/components/ui/Icon.svelte";
   import SessionFeed from "../lib/components/panels/SessionFeed.svelte";
+  import SessionErrors from "../lib/components/panels/SessionErrors.svelte";
   import { getSessionDetail } from "../lib/api";
   import { resource } from "../lib/resource.svelte";
   import { compact, homeDir, relTime} from "../lib/format";
   import { AGENT_NAMES } from "../lib/registry.svelte";
-  import { navigate } from "../lib/router.svelte";
+  import { navigate, router, tabFromSearch } from "../lib/router.svelte";
 
   let { id }: { id: string } = $props();
 
   const res = resource(() => `session:${id}`, () => getSessionDetail(id));
   const session = $derived(res.data?.session ?? null);
   const agentName = $derived(session ? (AGENT_NAMES[session.agent] ?? session.agent) : "");
+
+  // Active tab tracks the URL query, so deep-links (?tab=errors) and browser
+  // back/forward both Just Work — clicking a tab pushes the query and this
+  // recomputes. Default is Messages (the complete, in-order live feed).
+  const activeTab = $derived(tabFromSearch(router.search));
+  function selectTab(tab: "errors" | "messages"): void {
+    navigate(`/session/${id}`, tab === "errors" ? "?tab=errors" : "?tab=messages");
+  }
 </script>
 
 <div class="session-page">
@@ -40,8 +49,27 @@
     {/if}
   </header>
 
+  <div class="tabs" role="tablist" aria-label="Session view">
+    <button
+      class="tab" role="tab" aria-selected={activeTab === "errors"}
+      class:active={activeTab === "errors"} onclick={() => selectTab("errors")}>
+      Errors
+    </button>
+    <button
+      class="tab" role="tab" aria-selected={activeTab === "messages"}
+      class:active={activeTab === "messages"} onclick={() => selectTab("messages")}>
+      Messages
+    </button>
+  </div>
+
   <div class="feed-wrap">
-    <SessionFeed sessionId={id} fill />
+    {#if activeTab === "errors"}
+      <SessionErrors sessionId={id} />
+    {:else}
+      <!-- Messages stays the UNCHANGED, complete live tail. Mounted only while
+           active; it re-tails on mount (its own SSE lifecycle, ADR-0005). -->
+      <SessionFeed sessionId={id} fill />
+    {/if}
   </div>
 </div>
 
@@ -109,6 +137,28 @@
   }
   .pill.model { color: var(--cyan); border-color: color-mix(in srgb, var(--cyan) 35%, var(--border)); }
   .pill.tok { color: var(--text-dim); }
+  .tabs {
+    flex: none;
+    display: flex;
+    gap: 4px;
+    padding: 0 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tab {
+    padding: 10px 14px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: none;
+    color: var(--text-subtle);
+    font-size: 13px;
+    font-weight: 560;
+    transition: color 0.15s var(--ease);
+  }
+  .tab:hover { color: var(--text-dim); }
+  .tab.active {
+    color: var(--text);
+    border-bottom-color: var(--cyan);
+  }
   .feed-wrap {
     flex: 1;
     min-height: 0;
