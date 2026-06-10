@@ -42,10 +42,25 @@
   `ended_at IS NULL` | mtime > synced_at — keys on FILE BASENAME == session_id, so
   antigravity (.db basename ≠ conv-id) never short-circuits → re-parses every tick
   (harmless; see [[gotchas]]).
-- `routes.ts` (Phase 1) — all `/api/*` reads (master §16): summary, agents, sessions(+detail),
-  live(+SSE stream), usage/tokens, usage/cache, tools/latency, sessions/outcomes,
-  mcp(+/{server}/tools), burn(+PATCH). Local-time bucketing; range today/7d/30d/90d.
-  `mcpCalls()` does OTEL-first / JSONL-fallback (parses `mcp__server__tool`).
+- `routes.ts` (Phase 1; Phase 5 long-tail added) — all `/api/*` reads (master §16):
+  summary, agents, sessions(+detail, +`q`/`source` search [P5]), live(+SSE stream),
+  usage/tokens, usage/cache, tools/latency, sessions/outcomes, mcp(+/{server}/tools),
+  burn(+PATCH). Local-time bucketing; range today/7d/30d/90d. `mcpCalls()` does
+  OTEL-first / JSONL-fallback (parses `mcp__server__tool`). **Phase 5 routes:**
+  sessions/by-project (cwd rollup), tools/agent-fanout (Agent/Task tool), tools/edit-
+  decisions (tool_decision OTEL → lowSample), hooks/activity (start/complete FIFO pair,
+  60s cap), activity/productivity (commit/PR/LoC delta counters), system/pressure (retry
+  exhaustion ≥CLAUDE_CODE_MAX_RETRIES + compaction + api errors), activity/patterns
+  (30d session heatmap + 14d token-by-model), firehose (SSE replay+tail, keepalive — see
+  [[gotchas]]), activity/top-skills (Skill-tool count; per-skill needs OTEL), activity/
+  failures (errored/rate_limited/truncated sessions), skills (GET lazy-sync/POST sync/
+  PATCH autonomy), context/health (settings.json+CLAUDE.md scan, counts only), mcp/measure
+  (observed servers+tool counts; schema bytes need live handshake). `parseAttrs()` helper.
+- `skills.ts` (Phase 5) — read-only SKILL.md scanner → `skills` table. `scanSkills(cwd)`
+  globs ~/.claude/skills (ide:global), <cwd>/.claude/skills (ide:project), ~/.claude/
+  plugins/**(cowork:plugin); parses frontmatter (name/description), counts non-SKILL.md
+  files. `syncSkills()` UPSERTs preserving user `autonomy_level`, prunes deleted. 105 on
+  this machine (plugin glob catches marketplace sources).
 - `otel.ts` — OTLP/HTTP JSON ingest (logs/metrics/traces); always 200; per-row try/catch.
 - `setup_otel.ts` (Phase 1) — wizard: backs up `~/.claude/settings.json`, adds only the 6
   missing OTEL env keys, never overwrites. `--dry-run` / `--revert` / `--port`.
@@ -59,8 +74,21 @@
   drill cells), TokenUsagePanel, BurnPanel (log heatmap + scale-equivalents + MA table),
   CachePanel, OutcomesPanel, ToolLatencyPanel, SavingsPanel, McpPanel (centerpiece, lazy
   per-tool expand), LiveSessionsPanel + LiveSessionRow (SSE raw feed), DrillSheet (list→detail).
-- Routes: `Command.svelte` (agent-first grid + sections), `Skills.svelte` (MCP panel),
-  `Activity.svelte` (Phase 5 long-tail, still empty states). `App.svelte` mounts `DrillSheet`.
+  **Phase 5 panels:** ProjectBreakdown, AgentFanout, EditAcceptance, HookActivity,
+  Productivity, Pressure (Command obs section); Patterns (heatmap+token charts, client
+  builds local-date axis), Firehose (SSE via `createFirehose`), TopSkills, Failures,
+  SessionsTable (search+chips+pagination) (Activity); ContextHealth, SkillsRegistry
+  (search+env chips+autonomy select+re-sync), SkillEconomics, McpSchema (Skills).
+- `lib/firehose.svelte.ts` (Phase 5) — `createFirehose()` hook: EventSource + id-dedupe,
+  the one legit `$effect` (external system), closed on teardown.
+- Routes: `Command.svelte` (agent grid + obs section, Phase 5 long-tail wired),
+  `Activity.svelte` (Patterns/Firehose/TopSkills+Failures/AllSessions + range head),
+  `Skills.svelte` (MCP+schema / economics / context-health+registry). `App.svelte` mounts `DrillSheet`.
+- **Data reality (Phase 5):** rich = ProjectBreakdown/AgentFanout/Patterns/Failures/
+  AllSessions/SkillsRegistry/ContextHealth (JSONL+filesystem). Honest empty/low-sample =
+  EditAcceptance/Productivity/Pressure/HookActivity/Firehose/TopSkills/SkillEconomics
+  (need Claude OTEL, near-empty until telemetry runs). Per-skill cost/name unattributed
+  (Skill tool input not persisted; needs `skill_name` OTEL attr).
 
 ## Config
 - `config/prices.yaml` — real Anthropic rack rates (source/date noted). `config/agents.yaml` —

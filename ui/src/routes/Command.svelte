@@ -10,6 +10,12 @@
   import OutcomesPanel from "../lib/components/panels/OutcomesPanel.svelte";
   import ToolLatencyPanel from "../lib/components/panels/ToolLatencyPanel.svelte";
   import SavingsPanel from "../lib/components/panels/SavingsPanel.svelte";
+  import ProjectBreakdownPanel from "../lib/components/panels/ProjectBreakdownPanel.svelte";
+  import AgentFanoutPanel from "../lib/components/panels/AgentFanoutPanel.svelte";
+  import HookActivityPanel from "../lib/components/panels/HookActivityPanel.svelte";
+  import EditAcceptancePanel from "../lib/components/panels/EditAcceptancePanel.svelte";
+  import ProductivityPanel from "../lib/components/panels/ProductivityPanel.svelte";
+  import PressurePanel from "../lib/components/panels/PressurePanel.svelte";
   import { getAgents } from "../lib/api";
   import { resource } from "../lib/resource.svelte";
   import { ui, setRange } from "../lib/stores.svelte";
@@ -54,7 +60,7 @@
     </div>
   </CollapsibleSection>
 
-  <CollapsibleSection id="observability" title="Observability" subtitle="latency · cache · outcomes · savings">
+  <CollapsibleSection id="observability" title="Observability" subtitle="latency · cache · outcomes · projects · subagents · pressure">
     <div class="grid-2">
       <CachePanel />
       <OutcomesPanel />
@@ -62,6 +68,18 @@
     <div class="grid-2">
       <ToolLatencyPanel />
       <SavingsPanel />
+    </div>
+    <div class="grid-2">
+      <ProjectBreakdownPanel />
+      <AgentFanoutPanel />
+    </div>
+    <div class="grid-2">
+      <HookActivityPanel />
+      <EditAcceptancePanel />
+    </div>
+    <div class="grid-2">
+      <ProductivityPanel />
+      <PressurePanel />
     </div>
   </CollapsibleSection>
 </div>

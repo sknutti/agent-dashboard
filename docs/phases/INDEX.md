@@ -18,7 +18,7 @@ This is the mapping index for the phased build of the multi-agent observability 
 | ⬜ | **2 — Codex** | Planned | |
 | ⬜ | **3 — Pi** | Planned | |
 | ⬜ | **4 — Antigravity** | Planned | model-id risk → cost may stay NULL |
-| ⬜ | **5 — Long-tail** | Planned | |
+| ✅ | **5 — Long-tail** | Done | 13 routes + skills scanner + SSE firehose + 15 panels across all 3 pages; rich where data exists, honest empty/low-sample for OTEL-thin panels. Firehose SSE idle-timeout bug fixed (keepalive + id-dedupe). QA-verified, 0 console errors, tests 10/10, no core regression. |
 | ⬜ | **6 — Operations** | Planned | sub-sliced ↓ |
 | ⬜ | &nbsp;&nbsp;6a — Dispatch spine + safety | Planned | emergency stop ships here |
 | ⬜ | &nbsp;&nbsp;6b — Schedules | Planned | classic dispatch |

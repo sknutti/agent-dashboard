@@ -164,6 +164,22 @@
   `trajectory_metadata_blob` `file://` URI (decode via the same protobuf reader for
   exact length-delimited bounds; greedy regex over-captures the next tag byte).
 
+## SSE streams die at 10s: Bun.serve idleTimeout closes idle connections (Phase 5)
+- An SSE route that replays a backlog then goes quiet (sleeping, writing nothing)
+  is closed by `Bun.serve` after its default **10s `idleTimeout`** → the browser
+  reports `net::ERR_INCOMPLETE_CHUNKED_ENCODING`, EventSource auto-reconnects,
+  the server re-replays its backlog, and (if the `{#each}` keys on event id) the
+  re-arriving rows trigger a **`each_key_duplicate`** error burst. One root cause
+  (idle close), two symptoms (reconnect storm + dup keys). Diagnosed via the
+  server log line `[Bun.serve]: request timed out after 10 seconds`.
+- Fix: write a **keepalive every loop tick** (`/api/firehose` sends
+  `{event:"keepalive"}` each 1.5s idle tick) so bytes keep flowing < 10s; writes
+  reset the idle timer. Plus client-side **dedupe by id** in `firehose.svelte.ts`
+  (a `Set` of seen ids) so any future reconnect replay can't dup keys.
+- **Same shape, also fixed:** `/api/sessions/live/:sid/stream` (Phase 1) only
+  wrote when the JSONL file grew — a session idle >10s dropped identically. Now
+  carries the same idle-tick keepalive (offset-unchanged → emit keepalive).
+
 ## Schema init ownership: getDb() inits, openDb() does NOT
 - `scripts/db.ts`: `openDb()` only opens a WAL connection; `getDb()` opens +
   runs `initSchema()` (thread-local singleton). Any entrypoint that touches the

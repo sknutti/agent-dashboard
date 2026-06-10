@@ -68,7 +68,25 @@ Stack: Bun + Hono + bun:sqlite (WAL) + Svelte 5 SPA (ADR-0001). Built in phases
   tick (harmless); (3) f9/f10 split is disjoint so total=input+f3 stays the verification
   anchor, labels inferred. **Data-recency:** unlike Pi, Antigravity data is Jun 5–8 (within
   7d of today) → it DOES render on the Command page agent grid + token-usage, not just Burn.
-  Next: Phase 5 (long-tail agents) or Phase 6 (operations).
+- Phase 5 ✅ Done — long-tail panels across all 3 pages, built multi-agent from the start.
+  **13 new routes** in `routes.ts` + `scripts/skills.ts` (SKILL.md scanner) + `firehose.svelte.ts`
+  (SSE hook) + 15 panels (see [[codebase-map]]). The **adapter seam was untouched** (Phase 5 is
+  pure read-side); no schema changes (all P5 tables existed since Phase 0). Stop conditions all
+  pass. Split cleanly by DATA REALITY, not by spec section: **rich** (real data) = Project
+  breakdown (125 cwd), Agent fan-out (Agent/Task tool), Patterns (523-session heatmap + 14d
+  token-by-model), Failures (101 errored), All-sessions (search+chips+pagination), Skills
+  registry (105 skills, autonomy PATCH persists), Context health (settings.json+CLAUDE.md scan);
+  **honest empty/low-sample** = Edit-acceptance, Productivity, Pressure, Hook activity, Firehose,
+  Top skills, Skill economics — all need Claude OTEL, near-empty until telemetry runs (stop
+  cond: "real data OR proper empty states" — satisfied). Per-skill cost/name is UNATTRIBUTED
+  (Skill tool input not persisted → needs `skill_name` OTEL attr; surface exact invocation
+  count, never a fake breakdown). MCP schema bytes need a live handshake (out of this read-only
+  build) → report observed tool counts only. ONE real bug found+fixed in QA: the firehose SSE
+  died at 10s on Bun.serve's idleTimeout → keepalive + client id-dedupe (see [[gotchas]]); the
+  Phase-1 live-stream route had the same bug — fixed with the same keepalive. Verified via 3 playwright-
+  bowser passes: all panels render, filters/search/pagination/autonomy work, firehose holds 18s
+  with **0 console errors** (was 190+), tests 10/10, no core-panel regression.
+  Next: Phase 6 (operations, sub-sliced 6a–6d) — the Claude-only ops axis.
 - Verify the app by running the server (`bun start`) + a `claude -p` probe to generate OTEL,
   then screenshot via a playwright-bowser agent. I (Claude) can't restart my own CC session.
 

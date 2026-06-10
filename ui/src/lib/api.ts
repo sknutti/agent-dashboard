@@ -138,6 +138,126 @@ export interface Burn {
   totals: { tokens: number; estimatedUsd: number };
 }
 
+// ── Phase 5 long-tail ───────────────────────────────────────────────────────
+
+export interface ProjectBreakdown {
+  range: string;
+  total: { sessions: number; eff: number };
+  projects: { cwd: string; sessions: number; tokens: number; eff: number; tools: number; share: number }[];
+}
+
+export interface AgentFanout {
+  range: string;
+  totalCalls: number;
+  sessions: { session_id: string; agent: string; title: string | null; cwd: string | null; started_at: string | null; agentCalls: number }[];
+}
+
+export interface EditDecisions {
+  range: string;
+  total: number;
+  accepted: number;
+  rejected: number;
+  acceptRate: number | null;
+  lowSample: boolean;
+  byTool: { tool: string; accepted: number; rejected: number; acceptRate: number | null }[];
+}
+
+export interface HookActivity {
+  range: string;
+  totalFires: number;
+  paired: number;
+  avgMs: number | null;
+  p50Ms: number | null;
+  hooks: { hook: string; fires: number }[];
+  daily: { date: string; fires: number }[];
+}
+
+export interface Productivity {
+  range: string;
+  commits: number;
+  pullRequests: number;
+  linesAdded: number;
+  linesRemoved: number;
+  empty: boolean;
+  daily: { date: string; added: number; removed: number; commits: number; prs: number }[];
+}
+
+export interface Pressure {
+  range: string;
+  threshold: number;
+  retryExhaustion: number;
+  compaction: number;
+  apiErrors: { timestamp: string; model: string | null; status_code: number | null; attempt_count: number | null; error_message: string | null }[];
+}
+
+export interface Patterns {
+  window: number;
+  days: { date: string; sessions: number; tokens: number; agents: Record<string, number> }[];
+  maxSessions: number;
+  agents: AgentId[];
+  tokenSeries: { date: string; model: string; tokens: number }[];
+}
+
+export interface TopSkills {
+  range: string;
+  invocations: number;
+  attributed: { skill: string; uses: number }[];
+}
+
+export interface Failures {
+  range: string;
+  total: number;
+  failures: {
+    session_id: string; agent: string; model: string | null; title: string | null;
+    cwd: string | null; started_at: string | null; error_count: number | null;
+    rate_limit_hit: number | null; stop_reason: string | null; outcome: string;
+  }[];
+}
+
+export interface OtelEvent {
+  id: number;
+  event_name: string;
+  session_id: string | null;
+  model: string | null;
+  tool_name: string | null;
+  timestamp: string | null;
+  received_at: string;
+}
+
+// ── Phase 5c skills & MCP ─────────────────────────────────────────────────
+
+export interface SkillRow {
+  name: string;
+  environment: string;
+  description: string | null;
+  path: string;
+  autonomy_level: string | null;
+  user_invocable: number | null;
+  script_count: number | null;
+  last_modified: string | null;
+}
+
+export interface SkillsRegistry {
+  total: number;
+  skills: SkillRow[];
+  facets: { environment: string; n: number }[];
+}
+
+export interface ContextHealth {
+  settings: {
+    exists: boolean; bytes: number; hooks: number;
+    permissions: { allow: number; ask: number; deny: number };
+    envKeys: number; mcpServers: number;
+  };
+  claudeMd: { exists: boolean; bytes: number; lines: number; directives: number };
+}
+
+export interface McpMeasure {
+  range: string;
+  servers: { server: string; tools: number; schemaTokens: number | null; measured: boolean }[];
+  note: string;
+}
+
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: { accept: "application/json" } });
   if (!res.ok) throw new Error(`${path} -> ${res.status}`);
@@ -147,12 +267,19 @@ async function getJson<T>(path: string): Promise<T> {
 export const getSystemHealth = () => getJson<SystemHealth>("/api/system/health");
 export const getSummary = () => getJson<Summary>("/api/summary");
 export const getAgents = (range: Range) => getJson<{ range: string; agents: AgentCardData[] }>(`/api/agents?range=${range}`);
-export const getSessions = (q: { range?: Range; agent?: string; outcome?: string; limit?: number }) => {
+export const getSessions = (q: {
+  range?: Range; agent?: string; outcome?: string; model?: string; source?: string;
+  q?: string; limit?: number; offset?: number;
+}) => {
   const p = new URLSearchParams();
   if (q.range) p.set("range", q.range);
   if (q.agent) p.set("agent", q.agent);
   if (q.outcome) p.set("outcome", q.outcome);
+  if (q.model) p.set("model", q.model);
+  if (q.source) p.set("source", q.source);
+  if (q.q) p.set("q", q.q);
   if (q.limit) p.set("limit", String(q.limit));
+  if (q.offset) p.set("offset", String(q.offset));
   return getJson<{ total: number; limit: number; offset: number; sessions: SessionRow[] }>(`/api/sessions?${p}`);
 };
 export const getSessionDetail = (id: string) => getJson<SessionDetail>(`/api/sessions/${id}/details`);
@@ -170,3 +297,39 @@ export const getMcpTools = (server: string, range: Range) =>
   getJson<McpTools>(`/api/mcp/${encodeURIComponent(server)}/tools?range=${range}`);
 export const getBurn = (range: "30d" | "90d", agent?: string) =>
   getJson<Burn>(`/api/burn?range=${range}${agent ? `&agent=${agent}` : ""}`);
+
+// Phase 5 long-tail fetchers.
+export const getProjectBreakdown = (range: Range, agent?: string) =>
+  getJson<ProjectBreakdown>(`/api/sessions/by-project?range=${range}${agent ? `&agent=${agent}` : ""}`);
+export const getAgentFanout = (range: Range, agent?: string) =>
+  getJson<AgentFanout>(`/api/tools/agent-fanout?range=${range}${agent ? `&agent=${agent}` : ""}`);
+export const getEditDecisions = (range: Range, agent?: string) =>
+  getJson<EditDecisions>(`/api/tools/edit-decisions?range=${range}${agent ? `&agent=${agent}` : ""}`);
+export const getHookActivity = (range: Range) => getJson<HookActivity>(`/api/hooks/activity?range=${range}`);
+export const getProductivity = (range: Range) => getJson<Productivity>(`/api/activity/productivity?range=${range}`);
+export const getPressure = (range: Range) => getJson<Pressure>(`/api/system/pressure?range=${range}`);
+
+// Phase 5b activity fetchers.
+export const getPatterns = (agent?: string) =>
+  getJson<Patterns>(`/api/activity/patterns${agent ? `?agent=${agent}` : ""}`);
+export const getTopSkills = (range: Range) => getJson<TopSkills>(`/api/activity/top-skills?range=${range}`);
+export const getFailures = (range: Range, agent?: string) =>
+  getJson<Failures>(`/api/activity/failures?range=${range}${agent ? `&agent=${agent}` : ""}`);
+
+// Phase 5c skills & MCP fetchers.
+export const getSkills = (environment?: string, userInvocable?: string) => {
+  const p = new URLSearchParams();
+  if (environment) p.set("environment", environment);
+  if (userInvocable) p.set("user_invocable", userInvocable);
+  return getJson<SkillsRegistry>(`/api/skills${p.toString() ? `?${p}` : ""}`);
+};
+export const syncSkills = () =>
+  fetch("/api/skills/sync", { method: "POST" }).then((r) => r.json() as Promise<{ ok: boolean; synced: number }>);
+export const setSkillAutonomy = (name: string, autonomy_level: string) =>
+  fetch(`/api/skills/${encodeURIComponent(name)}/autonomy`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ autonomy_level }),
+  }).then((r) => r.json());
+export const getContextHealth = () => getJson<ContextHealth>("/api/context/health");
+export const getMcpMeasure = (range: Range) => getJson<McpMeasure>(`/api/mcp/measure?range=${range}`);

@@ -1,42 +1,37 @@
 <script lang="ts">
-  import Card from "../lib/components/ui/Card.svelte";
   import CollapsibleSection from "../lib/components/ui/CollapsibleSection.svelte";
-  import EmptyState from "../lib/components/ui/EmptyState.svelte";
+  import RangeToggle from "../lib/components/ui/RangeToggle.svelte";
+  import PatternsPanel from "../lib/components/panels/PatternsPanel.svelte";
+  import FirehosePanel from "../lib/components/panels/FirehosePanel.svelte";
+  import TopSkillsPanel from "../lib/components/panels/TopSkillsPanel.svelte";
+  import FailuresPanel from "../lib/components/panels/FailuresPanel.svelte";
+  import SessionsTablePanel from "../lib/components/panels/SessionsTablePanel.svelte";
+  import { ui, setRange } from "../lib/stores.svelte";
 </script>
 
 <div class="page">
-  <CollapsibleSection id="patterns" title="Patterns" subtitle="when and how you work">
-    <div class="grid-2">
-      <Card title="Activity heatmap" icon="activity" kicker="30-day grid">
-        <EmptyState icon="activity" title="No activity yet" message="A GitHub-style grid lights up per day, per agent, as sessions accrue." />
-      </Card>
-      <Card title="Token charts" icon="cpu" kicker="14-day, by model">
-        <EmptyState icon="cpu" title="No token history" message="Stacked daily token charts by model and agent." />
-      </Card>
-    </div>
+  <div class="page-head">
+    <p class="kicker">Activity · {ui.range}</p>
+    <RangeToggle value={ui.range} onChange={setRange} />
+  </div>
+
+  <CollapsibleSection id="patterns" title="Patterns" subtitle="when and how you work — fixed 30-day window">
+    <PatternsPanel />
   </CollapsibleSection>
 
   <CollapsibleSection id="firehose" title="Telemetry firehose" subtitle="raw OTEL events as they arrive">
-    <Card title="OTEL firehose" icon="zap" kicker="live feed">
-      <EmptyState icon="zap" title="Waiting for telemetry" message="Once Claude Code OTEL is enabled, every event streams here filterable by name. The ingest endpoints are already live." />
-    </Card>
+    <FirehosePanel />
   </CollapsibleSection>
 
   <CollapsibleSection id="skills-failures" title="Top skills & failures">
     <div class="grid-2">
-      <Card title="Top skills" icon="sparkles" kicker="most used">
-        <EmptyState icon="sparkles" title="No skill usage" message="Most-invoked skills with their token cost." />
-      </Card>
-      <Card title="Failures" icon="alert" kicker="crashed sessions">
-        <EmptyState icon="alert" title="No failures" message="Crashed sessions and their error messages land here." />
-      </Card>
+      <TopSkillsPanel />
+      <FailuresPanel />
     </div>
   </CollapsibleSection>
 
-  <CollapsibleSection id="all-sessions" title="All sessions" subtitle="searchable, filterable">
-    <Card title="All sessions" icon="layers" kicker="every agent">
-      <EmptyState icon="layers" title="No sessions yet" message="A searchable, paginated table filterable by range, agent, source, and model." />
-    </Card>
+  <CollapsibleSection id="all-sessions" title="All sessions" subtitle="searchable, filterable, across all four agents">
+    <SessionsTablePanel />
   </CollapsibleSection>
 </div>
 
@@ -45,6 +40,12 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+  }
+  .page-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
   }
   .grid-2 {
     display: grid;

@@ -1,6 +1,6 @@
 # Phase 5 — Long-tail panels
 
-> Status: Planned · Depends on: 0–4 · Master refs: §16, §17 (Activity + Skills/MCP pages)
+> Status: ✅ Done · Depends on: 0–4 · Master refs: §16, §17 (Activity + Skills/MCP pages)
 
 ## Goal
 

@@ -11,12 +11,13 @@
 
 import type { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Glob } from "bun";
 import type { Database } from "bun:sqlite";
 import { getDb } from "./db.ts";
+import { syncSkills } from "./skills.ts";
 
 const AGENT_IDS = ["claude_code", "codex", "pi", "antigravity"] as const;
 
@@ -132,6 +133,8 @@ export function registerApiRoutes(app: Hono): void {
     const agent = agentFilter(c.req.query("agent"));
     const outcome = c.req.query("outcome");
     const model = c.req.query("model");
+    const source = c.req.query("source");
+    const q = (c.req.query("q") ?? "").trim();
     const limit = Math.min(500, Math.max(1, Number(c.req.query("limit") ?? 100)));
     const offset = Math.max(0, Number(c.req.query("offset") ?? 0));
 
@@ -139,7 +142,9 @@ export function registerApiRoutes(app: Hono): void {
     const params: any[] = [];
     if (agent) { where.push("agent = ?"); params.push(agent); }
     if (model) { where.push("model = ?"); params.push(model); }
+    if (source) { where.push("source = ?"); params.push(source); }
     if (outcome) { where.push(`(${OUTCOME_CASE}) = ?`); params.push(outcome); }
+    if (q) { where.push("(title LIKE ? OR cwd LIKE ?)"); params.push(`%${q}%`, `%${q}%`); }
     const whereSql = where.join(" AND ");
 
     const total = (db.query(`SELECT COUNT(*) n FROM sessions WHERE ${whereSql}`).get(...params) as any).n;
@@ -201,11 +206,16 @@ export function registerApiRoutes(app: Hono): void {
         offset = all.length;
       };
       await emitFrom(false);
-      // Poll for growth (mtime-cheap) up to 5 minutes.
+      // Poll for growth (mtime-cheap) up to 5 minutes. A keepalive on every idle
+      // tick keeps bytes flowing < Bun.serve's 10s idleTimeout, which would
+      // otherwise close a quiet session mid-stream (same bug as /api/firehose —
+      // see gotchas). The client only listens for `line` events, ignoring these.
       for (let i = 0; i < 200 && !stream.aborted; i++) {
         await stream.sleep(1500);
         try {
+          const before = offset;
           if (statSync(file).size > 0) await emitFrom(true);
+          if (offset === before) await stream.writeSSE({ data: "", event: "keepalive" });
         } catch {
           break;
         }
@@ -454,8 +464,440 @@ export function registerApiRoutes(app: Hono): void {
     return c.json({ ok: true, date, agent });
   });
 
+  // ── Project breakdown (sessions rolled up by cwd) ─────────────────────────
+  // Master §17 ProjectBreakdownCard. Effective tokens + sessions + tool count by
+  // working directory; home-dir collapse + project-name basename are client-side
+  // (format.ts) so we never hardcode a username here either.
+  app.get("/api/sessions/by-project", (c) => {
+    const range = c.req.query("range") ?? "7d";
+    const agent = agentFilter(c.req.query("agent"));
+    const where = [rangePred(range), "cwd IS NOT NULL"];
+    const params: any[] = [];
+    if (agent) { where.push("agent = ?"); params.push(agent); }
+    const rows = db.query(/* sql */ `
+      SELECT cwd, COUNT(*) sessions,
+             COALESCE(SUM(effective_tokens),0) eff, COALESCE(SUM(total_tokens),0) tokens
+      FROM sessions WHERE ${where.join(" AND ")}
+      GROUP BY cwd`).all(...params) as any[];
+    // Tool counts per cwd via a join under the same range/agent filter.
+    const toolWhere = [rangePred(range, "t.ts"), "s.cwd IS NOT NULL"];
+    const toolParams: any[] = [];
+    if (agent) { toolWhere.push("s.agent = ?"); toolParams.push(agent); }
+    const toolRows = db.query(/* sql */ `
+      SELECT s.cwd cwd, COUNT(*) n
+      FROM tool_calls t JOIN sessions s ON s.session_id = t.session_id
+      WHERE ${toolWhere.join(" AND ")}
+      GROUP BY s.cwd`).all(...toolParams) as any[];
+    const toolByCwd = new Map(toolRows.map((r) => [r.cwd, r.n]));
+    const totalEff = rows.reduce((a, r) => a + r.eff, 0);
+    const projects = rows
+      .map((r) => ({
+        cwd: r.cwd, sessions: r.sessions, tokens: r.tokens, eff: r.eff,
+        tools: toolByCwd.get(r.cwd) ?? 0,
+        share: totalEff > 0 ? r.eff / totalEff : 0,
+      }))
+      .sort((a, b) => b.eff - a.eff)
+      .slice(0, 40);
+    return c.json({
+      range,
+      total: { sessions: rows.reduce((a, r) => a + r.sessions, 0), eff: totalEff },
+      projects,
+    });
+  });
+
+  // ── Agent fan-out (sessions that dispatched subagents) ────────────────────
+  // Master §17 AgentFanoutCard. The Agent/Task tool is the subagent proxy —
+  // count its calls per session. Title falls back to a session: prefix client-side.
+  app.get("/api/tools/agent-fanout", (c) => {
+    const range = c.req.query("range") ?? "7d";
+    const agent = agentFilter(c.req.query("agent"));
+    const where = [rangePred(range, "t.ts"), "t.tool_name IN ('Agent','Task')"];
+    const params: any[] = [];
+    if (agent) { where.push("s.agent = ?"); params.push(agent); }
+    const rows = db.query(/* sql */ `
+      SELECT s.session_id, s.agent, s.title, s.cwd, s.started_at, COUNT(*) agentCalls
+      FROM tool_calls t JOIN sessions s ON s.session_id = t.session_id
+      WHERE ${where.join(" AND ")}
+      GROUP BY s.session_id
+      ORDER BY agentCalls DESC, s.started_at DESC
+      LIMIT 50`).all(...params) as any[];
+    return c.json({ range, totalCalls: rows.reduce((a, r) => a + r.agentCalls, 0), sessions: rows });
+  });
+
+  // ── Edit acceptance (accept/reject from tool_decision OTEL events) ────────
+  // Master §17 EditAcceptanceCard. Source is the `tool_decision` OTEL event
+  // (decision = accept*/reject*); with telemetry just enabled this is near-empty,
+  // so the route reports lowSample (N<10) honestly rather than fabricating a rate.
+  app.get("/api/tools/edit-decisions", (c) => {
+    const range = c.req.query("range") ?? "7d";
+    const agent = agentFilter(c.req.query("agent"));
+    const EDIT = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
+    const where = [
+      "event_name = 'tool_decision'",
+      `tool_name IN (${EDIT.map(() => "?").join(",")})`,
+      rangePred(range, "timestamp"),
+    ];
+    const params: any[] = [...EDIT];
+    if (agent) { where.push("agent = ?"); params.push(agent); }
+    const rows = db.query(/* sql */ `
+      SELECT tool_name, decision, COUNT(*) n FROM otel_events
+      WHERE ${where.join(" AND ")}
+      GROUP BY tool_name, decision`).all(...params) as any[];
+    const byTool = new Map<string, { accepted: number; rejected: number }>();
+    let accepted = 0, rejected = 0;
+    for (const r of rows) {
+      const isAccept = String(r.decision ?? "").startsWith("accept");
+      const t = byTool.get(r.tool_name) ?? { accepted: 0, rejected: 0 };
+      if (isAccept) { t.accepted += r.n; accepted += r.n; }
+      else { t.rejected += r.n; rejected += r.n; }
+      byTool.set(r.tool_name, t);
+    }
+    const total = accepted + rejected;
+    return c.json({
+      range, total, accepted, rejected,
+      acceptRate: total > 0 ? accepted / total : null,
+      lowSample: total < 10,
+      byTool: [...byTool.entries()].map(([tool, t]) => ({
+        tool, ...t,
+        acceptRate: t.accepted + t.rejected > 0 ? t.accepted / (t.accepted + t.rejected) : null,
+      })),
+    });
+  });
+
+  // ── Hook activity (start/complete pairs, FIFO per session, 60s cap) ───────
+  // Master §16/§17 HookActivityCard. hook_name lives in the attributes JSON, so
+  // per-hook grouping + pairing is done in JS; daily fires use local-time SQL.
+  app.get("/api/hooks/activity", (c) => {
+    const range = c.req.query("range") ?? "7d";
+    const rows = db.query(/* sql */ `
+      SELECT event_name, session_id, timestamp, attributes FROM otel_events
+      WHERE event_name IN ('hook_execution_start','hook_execution_complete')
+        AND ${rangePred(range, "timestamp")}
+      ORDER BY timestamp ASC`).all() as any[];
+    const pending = new Map<string, number[]>(); // session_id -> FIFO of start ms
+    const byHook = new Map<string, number>(); // hook_name -> fires (starts)
+    const durations: number[] = [];
+    let totalFires = 0;
+    for (const r of rows) {
+      const t = Date.parse(r.timestamp);
+      if (r.event_name === "hook_execution_start") {
+        totalFires += 1;
+        const hook = parseAttrs(r.attributes).hook_name ?? parseAttrs(r.attributes).hook_event ?? "hook";
+        byHook.set(hook, (byHook.get(hook) ?? 0) + 1);
+        const q = pending.get(r.session_id) ?? [];
+        q.push(t);
+        pending.set(r.session_id, q);
+      } else {
+        const q = pending.get(r.session_id);
+        if (q && q.length) {
+          const dur = t - q.shift()!;
+          if (dur >= 0 && dur <= 60_000) durations.push(dur); // 60s outlier cap
+        }
+      }
+    }
+    const daily = db.query(/* sql */ `
+      SELECT DATE(timestamp,'localtime') date, COUNT(*) fires FROM otel_events
+      WHERE event_name = 'hook_execution_start' AND ${rangePred(range, "timestamp")}
+      GROUP BY date ORDER BY date ASC`).all() as any[];
+    const sorted = durations.slice().sort((a, b) => a - b);
+    return c.json({
+      range, totalFires, paired: durations.length,
+      avgMs: sorted.length ? Math.round(durations.reduce((a, b) => a + b, 0) / sorted.length) : null,
+      p50Ms: pct(sorted, 50),
+      hooks: [...byHook.entries()].map(([hook, fires]) => ({ hook, fires })).sort((a, b) => b.fires - a.fires),
+      daily,
+    });
+  });
+
+  // ── Productivity (OTEL delta counters: commits/PRs/lines) ─────────────────
+  // Master §16/§17 ProductivityCard. These ARE delta-temporality counters, so
+  // SUM(value) is correct (§12.2). lines_of_code splits added/removed by attr.type.
+  app.get("/api/activity/productivity", (c) => {
+    const range = c.req.query("range") ?? "7d";
+    const rows = db.query(/* sql */ `
+      SELECT metric_name, value, attributes, DATE(timestamp,'localtime') date
+      FROM otel_metrics
+      WHERE metric_name IN ('claude_code.commit.count','claude_code.pull_request.count','claude_code.lines_of_code.count')
+        AND ${rangePred(range, "timestamp")}`).all() as any[];
+    let commits = 0, pullRequests = 0, linesAdded = 0, linesRemoved = 0;
+    const byDate = new Map<string, { added: number; removed: number; commits: number; prs: number }>();
+    for (const r of rows) {
+      const d = byDate.get(r.date) ?? { added: 0, removed: 0, commits: 0, prs: 0 };
+      if (r.metric_name === "claude_code.commit.count") { commits += r.value; d.commits += r.value; }
+      else if (r.metric_name === "claude_code.pull_request.count") { pullRequests += r.value; d.prs += r.value; }
+      else if (parseAttrs(r.attributes).type === "removed") { linesRemoved += r.value; d.removed += r.value; }
+      else { linesAdded += r.value; d.added += r.value; }
+      byDate.set(r.date, d);
+    }
+    const daily = [...byDate.entries()].map(([date, v]) => ({ date, ...v })).sort((a, b) => a.date.localeCompare(b.date));
+    return c.json({
+      range, commits, pullRequests, linesAdded, linesRemoved,
+      empty: commits === 0 && pullRequests === 0 && linesAdded === 0 && linesRemoved === 0,
+      daily,
+    });
+  });
+
+  // ── Pressure (retry exhaustion + compaction + recent api errors) ──────────
+  // Master §16/§17 PressurePanel. Retry threshold from CLAUDE_CODE_MAX_RETRIES
+  // (default 10) — surfaced in the response. NaN/≤0 env falls back to 10.
+  app.get("/api/system/pressure", (c) => {
+    const range = c.req.query("range") ?? "7d";
+    const parsed = Number(process.env.CLAUDE_CODE_MAX_RETRIES);
+    const threshold = Number.isFinite(parsed) && parsed > 0 ? parsed : 10;
+    const retryExhaustion = (db.query(/* sql */ `
+      SELECT COUNT(*) n FROM otel_events
+      WHERE attempt_count >= ? AND ${rangePred(range, "timestamp")}`).get(threshold) as any).n;
+    const compaction = (db.query(/* sql */ `
+      SELECT COUNT(*) n FROM otel_events
+      WHERE event_name LIKE '%compact%' AND ${rangePred(range, "timestamp")}`).get() as any).n;
+    const apiErrors = db.query(/* sql */ `
+      SELECT timestamp, model, status_code, attempt_count, error_message FROM otel_events
+      WHERE (status_code >= 400 OR error_message IS NOT NULL)
+        AND ${rangePred(range, "timestamp")}
+      ORDER BY timestamp DESC LIMIT 10`).all() as any[];
+    return c.json({ range, threshold, retryExhaustion, compaction, apiErrors });
+  });
+
+  // ── Patterns (30-day session heatmap + 14-day token series by model) ──────
+  // Master §17 Patterns. Heatmap window is FIXED at 30 days (independent of the
+  // global range toggle); the client builds the contiguous date axis (browser
+  // Date) and maps these sparse per-day rows onto it. Token series is 14-day.
+  app.get("/api/activity/patterns", (c) => {
+    const agent = agentFilter(c.req.query("agent"));
+    const hWhere = ["DATE(started_at,'localtime') >= date('now','localtime','-29 days')", "started_at IS NOT NULL"];
+    const hParams: any[] = [];
+    if (agent) { hWhere.push("agent = ?"); hParams.push(agent); }
+    const rows = db.query(/* sql */ `
+      SELECT DATE(started_at,'localtime') date, agent, COUNT(*) n, COALESCE(SUM(total_tokens),0) tok
+      FROM sessions WHERE ${hWhere.join(" AND ")}
+      GROUP BY date, agent`).all(...hParams) as any[];
+    const byDate = new Map<string, { date: string; sessions: number; tokens: number; agents: Record<string, number> }>();
+    for (const r of rows) {
+      const d = byDate.get(r.date) ?? { date: r.date, sessions: 0, tokens: 0, agents: {} as Record<string, number> };
+      d.sessions += r.n;
+      d.tokens += r.tok;
+      d.agents[r.agent] = (d.agents[r.agent] ?? 0) + r.n;
+      byDate.set(r.date, d);
+    }
+    const days = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+    const maxSessions = days.reduce((m, d) => Math.max(m, d.sessions), 0);
+    // 14-day token series by model (ChartsStrip stacks these client-side).
+    const tWhere = ["date >= date('now','localtime','-13 days')"];
+    const tParams: any[] = [];
+    if (agent) { tWhere.push("agent = ?"); tParams.push(agent); }
+    const tokenSeries = db.query(/* sql */ `
+      SELECT date, model,
+             SUM(input_tokens + output_tokens + cache_read_tokens + cache_create_tokens + reasoning_tokens) tokens
+      FROM token_usage WHERE ${tWhere.join(" AND ")}
+      GROUP BY date, model HAVING tokens > 0 ORDER BY date ASC`).all(...tParams) as any[];
+    return c.json({ window: 30, days, maxSessions, agents: AGENT_IDS, tokenSeries });
+  });
+
+  // ── Telemetry firehose (SSE replay of recent OTEL events, then tail) ──────
+  // Master §17 OtelPanel. Emits the last ~100 events chronologically, then tails
+  // newly-ingested rows by ascending id. Client filters by event_name.
+  app.get("/api/firehose", (c) => {
+    return streamSSE(c, async (stream) => {
+      const recent = db.query(/* sql */ `
+        SELECT id, event_name, session_id, model, tool_name, timestamp, received_at
+        FROM otel_events ORDER BY id DESC LIMIT 100`).all() as any[];
+      let lastId = 0;
+      for (const e of recent.reverse()) {
+        lastId = Math.max(lastId, e.id);
+        await stream.writeSSE({ data: JSON.stringify(e), event: "otel" });
+      }
+      // Tail new rows. A keepalive every tick keeps the chunked stream flushing
+      // so it never crosses Bun.serve's 10s idleTimeout (which would close the
+      // socket mid-stream → ERR_INCOMPLETE_CHUNKED_ENCODING + an EventSource
+      // reconnect storm that re-replays the backlog).
+      for (let i = 0; i < 600 && !stream.aborted; i++) {
+        await stream.sleep(1500);
+        try {
+          const fresh = db.query(/* sql */ `
+            SELECT id, event_name, session_id, model, tool_name, timestamp, received_at
+            FROM otel_events WHERE id > ? ORDER BY id ASC LIMIT 200`).all(lastId) as any[];
+          if (fresh.length) {
+            for (const e of fresh) {
+              lastId = Math.max(lastId, e.id);
+              await stream.writeSSE({ data: JSON.stringify(e), event: "otel" });
+            }
+          } else {
+            await stream.writeSSE({ data: "ping", event: "keepalive" });
+          }
+        } catch {
+          break; // client gone or write failed — end cleanly
+        }
+      }
+    });
+  });
+
+  // ── Top skills (invocation count; per-skill attribution needs OTEL) ───────
+  // Master §17 TopSkills. The `Skill` tool call is countable from JSONL, but the
+  // skill *name* is in tool input (not persisted) — per-skill rows require the
+  // skill_name OTEL attribute. We surface the honest invocation count + any
+  // attributed rows rather than fabricating a per-skill breakdown.
+  app.get("/api/activity/top-skills", (c) => {
+    const range = c.req.query("range") ?? "7d";
+    const invocations = (db.query(/* sql */ `
+      SELECT COUNT(*) n FROM tool_calls WHERE tool_name = 'Skill' AND ${rangePred(range, "ts")}`).get() as any).n;
+    const attributed = db.query(/* sql */ `
+      SELECT skill_name skill, COUNT(*) uses FROM otel_events
+      WHERE skill_name IS NOT NULL AND ${rangePred(range, "timestamp")}
+      GROUP BY skill_name ORDER BY uses DESC LIMIT 20`).all() as any[];
+    return c.json({ range, invocations, attributed });
+  });
+
+  // ── Unified failures (errored / rate-limited / truncated sessions) ────────
+  // Master §17 UnifiedFailures. Crashed sessions + their error signal. Same
+  // priority semantics as OUTCOME_CASE; no error *message* in JSONL (Claude
+  // interactive logs carry none) so we surface count + stop_reason + outcome.
+  app.get("/api/activity/failures", (c) => {
+    const range = c.req.query("range") ?? "30d";
+    const agent = agentFilter(c.req.query("agent"));
+    const where = [
+      rangePred(range),
+      "(COALESCE(error_count,0) > 0 OR COALESCE(rate_limit_hit,0) = 1 OR stop_reason IN ('max_tokens','length'))",
+    ];
+    const params: any[] = [];
+    if (agent) { where.push("agent = ?"); params.push(agent); }
+    const rows = db.query(/* sql */ `
+      SELECT session_id, agent, model, title, cwd, started_at, error_count, rate_limit_hit,
+             stop_reason, ${OUTCOME_CASE} AS outcome
+      FROM sessions WHERE ${where.join(" AND ")}
+      ORDER BY started_at DESC LIMIT 50`).all(...params) as any[];
+    const total = (db.query(/* sql */ `
+      SELECT COUNT(*) n FROM sessions WHERE ${where.join(" AND ")}`).get(...params) as any).n;
+    return c.json({ range, total, failures: rows });
+  });
+
+  // ── Skills registry (filesystem scan of SKILL.md frontmatter) ─────────────
+  // Master §16/§17. Lazy-syncs on first read (table empty); POST forces a
+  // re-scan; PATCH sets the user-owned autonomy level (preserved across syncs).
+  app.get("/api/skills", (c) => {
+    if ((db.query("SELECT COUNT(*) n FROM skills").get() as any).n === 0) {
+      try { syncSkills(db); } catch { /* report empty rather than 500 */ }
+    }
+    const environment = c.req.query("environment");
+    const userInvocable = c.req.query("user_invocable");
+    const where: string[] = [];
+    const params: any[] = [];
+    if (environment) { where.push("environment = ?"); params.push(environment); }
+    if (userInvocable === "1" || userInvocable === "0") { where.push("user_invocable = ?"); params.push(Number(userInvocable)); }
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const rows = db.query(/* sql */ `
+      SELECT name, environment, description, path, autonomy_level, user_invocable, script_count, last_modified
+      FROM skills ${whereSql} ORDER BY environment ASC, name ASC`).all(...params);
+    const facets = db.query(/* sql */ `
+      SELECT environment, COUNT(*) n FROM skills GROUP BY environment`).all() as any[];
+    return c.json({ total: rows.length, skills: rows, facets });
+  });
+
+  app.post("/api/skills/sync", (c) => {
+    const count = syncSkills(db);
+    return c.json({ ok: true, synced: count });
+  });
+
+  app.patch("/api/skills/:name/autonomy", async (c) => {
+    const name = c.req.param("name");
+    const body = (await c.req.json().catch(() => ({}))) as { autonomy_level?: string };
+    const level = body.autonomy_level;
+    if (!level || !["auto", "review", "manual"].includes(level)) {
+      return c.json({ error: "autonomy_level must be auto|review|manual" }, 400);
+    }
+    const res = db.run("UPDATE skills SET autonomy_level = ? WHERE name = ?", [level, name]);
+    if (res.changes === 0) return c.json({ error: "skill not found" }, 404);
+    return c.json({ ok: true, name, autonomy_level: level });
+  });
+
+  // ── Context health (read-only scan of settings.json + CLAUDE.md, no LLM) ──
+  // Master §17 ContextHealthCard. Pure counts — never echoes file contents.
+  app.get("/api/context/health", (c) => {
+    const home = homedir();
+    const settingsPath = join(home, ".claude", "settings.json");
+    const claudeMdPath = join(home, ".claude", "CLAUDE.md");
+
+    let settings: any = {};
+    let settingsBytes = 0;
+    try {
+      const raw = readFileSync(settingsPath, "utf8");
+      settingsBytes = Buffer.byteLength(raw);
+      settings = JSON.parse(raw);
+    } catch { /* missing/unparseable → zeros */ }
+
+    // Hooks: sum hooks across every event's matcher groups.
+    let hooks = 0;
+    for (const groups of Object.values(settings.hooks ?? {})) {
+      if (Array.isArray(groups)) for (const g of groups) hooks += Array.isArray((g as any)?.hooks) ? (g as any).hooks.length : 0;
+    }
+    const perm = settings.permissions ?? {};
+    const permissions = {
+      allow: Array.isArray(perm.allow) ? perm.allow.length : 0,
+      ask: Array.isArray(perm.ask) ? perm.ask.length : 0,
+      deny: Array.isArray(perm.deny) ? perm.deny.length : 0,
+    };
+    const envKeys = Object.keys(settings.env ?? {}).length;
+
+    // MCP servers: top-level mcpServers in settings.json, else ~/.claude.json
+    // (count only — never read out the contents).
+    let mcpServers = Object.keys(settings.mcpServers ?? {}).length;
+    if (mcpServers === 0) {
+      try {
+        const cfg = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"));
+        mcpServers = Object.keys(cfg.mcpServers ?? {}).length;
+      } catch { /* none */ }
+    }
+
+    // CLAUDE.md: size, lines, and a "directives" proxy (headings + list items).
+    let claudeMdBytes = 0, claudeMdLines = 0, directives = 0;
+    try {
+      const md = readFileSync(claudeMdPath, "utf8");
+      claudeMdBytes = Buffer.byteLength(md);
+      const lines = md.split("\n");
+      claudeMdLines = lines.length;
+      directives = lines.filter((l) => /^\s*(#{1,6}\s|[-*]\s|\d+\.\s)/.test(l)).length;
+    } catch { /* missing → zeros */ }
+
+    return c.json({
+      settings: { exists: settingsBytes > 0, bytes: settingsBytes, hooks, permissions, envKeys, mcpServers },
+      claudeMd: { exists: claudeMdBytes > 0, bytes: claudeMdBytes, lines: claudeMdLines, directives },
+    });
+  });
+
+  // ── MCP schema footprint (per-server tool count; size needs live conn) ────
+  // Master §16/§17. We can enumerate servers + their observed tools from
+  // telemetry/JSONL, but the per-tool JSON *schema* (the real context cost) is
+  // only available from a live MCP handshake — out of this read-only build. We
+  // surface the honest tool count and flag schema bytes as unmeasured.
+  app.get("/api/mcp/measure", (c) => {
+    const range = c.req.query("range") ?? "30d";
+    const calls = mcpCalls(db, range);
+    const byServer = new Map<string, Set<string>>();
+    for (const r of calls) {
+      const s = byServer.get(r.server) ?? new Set<string>();
+      s.add(r.tool);
+      byServer.set(r.server, s);
+    }
+    const servers = [...byServer.entries()]
+      .map(([server, tools]) => ({ server, tools: tools.size, schemaTokens: null as number | null, measured: false }))
+      .sort((a, b) => b.tools - a.tools);
+    return c.json({
+      range, servers,
+      note: "Per-tool schema token cost requires a live MCP handshake; this read-only build reports observed tool counts only.",
+    });
+  });
+
   // ── Manual sync trigger ───────────────────────────────────────────────────
   app.post("/api/sync", (c) => c.json({ ok: true, note: "sync runs every 120s in the worker" }));
+}
+
+/** Parse the flattened OTEL attributes JSON blob; never throws. */
+function parseAttrs(s: string | null): Record<string, any> {
+  if (!s) return {};
+  try {
+    return JSON.parse(s) as Record<string, any>;
+  } catch {
+    return {};
+  }
 }
 
 // ── MCP call extraction with OTEL-first / JSONL-fallback ────────────────────
