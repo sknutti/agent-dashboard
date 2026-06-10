@@ -103,6 +103,13 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     let rateLimitHit = false;
     let nativeCostUsd: number | null | undefined;
 
+    // Claude Code splits ONE assistant message (one API response) across multiple
+    // JSONL lines — one per content block (thinking / text / tool_use) — and each
+    // line repeats the IDENTICAL full `usage` block. Summing every line 2–3×
+    // over-counts tokens (and rack-rate cost). Emit usage once per unique message,
+    // keyed by (message.id, requestId) like ccusage. Content-block/tool processing
+    // still runs on every line — only the token emission is deduped.
+    const seenUsageKeys = new Set<string>();
     // tool_use id → invocation, awaiting its tool_result for latency pairing.
     const pendingTools = new Map<string, { name: string; ts: string }>();
     // tool events are emitted on pairing; unpaired ones are flushed at EOF.
@@ -143,7 +150,16 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           if (typeof msg.stop_reason === "string") stopReason = msg.stop_reason;
 
           const u = msg.usage;
-          if (u && typeof rec.timestamp === "string") {
+          // Dedupe: skip if we've already counted this message's usage. A line
+          // with usage but no stable id (id+requestId both absent) can't be
+          // deduped, so it is always counted (matches ccusage).
+          const usageKey =
+            typeof msg.id === "string" || typeof rec.requestId === "string"
+              ? `${msg.id ?? ""}|${rec.requestId ?? ""}`
+              : null;
+          const firstSeenUsage = usageKey === null || !seenUsageKeys.has(usageKey);
+          if (usageKey !== null) seenUsageKeys.add(usageKey);
+          if (u && typeof rec.timestamp === "string" && firstSeenUsage) {
             yield {
               kind: "tokens",
               model: typeof msg.model === "string" ? msg.model : model,

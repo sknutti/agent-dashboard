@@ -186,3 +186,21 @@
   DB standalone (worker `--once`, doctor) must use `getDb()`, or it hits
   "no such table". CREATE TABLE IF NOT EXISTS is idempotent + WAL-safe, so the
   worker re-initing alongside the server is fine.
+
+## Claude JSONL repeats `usage` per content-block line → 2× token over-count
+- Claude Code splits ONE assistant message (one API response: one `message.id` +
+  `requestId`) across MULTIPLE JSONL lines — one per content block (thinking /
+  text / tool_use) — and **every line repeats the identical full `usage` block**.
+  Summing all lines (the original adapter) over-counts by the block count.
+- **Measured on this machine (2026-06-10): 219/236 files affected, claude
+  `total_tokens` 3.66B reported vs 1.76B true — 51.9% phantom.** Rack-rate cost
+  was inflated proportionally.
+- Fix (`adapters/claude_code.ts`): dedupe the `kind:"tokens"` emit by
+  `${message.id}|${requestId}` (a `seenUsageKeys` Set), like ccusage. Still
+  process content blocks / tool pairing on every line — the tool_use block lives
+  on the message's LAST split line, so only the token emit is deduped, not the
+  line. Lines with neither id nor requestId can't be deduped → always counted.
+  First test for the reference adapter: `adapters/claude_code.test.ts`.
+- **Operational:** an adapter parsing-logic change does NOT auto-correct already-
+  ended sessions (the mtime gate won't re-parse them). Force once with
+  `UPDATE sessions SET synced_at=NULL WHERE agent='claude_code'` then `bun run sync`.

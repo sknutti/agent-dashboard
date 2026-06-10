@@ -14,10 +14,15 @@ Stack: Bun + Hono + bun:sqlite (WAL) + Svelte 5 SPA (ADR-0001). Built in phases
   column, not basename — measured 560→4 sessions/tick, 1060ms→33ms; rollups now gated on `synced>0`; (3) overlap-tick
   guard + `elapsedMs` in heartbeat; (4) indexes `idx_tool_calls_session`, `idx_sessions_agent_started`,
   `idx_sessions_source_path`; (5) live-session + OTEL-badge use `datetime(col)` not lexical string compare.
-  **Still open:** resume/continue double-counts Claude tokens (no msg-id dedup); antigravity no-transcript →
-  started_at NULL → tokens vanish; DNS rebinding + drive-by OTLP poisoning (Host/Origin middleware = Batch 2);
-  api.ts↔routes.ts type drift; 26/28 panels show fetch-fail as "no data"; no last-seen (Pi reads as broken);
-  duplicate Phase-0 AppShell drill sheet; CachePanel amber/green CVD.
+  **Batch 2 FIXED (37569e9):** loopback guard middleware (Host allowlist vs DNS rebinding on all routes; Origin
+  check on writes + /v1/* vs drive-by CSRF/OTLP poisoning; emitters/dev-proxy still work).
+  **Batch 3 FIXED (commit pending) — biggest correctness win:** Claude per-content-block usage double-count.
+  Claude JSONL repeats `usage` on every split line of a message → was 2× over-counting. Measured 3.66B→1.76B
+  (51.9% phantom) on this machine; deduped by message.id+requestId, live DB corrected via forced resync. See
+  [[gotchas]] + `adapters/claude_code.test.ts` (first reference-adapter test).
+  **Still open:** antigravity no-transcript → started_at NULL → tokens vanish; api.ts↔routes.ts type drift
+  (Burn nullability, McpServers.source:0); 26/28 panels show fetch-fail as "no data"; no last-seen (Pi reads as
+  broken); duplicate Phase-0 AppShell drill sheet; CachePanel amber/green CVD; worker respawn + doctor heartbeat-age.
 
 ## Status
 - Phase 0 ✅ Done. Phase 1 ✅ Done — adapter, cost engine, orchestrator, all core API routes,
