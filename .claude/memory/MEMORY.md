@@ -56,10 +56,19 @@ Stack: Bun + Hono + bun:sqlite (WAL) + Svelte 5 SPA (ADR-0001). Built in phases
     orphans inert; DROP blocked by damage-control hook, harmless). #21 TOOL_DURATION_CAP_MS → one base.ts export;
     `pushAgent()` helper collapses ~11 copy-pasted agent filters.
   - B11 (#30 viz): agent selector on TokenUsage+Patterns; model filter on SessionsTable (APIs already supported).
-  **STILL OPEN (deliberately):** #17 agent-identity refactor — ARCHITECTURAL, Scott wants to discuss design first
-  (buildRegistry iterate agents.yaml + one metadata endpoint + delete ~9 hardcoded lists). #2 Claude resume
-  cross-file double-count — confidence 0.7, NEEDS a real resumed session to verify; this machine has none, not
-  fake-fixed (intra-file content-block dedup already shipped in B3). Full #15 49-site sweep declined (targeted done).
+  **#17 DONE (commit "Review #17: data-drive agent identity"):** discussed design w/ Scott → agents.yaml is the
+  SINGLE registry (gained name/order/otel_service). `scripts/agents_config.ts` `loadAgentsConfig()` is the one
+  reader (orchestrator/routes/otel/doctor). `buildRegistry` iterates it via a typed `Record<AgentId, ctor>` (the
+  ONE irreducible code binding). routes.ts dropped AGENT_IDS + the detected-path map (was WRONG on path-override —
+  real bug fixed) + the cost ternary (now reads yaml `cost:`); new `GET /api/registry`. UI: `registry.svelte.ts`
+  store hydrates from /api/registry at boot (App.svelte, covers /session route); reactive `AGENT_NAMES` +
+  `agentFilterOptions()` replace format.ts AGENT_NAMES + Command ORDER + 4 chip arrays. Adding agent #5 = adapter
+  + 1 ctor line + 1 yaml block + 1 union line. KEPT: AgentId union (base.ts canonical, api.ts UI mirror — the
+  package split forbids sharing). 41 tests (+agents_config.test). **Gotcha:** AGENT_NAMES is now async ($state
+  hydrated) → call sites MUST keep `AGENT_NAMES[id] ?? id` fallback for the pre-load beat.
+  **STILL OPEN (deliberately):** #2 Claude resume cross-file double-count — confidence 0.7, NEEDS a real resumed
+  session to verify; this machine has none, not fake-fixed (intra-file content-block dedup shipped in B3). Full
+  #15 49-site sweep declined (targeted done).
 
 ## Status
 - Phase 0 ✅ Done. Phase 1 ✅ Done — adapter, cost engine, orchestrator, all core API routes,
