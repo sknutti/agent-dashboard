@@ -95,8 +95,8 @@ const upsertSession = db.prepare(/* sql */ `
 
 const deleteToolCalls = db.prepare(`DELETE FROM tool_calls WHERE session_id = ?`);
 const insertToolCall = db.prepare(/* sql */ `
-  INSERT INTO tool_calls (session_id, agent, tool_use_id, tool_name, ts, duration_ms, error)
-  VALUES ($session_id, $agent, $tool_use_id, $tool_name, $ts, $duration_ms, $error)
+  INSERT INTO tool_calls (session_id, agent, tool_use_id, tool_name, skill_name, ts, duration_ms, error)
+  VALUES ($session_id, $agent, $tool_use_id, $tool_name, $skill_name, $ts, $duration_ms, $error)
 `);
 
 // Gate lookup keys on the source FILE PATH, not the basename: codex/pi/antigravity
@@ -246,6 +246,7 @@ const writeSession = db.transaction(
       $agent: agent,
       $tool_use_id: t.toolUseId ?? null,
       $tool_name: t.toolName,
+      $skill_name: t.skillName ?? null,
       $ts: t.ts,
       $duration_ms: t.durationMs ?? null,
       $error: t.error ?? null,

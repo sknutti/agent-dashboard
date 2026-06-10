@@ -107,6 +107,9 @@ export type NormalizedEvent =
       kind: "tool";
       toolName: string;
       toolUseId?: string;
+      /** For the `Skill` tool: the invoked skill's name, lifted from the call's
+       *  `input.skill` so per-skill attribution doesn't need OTEL. Null otherwise. */
+      skillName?: string | null;
       /** ISO 8601 of the invocation. */
       ts: string;
       /** Pairing latency; null when unpaired. Each adapter caps an outlier pair at

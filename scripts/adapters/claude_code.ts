@@ -109,7 +109,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // still runs on every line — only the token emission is deduped.
     const seenUsageKeys = new Set<string>();
     // tool_use id → invocation, awaiting its tool_result for latency pairing.
-    const pendingTools = new Map<string, { name: string; ts: string }>();
+    const pendingTools = new Map<string, { name: string; skillName: string | null; ts: string }>();
     // tool events are emitted on pairing; unpaired ones are flushed at EOF.
     const toolEvents: NormalizedEvent[] = [];
 
@@ -176,10 +176,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           const content = Array.isArray(msg.content) ? msg.content : [];
           for (const block of content) {
             if (block?.type === "tool_use" && typeof block.id === "string" && typeof rec.timestamp === "string") {
-              pendingTools.set(block.id, {
-                name: typeof block.name === "string" ? block.name : "unknown",
-                ts: rec.timestamp,
-              });
+              const name = typeof block.name === "string" ? block.name : "unknown";
+              // The Skill tool carries the invoked skill's name in its input; lift it
+              // so per-skill attribution works straight from JSONL (no OTEL needed).
+              const skillName =
+                name === "Skill" && typeof block.input?.skill === "string" ? block.input.skill : null;
+              pendingTools.set(block.id, { name, skillName, ts: rec.timestamp });
             }
           }
           break;
@@ -205,6 +207,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
                 kind: "tool",
                 toolName: use.name,
                 toolUseId: useId,
+                skillName: use.skillName,
                 ts: use.ts,
                 durationMs,
                 error: isError ? extractErrorText(block.content) : null,
@@ -233,7 +236,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // shows up; the orchestrator caps/handles nulls.
     for (const ev of toolEvents) yield ev;
     for (const [id, use] of pendingTools) {
-      yield { kind: "tool", toolName: use.name, toolUseId: id, ts: use.ts, durationMs: null, error: null };
+      yield { kind: "tool", toolName: use.name, toolUseId: id, skillName: use.skillName, ts: use.ts, durationMs: null, error: null };
     }
 
     // Finally the session metadata event (carries the running totals' context).

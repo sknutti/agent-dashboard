@@ -32,9 +32,9 @@
       <span class="sub">Skill tool invocations in range</span>
     </div>
     <p class="note">
-      Per-skill names live in the tool input, which isn't persisted — a named breakdown
-      needs the <code>skill_name</code> OTEL attribute. The count above is exact; attribution lights
-      up once telemetry captures skill events.
+      No named skill calls in this range yet. The breakdown is lifted from each
+      <code>Skill</code> call's <code>input.skill</code> at sync time; it fills in for sessions
+      synced after this landed (older calls predate capture).
     </p>
   {/if}
 </Card>

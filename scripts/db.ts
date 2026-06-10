@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   agent       TEXT NOT NULL DEFAULT 'claude_code',
   tool_use_id TEXT,
   tool_name   TEXT,
+  skill_name  TEXT,                                           -- Skill tool only: invoked skill name (from input.skill)
   ts          TEXT,
   duration_ms INTEGER,                                        -- nullable; cap pairing at 10 min
   error       TEXT
@@ -255,6 +256,7 @@ export function initSchema(db: Database): void {
   migrateAddColumn(db, "sessions", "branch_count", "INTEGER");
   migrateAddColumn(db, "token_usage", "reasoning_tokens", "INTEGER NOT NULL DEFAULT 0");
   migrateAddColumn(db, "tool_calls", "agent", "TEXT NOT NULL DEFAULT 'claude_code'");
+  migrateAddColumn(db, "tool_calls", "skill_name", "TEXT");
   migrateAddColumn(db, "burn_daily", "cost_estimated_usd", "REAL");
 
   // The source file path each session was parsed from — the stable key the

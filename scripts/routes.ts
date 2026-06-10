@@ -817,19 +817,20 @@ export function registerApiRoutes(app: Hono): void {
     });
   });
 
-  // ── Top skills (invocation count; per-skill attribution needs OTEL) ───────
-  // Master §17 TopSkills. The `Skill` tool call is countable from JSONL, but the
-  // skill *name* is in tool input (not persisted) — per-skill rows require the
-  // skill_name OTEL attribute. We surface the honest invocation count + any
-  // attributed rows rather than fabricating a per-skill breakdown.
+  // ── Top skills (invocation count + per-skill breakdown) ───────────────────
+  // Master §17 TopSkills. The `Skill` tool call is countable from JSONL, and the
+  // invoked skill name rides in the call's input.skill — the adapter lifts it
+  // into tool_calls.skill_name, so we attribute straight from JSONL (no OTEL
+  // dependency). `invocations` stays the exact total; `attributed` is the named
+  // breakdown (rows captured since the column landed; older rows are NULL).
   app.get("/api/activity/top-skills", (c) => {
     const range = c.req.query("range") ?? "7d";
     const invocations = (db.query(/* sql */ `
       SELECT COUNT(*) n FROM tool_calls WHERE tool_name = 'Skill' AND ${rangePred(range, "ts")}`).get() as any).n;
     const attributed = db.query(/* sql */ `
-      SELECT skill_name skill, COUNT(*) uses FROM otel_events
-      WHERE skill_name IS NOT NULL AND ${rangePred(range, "timestamp")}
-      GROUP BY skill_name ORDER BY uses DESC LIMIT 20`).all() as any[];
+      SELECT skill_name skill, COUNT(*) uses FROM tool_calls
+      WHERE tool_name = 'Skill' AND skill_name IS NOT NULL AND ${rangePred(range, "ts")}
+      GROUP BY skill_name ORDER BY uses DESC, skill_name ASC LIMIT 20`).all() as any[];
     return c.json({ range, invocations, attributed });
   });
 
