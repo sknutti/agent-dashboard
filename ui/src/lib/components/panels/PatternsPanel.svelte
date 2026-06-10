@@ -3,10 +3,16 @@
   import EmptyState from "../ui/EmptyState.svelte";
   import { getPatterns } from "../../api";
   import { resource } from "../../resource.svelte";
-  import { compact, shortDate } from "../../format";
+  import { compact, shortDate, AGENT_NAMES } from "../../format";
 
+  // Per-agent dimension the API already returns (was collapsed to all-agents).
+  const AGENTS = ["all", "claude_code", "codex", "pi", "antigravity"];
+  let agent = $state("all");
   // Heatmap window is fixed at 30 days (independent of the global range toggle).
-  const res = resource("patterns", () => getPatterns());
+  const res = resource(
+    () => `patterns:${agent}`,
+    () => getPatterns(agent === "all" ? undefined : agent),
+  );
   const data = $derived(res.data);
 
   /** Local YYYY-MM-DD (matches the server's DATE(...,'localtime') buckets). */
@@ -75,6 +81,13 @@
 </script>
 
 <Card title="Patterns" icon="activity" kicker="30-day activity · 14-day token mix">
+  {#snippet actions()}
+    <select class="sel" bind:value={agent} aria-label="Agent">
+      {#each AGENTS as a (a)}
+        <option value={a}>{a === "all" ? "All agents" : AGENT_NAMES[a] ?? a}</option>
+      {/each}
+    </select>
+  {/snippet}
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !data || totalSessions === 0}
@@ -136,6 +149,7 @@
 
 <style>
   .muted { color: var(--text-subtle); font-size: 13px; }
+  .sel { font-size: 11px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-dim); }
   .sub { font-size: 11.5px; color: var(--text-dim); }
   .dim { color: var(--text-subtle); }
   .hsec { margin-bottom: 18px; }

@@ -13,6 +13,7 @@
   let qApplied = $state("");
   let agent = $state("all");
   let outcome = $state("all");
+  let model = $state("all");
   let offset = $state(0);
 
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -26,12 +27,13 @@
   }
 
   const res = resource(
-    () => `sessions:${ui.range}:${agent}:${outcome}:${qApplied}:${offset}`,
+    () => `sessions:${ui.range}:${agent}:${outcome}:${model}:${qApplied}:${offset}`,
     () =>
       getSessions({
         range: ui.range,
         agent: agent === "all" ? undefined : agent,
         outcome: outcome === "all" ? undefined : outcome,
+        model: model === "all" ? undefined : model,
         q: qApplied || undefined,
         limit: LIMIT,
         offset,
@@ -41,6 +43,17 @@
   const total = $derived(res.data?.total ?? 0);
   const showingFrom = $derived(total === 0 ? 0 : offset + 1);
   const showingTo = $derived(Math.min(offset + LIMIT, total));
+
+  // Model options derive from the loaded rows (the API supports ?model=); the
+  // current selection is always kept so the dropdown never drops out from under
+  // an active filter when the filtered result set narrows.
+  const modelOpts = $derived([
+    "all",
+    ...new Set([
+      ...(model !== "all" ? [model] : []),
+      ...rows.map((r) => r.model).filter((m): m is string => !!m),
+    ]),
+  ]);
 
   const AGENTS = ["all", "claude_code", "codex", "pi", "antigravity"];
   const OUTCOMES = ["all", "ok", "errored", "rate_limited", "truncated", "unfinished"];
@@ -74,6 +87,13 @@
           {OUT_LABEL[o] ?? o}
         </button>
       {/each}
+      {#if modelOpts.length > 1}
+        <select class="modelsel" bind:value={model} onchange={() => (offset = 0)} aria-label="Model">
+          {#each modelOpts as m (m)}
+            <option value={m}>{m === "all" ? "all models" : m}</option>
+          {/each}
+        </select>
+      {/if}
     </div>
   </div>
 
@@ -151,6 +171,15 @@
   }
   .chip:hover { border-color: var(--border-glow); color: var(--text); }
   .chip.on { background: var(--surface-2); border-color: var(--cyan); color: var(--cyan); }
+  .modelsel {
+    padding: 2px 6px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--text-dim);
+    font-size: 11px;
+    cursor: pointer;
+  }
   .tbl { font-size: 12px; }
   .scroll { max-height: 420px; overflow-y: auto; }
   .row {

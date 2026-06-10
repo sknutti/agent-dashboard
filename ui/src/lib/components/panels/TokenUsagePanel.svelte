@@ -4,9 +4,15 @@
   import { getTokenUsage } from "../../api";
   import { resource } from "../../resource.svelte";
   import { ui } from "../../stores.svelte";
-  import { compact, shortDate, pct } from "../../format";
+  import { compact, shortDate, pct, AGENT_NAMES } from "../../format";
 
-  const res = resource(() => `tokens:${ui.range}`, () => getTokenUsage(ui.range));
+  // Per-agent dimension the API already returns (was collapsed to all-agents).
+  const AGENTS = ["all", "claude_code", "codex", "pi", "antigravity"];
+  let agent = $state("all");
+  const res = resource(
+    () => `tokens:${ui.range}:${agent}`,
+    () => getTokenUsage(ui.range, agent === "all" ? undefined : agent),
+  );
 
   // Roll the per-(date,model) rows up to per-day stacks.
   const SEGS = [
@@ -62,6 +68,13 @@
 </script>
 
 <Card title="Token usage" icon="cpu" kicker="stacked daily · {ui.range}">
+  {#snippet actions()}
+    <select class="sel" bind:value={agent} aria-label="Agent">
+      {#each AGENTS as a (a)}
+        <option value={a}>{a === "all" ? "All agents" : AGENT_NAMES[a] ?? a}</option>
+      {/each}
+    </select>
+  {/snippet}
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !days.length}
@@ -112,6 +125,14 @@
 
 <style>
   .muted { color: var(--text-subtle); font-size: 13px; }
+  .sel {
+    font-size: 11px;
+    padding: 3px 6px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text-dim);
+  }
   .totals { display: flex; align-items: baseline; gap: 8px; margin-bottom: 14px; }
   .grand { font-size: 24px; font-weight: 600; color: var(--text); }
   .sub { font-size: 11.5px; color: var(--text-subtle); }
