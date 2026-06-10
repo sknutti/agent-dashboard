@@ -21,7 +21,7 @@
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !failures.length}
-    <EmptyState icon="alert" title="No failures in range" message="Sessions that errored, hit a rate limit, or were truncated land here with their failure signal." />
+    <EmptyState icon="alert" title="No failures in range" message="Sessions that errored, hit a rate limit, or were truncated land here with their failure signal." error={res.error} onRetry={res.reload} />
   {:else}
     <div class="cap">{d?.total} failed session{d?.total === 1 ? "" : "s"} in range · showing {failures.length}</div>
     <div class="scroll">

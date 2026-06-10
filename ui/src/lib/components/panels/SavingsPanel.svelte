@@ -1,5 +1,6 @@
 <script lang="ts">
   import Card from "../ui/Card.svelte";
+  import EmptyState from "../ui/EmptyState.svelte";
   import Badge from "../ui/Badge.svelte";
   import { getAgents } from "../../api";
   import { resource } from "../../resource.svelte";
@@ -25,6 +26,8 @@
 <Card title="Subscription savings" icon="dollar" kicker="rack-rate (est) − native · {ui.range}">
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
+  {:else if res.error && !res.data}
+    <EmptyState title="" error onRetry={res.reload} />
   {:else if !anyNative}
     <div class="teach">
       <p class="lead">Savings needs the native figure.</p>

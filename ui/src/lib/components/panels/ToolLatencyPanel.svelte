@@ -21,7 +21,7 @@
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !tools.length}
-    <EmptyState icon="wrench" title="No tool calls in range" message="Per-tool p50/p95/max + error rate, sorted by p95. Red flags at p95 ≥ 10s." />
+    <EmptyState icon="wrench" title="No tool calls in range" message="Per-tool p50/p95/max + error rate, sorted by p95. Red flags at p95 ≥ 10s." error={res.error} onRetry={res.reload} />
   {:else}
     <div class="tbl">
       <div class="row head">

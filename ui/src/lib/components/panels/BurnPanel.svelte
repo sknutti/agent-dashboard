@@ -83,7 +83,7 @@
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !d || !d.daily.length}
-    <EmptyState icon="gauge" title="Nothing to burn yet" message="A bill tells you what happened — a burn view changes what you hand the computer tomorrow." />
+    <EmptyState icon="gauge" title="Nothing to burn yet" message="A bill tells you what happened — a burn view changes what you hand the computer tomorrow." error={res.error} onRetry={res.reload} />
   {:else}
     <p class="caption">Each box is one local day. Color is log-scaled per-day token spend — brighter (yellow) is heavier, deep blue is lighter.</p>
     <div class="heat">

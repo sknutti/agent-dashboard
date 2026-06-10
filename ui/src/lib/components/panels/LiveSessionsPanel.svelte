@@ -31,7 +31,7 @@
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !sessions.length}
-    <EmptyState icon="circle-dot" title="No active sessions" message="When an agent is mid-run it appears here. Each row expands to a scrollable raw-JSONL event feed." />
+    <EmptyState icon="circle-dot" title="No active sessions" message="When an agent is mid-run it appears here. Each row expands to a scrollable raw-JSONL event feed." error={res.error} onRetry={res.reload} />
   {:else}
     <div class="rows">
       {#each sessions as s (s.session_id)}

@@ -109,10 +109,17 @@ export function registerApiRoutes(app: Hono): void {
       // Earlier this was JSONL-first, so one print session suppressed the OTEL total.
       const otelNative = otelNativeCost(db, id, range);
       const nativeUsd = otelNative != null ? otelNative : tok.costUsd;
+      // Un-windowed last activity: lets the card distinguish "no data ever" (broken
+      // / not installed) from "data exists, just outside the current range" — e.g.
+      // Pi's Mar–Apr data is invisible at 7d/30d and otherwise reads as broken.
+      const lastSessionAt = (db.query(
+        `SELECT MAX(started_at) at FROM sessions WHERE agent = ?`,
+      ).get(id) as { at: string | null }).at;
       return {
         id,
         detected: detected[id],
         otel,
+        lastSessionAt,
         cost: id === "claude_code" || id === "pi" ? "native" : "none",
         tokens: {
           input: tok.input, output: tok.output, cacheRead: tok.cacheRead,

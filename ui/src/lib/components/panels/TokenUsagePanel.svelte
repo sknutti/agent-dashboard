@@ -65,7 +65,7 @@
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !days.length}
-    <EmptyState icon="cpu" title="No token data in range" message="Token usage appears here once a sync lands for this range." />
+    <EmptyState icon="cpu" title="No token data in range" message="Token usage appears here once a sync lands for this range." error={res.error} onRetry={res.reload} />
   {:else}
     <div class="totals">
       <span class="grand mono">{compact(grandTotal)}</span>

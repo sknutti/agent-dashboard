@@ -26,7 +26,7 @@
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !days.length}
-    <EmptyState icon="layers" title="No sessions in range" message="Stacked daily bars: ok / errored / rate-limited / truncated / unfinished. They sum to the day's total." />
+    <EmptyState icon="layers" title="No sessions in range" message="Stacked daily bars: ok / errored / rate-limited / truncated / unfinished. They sum to the day's total." error={res.error} onRetry={res.reload} />
   {:else}
     <div class="chart">
       {#each days as d (d.date)}

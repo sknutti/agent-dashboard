@@ -15,7 +15,7 @@
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !sessions.length}
-    <EmptyState icon="layers" title="No subagent dispatches in range" message="Sessions that called the Agent/Task tool — the subagent proxy. Each row shows how many subagents it spawned." />
+    <EmptyState icon="layers" title="No subagent dispatches in range" message="Sessions that called the Agent/Task tool — the subagent proxy. Each row shows how many subagents it spawned." error={res.error} onRetry={res.reload} />
   {:else}
     <div class="summary">
       <span class="big mono">{compact(totalCalls)}</span>

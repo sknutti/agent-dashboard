@@ -78,7 +78,7 @@
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !data || totalSessions === 0}
-    <EmptyState icon="activity" title="No activity in the last 30 days" message="A GitHub-style heatmap lights up per day as sessions accrue, with a 14-day token-mix strip below." />
+    <EmptyState icon="activity" title="No activity in the last 30 days" message="A GitHub-style heatmap lights up per day as sessions accrue, with a 14-day token-mix strip below." error={res.error} onRetry={res.reload} />
   {:else}
     <div class="hsec">
       <div class="hlabel">

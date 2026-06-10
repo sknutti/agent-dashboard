@@ -24,8 +24,15 @@ Stack: Bun + Hono + bun:sqlite (WAL) + Svelte 5 SPA (ADR-0001). Built in phases
   NULL → tokens excluded from all rollups/ranges); Burn type estUsd/estimatedUsd now `number|null` (was lying
   `number`); McpServers.source no longer emits literal `0`; supervised worker respawn (backoff, give-up logs);
   doctor checks heartbeat AGE not just count. Tests `antigravity.test.ts` no-transcript case; svelte-check clean.
-  **Still open (Batch 5 = frontend UX):** 26/28 panels show fetch-fail as "no data"; no last-seen (Pi reads as
-  broken); duplicate Phase-0 AppShell drill sheet; CachePanel amber/green CVD.
+  **Batch 5 FIXED (commit pending) — frontend UX, browser-QA'd (0 console errors, 3 pages):** (1) deleted the
+  duplicate Phase-0 AppShell drill sheet (real one is DrillSheet in App.svelte); (2) CachePanel pass/fail now
+  cyan-not-green + text label "✓ at/above 70% target" (CVD); (3) AgentCard shows "last seen <shortDate>" (new
+  `lastSessionAt` un-windowed on /api/agents) so Pi/Codex stop reading as broken; (4) shared EmptyState error
+  mode (amber, Retry) applied across 22 panels — a 500 now says "Couldn't load data", not a false "no data"
+  (PressurePanel/ContextHealth no longer render blank). NOTE: shortDate() only formats YYYY-MM-DD — slice ISO
+  to 10 chars first. **Review COMPLETE — all 5 batches shipped.** Remaining review items are lower-priority
+  polish (per-agent dim in TokenUsage/Patterns, clickable session rows, burn-spike drill, export, focus trap,
+  Codex last-model mispricing, prices.yaml staleness) — see docs/notes/2026-06-10-adversarial-review.md.
 
 ## Status
 - Phase 0 ✅ Done. Phase 1 ✅ Done — adapter, cost engine, orchestrator, all core API routes,

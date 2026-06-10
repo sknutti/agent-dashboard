@@ -34,6 +34,9 @@ export interface AgentCardData {
   id: AgentId;
   detected: boolean;
   otel: boolean;
+  /** Un-windowed MAX(started_at): distinguishes "no data ever" from "data exists
+   *  outside the current range" (e.g. Pi's older sessions). Null = never seen. */
+  lastSessionAt: string | null;
   cost: "native" | "none";
   tokens: TokenCounts;
   cacheRate: number | null;

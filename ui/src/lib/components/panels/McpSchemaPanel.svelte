@@ -14,7 +14,7 @@
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !servers.length}
-    <EmptyState icon="plug" title="No MCP servers observed" message="Servers that handled tool calls in range appear here with their tool counts. Per-schema token cost needs a live MCP handshake." />
+    <EmptyState icon="plug" title="No MCP servers observed" message="Servers that handled tool calls in range appear here with their tool counts. Per-schema token cost needs a live MCP handshake." error={res.error} onRetry={res.reload} />
   {:else}
     <div class="rows">
       {#each servers as s (s.server)}

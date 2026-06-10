@@ -14,7 +14,7 @@
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !projects.length}
-    <EmptyState icon="box" title="No project activity in range" message="Sessions rolled up by cwd: effective tokens, sessions, tool calls. The home dir collapses to ~ — never a hardcoded username." />
+    <EmptyState icon="box" title="No project activity in range" message="Sessions rolled up by cwd: effective tokens, sessions, tool calls. The home dir collapses to ~ — never a hardcoded username." error={res.error} onRetry={res.reload} />
   {:else}
     <div class="tbl">
       <div class="row head">

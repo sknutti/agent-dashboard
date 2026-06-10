@@ -3,10 +3,8 @@
   import Nav from "./Nav.svelte";
   import SystemHealthStrip from "./SystemHealthStrip.svelte";
   import CommandPalette from "./CommandPalette.svelte";
-  import Sheet from "../ui/Sheet.svelte";
   import Icon from "../ui/Icon.svelte";
-  import EmptyState from "../ui/EmptyState.svelte";
-  import { startHealthPolling, palette, drill, closeDrill } from "../../stores.svelte";
+  import { startHealthPolling, palette } from "../../stores.svelte";
 
   let { title, children }: { title: string; children: Snippet } = $props();
 
@@ -50,18 +48,9 @@
 
 <CommandPalette />
 
-<!-- First-class read-only drill-down plumbing (ADR-0003). Phase 1 fills the body. -->
-<Sheet open={drill.open} title={drill.ctx?.title ?? ""} subtitle={drill.ctx?.subtitle} onClose={closeDrill}>
-  <EmptyState
-    icon="layers"
-    title="Drill-down wired — no data yet"
-    message="This read-only detail view is plumbed in Phase 0. Phase 1 fills it from the sessions API."
-  >
-    {#if drill.ctx?.query}
-      <code class="q mono">{drill.ctx.query}</code>
-    {/if}
-  </EmptyState>
-</Sheet>
+<!-- The real drill-down drawer is mounted once in App.svelte (DrillSheet). The
+     Phase-0 placeholder Sheet that used to live here was dead and double-mounted
+     on the same `drill` store — every drill opened two stacked aria-modal dialogs. -->
 
 <style>
   .shell {
@@ -129,14 +118,5 @@
     padding: 26px 32px 60px;
     max-width: 1320px;
     width: 100%;
-  }
-  .q {
-    display: inline-block;
-    font-size: 11.5px;
-    color: var(--cyan);
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    padding: 5px 9px;
   }
 </style>

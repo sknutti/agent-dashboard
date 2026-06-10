@@ -14,7 +14,7 @@
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !d || d.total === 0}
-    <EmptyState icon="circle-dot" title="No edit decisions yet" message="Accept/reject rate for Edit · MultiEdit · Write · NotebookEdit comes from the tool_decision OTEL event. It lights up once telemetry has captured a few edits.">
+    <EmptyState icon="circle-dot" title="No edit decisions yet" error={res.error} onRetry={res.reload} message="Accept/reject rate for Edit · MultiEdit · Write · NotebookEdit comes from the tool_decision OTEL event. It lights up once telemetry has captured a few edits.">
       {#snippet children()}
         <span class="hint">N = 0 · needs ≥ 10 for a stable rate</span>
       {/snippet}

@@ -71,7 +71,7 @@
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !filtered.length}
-    <EmptyState icon="box" title="No skills match" message="Adjust the search or environment filter." />
+    <EmptyState icon="box" title="No skills match" message="Adjust the search or environment filter." error={res.error} onRetry={res.reload} />
   {:else}
     <div class="scroll">
       {#each filtered as s (s.name)}

@@ -1,18 +1,21 @@
 <script lang="ts">
   import OtelIndicator from "../ui/OtelIndicator.svelte";
   import { openDrill } from "../../stores.svelte";
-  import { compact, usd, pct, AGENT_NAMES } from "../../format";
+  import { compact, usd, pct, shortDate, AGENT_NAMES } from "../../format";
   import type { AgentCardData } from "../../api";
 
   let { agent }: { agent: AgentCardData } = $props();
 
   const name = $derived(AGENT_NAMES[agent.id] ?? agent.id);
   const hasData = $derived(agent.sessions > 0);
-  // Agents whose adapter hasn't shipped yet → show the roadmap phase. As each
-  // adapter lands, drop its entry here, so an implemented agent with no data in
-  // range reads "No sessions in range" instead of an outdated "Adapter ships in
-  // Phase …". All four adapters (claude_code, codex, pi, antigravity) have shipped.
-  const ADAPTER_PHASE: Record<string, string> = {};
+  // When there are no sessions in range, say WHY: an agent with older data
+  // ("last seen <date>") is healthy-but-quiet, not broken/uninstalled (Pi's
+  // Mar–Apr data is invisible at 7d/30d and otherwise reads as a dead adapter).
+  const emptyReason = $derived(
+    agent.lastSessionAt
+      ? `No sessions in range · last seen ${shortDate(agent.lastSessionAt.slice(0, 10))}`
+      : "No sessions yet",
+  );
 
   // Token-mix segments (ADR-0003 gap #2: reasoning is first-class). The bar shows
   // segments; the input·output·reasoning·cacheR·cacheC breakdown is on hover.
@@ -54,9 +57,7 @@
   </header>
 
   {#if !hasData}
-    <p class="not-detected">
-      {#if ADAPTER_PHASE[agent.id]}Adapter ships in {ADAPTER_PHASE[agent.id]}{:else}No sessions in range{/if}
-    </p>
+    <p class="not-detected">{emptyReason}</p>
   {:else}
     <!-- Tokens + mix bar -->
     <button class="block-btn" onclick={() => drill("tokens")} title="Open this agent's sessions">

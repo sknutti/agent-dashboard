@@ -56,7 +56,7 @@
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !servers.length}
-    <EmptyState icon="plug" title="No MCP traffic in range" message="Servers with totals, avg + p95 latency. Click a server → per-tool breakdown. Slow tools (p95 ≥ 10s) flag red." />
+    <EmptyState icon="plug" title="No MCP traffic in range" message="Servers with totals, avg + p95 latency. Click a server → per-tool breakdown. Slow tools (p95 ≥ 10s) flag red." error={res.error} onRetry={res.reload} />
   {:else}
     <div class="src-row">
       <OtelIndicator on={res.data?.source === "otel"} />

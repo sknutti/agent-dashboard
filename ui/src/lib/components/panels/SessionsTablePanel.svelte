@@ -79,7 +79,7 @@
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !rows.length}
-    <EmptyState icon="layers" title="No sessions match" message="Adjust the search text, agent, outcome, or range." />
+    <EmptyState icon="layers" title="No sessions match" message="Adjust the search text, agent, outcome, or range." error={res.error} onRetry={res.reload} />
   {:else}
     <div class="tbl">
       <div class="row head">

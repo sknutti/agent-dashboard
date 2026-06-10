@@ -1,5 +1,6 @@
 <script lang="ts">
   import Card from "../ui/Card.svelte";
+  import EmptyState from "../ui/EmptyState.svelte";
   import { getTopSkills } from "../../api";
   import { resource } from "../../resource.svelte";
   import { ui } from "../../stores.svelte";
@@ -12,6 +13,8 @@
 <Card title="Skill economics" icon="dollar" kicker="token cost per skill">
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
+  {:else if res.error && !res.data}
+    <EmptyState title="" error onRetry={res.reload} />
   {:else if d && d.attributed.length}
     <div class="rows">
       {#each d.attributed as s (s.skill)}

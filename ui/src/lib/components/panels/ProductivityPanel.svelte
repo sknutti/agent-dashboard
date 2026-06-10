@@ -14,7 +14,7 @@
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !d || d.empty}
-    <EmptyState icon="gauge" title="No productivity signal yet" message="Commits, PRs, and lines added/removed come from Claude Code's delta-temporality OTEL counters. They accrue as you commit under telemetry." />
+    <EmptyState icon="gauge" title="No productivity signal yet" message="Commits, PRs, and lines added/removed come from Claude Code's delta-temporality OTEL counters. They accrue as you commit under telemetry." error={res.error} onRetry={res.reload} />
   {:else}
     <div class="tiles">
       <div class="tile"><span class="big mono">{compact(d.commits)}</span><span class="lbl">commits</span></div>

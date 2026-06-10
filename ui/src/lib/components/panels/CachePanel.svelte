@@ -24,10 +24,15 @@
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !d || d.hitRate == null}
-    <EmptyState icon="database" title="No cache data" message="Hit-rate trend with a 70% target line, once tokens flow." />
+    <EmptyState icon="database" title="No cache data" message="Hit-rate trend with a 70% target line, once tokens flow." error={res.error} onRetry={res.reload} />
   {:else}
     <div class="big-row">
       <div class="big" class:good={d.hitRate >= d.target}>{pct(d.hitRate)}</div>
+      <!-- Text state, not colour alone: amber-vs-green pass/fail is the classic
+           red/green-CVD confusion. Cyan = good (repo convention) + an explicit label. -->
+      <span class="state" class:good={d.hitRate >= d.target}>
+        {d.hitRate >= d.target ? "✓ at/above 70% target" : "below 70% target"}
+      </span>
       {#if d.lowSample}<Badge tone="amber">low sample · {compact(d.billableTokens)} billable</Badge>{/if}
     </div>
     <div class="spark" role="img" aria-label="Daily cache hit rate">
@@ -46,7 +51,9 @@
   .modal-p { margin: 0; font-size: 13px; line-height: 1.6; color: var(--text-dim); }
   .big-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
   .big { font-size: 34px; font-weight: 650; color: var(--amber); line-height: 1; }
-  .big.good { color: var(--green); }
+  .big.good { color: var(--cyan); }
+  .state { font-size: 11.5px; color: var(--amber); }
+  .state.good { color: var(--cyan); }
   .spark {
     position: relative;
     display: flex;
@@ -61,12 +68,12 @@
     border-radius: 2px 2px 0 0;
     min-height: 2px;
   }
-  .bar.good { background: color-mix(in srgb, var(--green) 60%, transparent); }
+  .bar.good { background: color-mix(in srgb, var(--cyan) 60%, transparent); }
   .target-line {
     position: absolute;
     left: 0;
     right: 0;
-    border-top: 1px dashed color-mix(in srgb, var(--green) 60%, transparent);
+    border-top: 1px dashed var(--text-subtle);
     pointer-events: none;
   }
   .target-line span {
@@ -74,6 +81,6 @@
     right: 0;
     top: -14px;
     font-size: 9px;
-    color: var(--green);
+    color: var(--text-subtle);
   }
 </style>

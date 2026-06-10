@@ -15,7 +15,7 @@
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if !d || d.totalFires === 0}
-    <EmptyState icon="plug" title="No hook fires in range" message="Hook executions (start/complete pairs, FIFO per session) arrive over OTEL once Claude Code telemetry is on. Other agents don't emit hooks." />
+    <EmptyState icon="plug" title="No hook fires in range" message="Hook executions (start/complete pairs, FIFO per session) arrive over OTEL once Claude Code telemetry is on. Other agents don't emit hooks." error={res.error} onRetry={res.reload} />
   {:else}
     <div class="summary">
       <div class="stat"><span class="big mono">{compact(d.totalFires)}</span><span class="lbl">fires</span></div>

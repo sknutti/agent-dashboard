@@ -1,5 +1,6 @@
 <script lang="ts">
   import Card from "../ui/Card.svelte";
+  import EmptyState from "../ui/EmptyState.svelte";
   import { getPressure } from "../../api";
   import { resource } from "../../resource.svelte";
   import { ui } from "../../stores.svelte";
@@ -13,6 +14,8 @@
 <Card title="Pressure" icon="alert" kicker="retry exhaustion · compaction · api errors">
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
+  {:else if res.error && !res.data}
+    <EmptyState title="" error onRetry={res.reload} />
   {:else if d}
     <div class="tiles">
       <div class="tile" class:hot={d.retryExhaustion > 0}>

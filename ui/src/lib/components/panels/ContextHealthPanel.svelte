@@ -1,5 +1,6 @@
 <script lang="ts">
   import Card from "../ui/Card.svelte";
+  import EmptyState from "../ui/EmptyState.svelte";
   import { getContextHealth } from "../../api";
   import { resource } from "../../resource.svelte";
 
@@ -14,6 +15,8 @@
 <Card title="Context health" icon="info" kicker="settings.json + CLAUDE.md — read-only">
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
+  {:else if res.error && !res.data}
+    <EmptyState title="" error onRetry={res.reload} />
   {:else if d}
     <div class="grp">
       <div class="gh"><span class="gt">settings.json</span><span class="gs mono dim">{d.settings.exists ? size(d.settings.bytes) : "—"}</span></div>
