@@ -26,6 +26,9 @@
 version: 1               # bumped when the schema of this file changes
 currency: USD
 unit: per_million_tokens
+last_updated: 2026-06-09 # MACHINE-PARSEABLE staleness anchor; `cc doctor` warns
+                         # when this drifts > 30 days. Keep in sync with the
+                         # "Last updated" comment above when you refresh rates.
 
 models:
   # ── Opus (current) ── $5 / $25

@@ -36,6 +36,7 @@ for (const f of ["agents.yaml", "prices.yaml"]) {
 }
 
 // ── Database ─────────────────────────────────────────────────────────────────
+let unpricedModels: string[] = [];
 try {
   const db = getDb();
   const tables = (
@@ -53,6 +54,17 @@ try {
       .query("SELECT MAX(created_at) AS at FROM activities WHERE event_type='sync_loop_heartbeat'")
       .get() as { at: string | null }
   ).at;
+  // Models observed in real sessions but never priced (cost_estimated_usd NULL):
+  // either a genuinely unpriced provider (e.g. Gemini, by the never-guess rule) or
+  // a gap/typo in prices.yaml. Surfaced as a warning so silent under-pricing is
+  // visible. Reported in the Prices section below.
+  unpricedModels = (
+    db
+      .query(
+        "SELECT DISTINCT model FROM sessions WHERE cost_estimated_usd IS NULL AND model IS NOT NULL AND total_tokens > 0 ORDER BY model",
+      )
+      .all() as { model: string }[]
+  ).map((r) => r.model);
   db.close();
   add("SQLite database", tables > 0 ? "ok" : "fail", `${DB_PATH} · ${tables} tables · ${beats} heartbeats`, true);
 
@@ -105,6 +117,38 @@ try {
   add("agents.yaml parse", "warn", String(err));
 }
 
+// ── Prices (staleness + observed-but-unpriced models) ────────────────────────
+// The rack-rate table drifts; a stale rate silently skews every estimate. doctor
+// only ever checked the file EXISTS — now it parses last_updated and warns past a
+// 30-day threshold, and lists models seen in real data with no price.
+try {
+  const prices = parseYaml(await Bun.file(join(CONFIG_DIR, "prices.yaml")).text()) as {
+    last_updated?: string | Date;
+  };
+  const raw = prices.last_updated;
+  const updatedMs = raw instanceof Date ? raw.getTime() : raw ? Date.parse(String(raw)) : NaN;
+  if (!Number.isFinite(updatedMs)) {
+    add("prices freshness", "warn", "no parseable last_updated: in prices.yaml");
+  } else {
+    const ageDays = Math.floor((Date.now() - updatedMs) / 86_400_000);
+    const when = new Date(updatedMs).toISOString().slice(0, 10);
+    add(
+      "prices freshness",
+      ageDays > 30 ? "warn" : "ok",
+      `last_updated ${when} (${ageDays}d ago)${ageDays > 30 ? " — refresh rack rates" : ""}`,
+    );
+  }
+} catch (err) {
+  add("prices freshness", "warn", `prices.yaml unparseable: ${err}`);
+}
+if (unpricedModels.length > 0) {
+  add(
+    "unpriced models",
+    "warn",
+    `${unpricedModels.length} observed model${unpricedModels.length > 1 ? "s" : ""} with no rack rate: ${unpricedModels.join(", ")}`,
+  );
+}
+
 // ── Server reachability + health ─────────────────────────────────────────────
 const base = `http://127.0.0.1:${PORT}`;
 try {
@@ -137,7 +181,10 @@ try {
 
 // ── Report ───────────────────────────────────────────────────────────────────
 const C = { reset: "\x1b[0m", green: "\x1b[32m", amber: "\x1b[33m", red: "\x1b[31m", dim: "\x1b[2m" };
-const mark = { ok: `${C.green}●${C.reset}`, warn: `${C.amber}●${C.reset}`, fail: `${C.red}●${C.reset}` };
+// Distinct GLYPHS per status, not color alone: red●/green● is the classic
+// red/green-CVD confusable pair, so ✓ / ▲ / ✗ carry the signal without relying
+// on hue (the color stays as a redundant cue).
+const mark = { ok: `${C.green}✓${C.reset}`, warn: `${C.amber}▲${C.reset}`, fail: `${C.red}✗${C.reset}` };
 
 console.log(`\n  ${C.dim}Command Centre · doctor${C.reset}  ${C.dim}(${PROJECT_ROOT})${C.reset}\n`);
 const pad = Math.max(...checks.map((c) => c.name.length));

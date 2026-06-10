@@ -1,0 +1,24 @@
+# CI: typecheck + unit tests + svelte-check. The review (#16) noted these all
+# pass locally but nothing ran them — this closes that gap. Harmless if the repo
+# is never pushed to GitHub; runs `bun run check` exactly as a developer would.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install root deps
+        run: bun install --frozen-lockfile || bun install
+      - name: Install UI deps
+        run: cd ui && (bun install --frozen-lockfile || bun install)
+      - name: Typecheck + test + svelte-check
+        run: bun run check

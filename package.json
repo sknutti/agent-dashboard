@@ -7,6 +7,8 @@
   "scripts": {
     "start": "bun run scripts/server.ts",
     "test": "bun test scripts",
+    "typecheck": "tsc --noEmit",
+    "check": "tsc --noEmit && bun test scripts && cd ui && bun run check",
     "dev": "bun run --watch scripts/server.ts",
     "doctor": "bun run scripts/doctor.ts",
     "sync": "bun run scripts/sync_agents.ts --once",
