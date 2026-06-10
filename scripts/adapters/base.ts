@@ -109,10 +109,17 @@ export type NormalizedEvent =
       toolUseId?: string;
       /** ISO 8601 of the invocation. */
       ts: string;
-      /** Pairing latency; null when unpaired. Orchestrator caps at 10 min. */
+      /** Pairing latency; null when unpaired. Each adapter caps an outlier pair at
+       *  {@link TOOL_DURATION_CAP_MS} before emitting (the orchestrator does NOT —
+       *  the earlier "orchestrator caps" note was wrong). */
       durationMs?: number | null;
       error?: string | null;
     };
+
+/** Outlier cap for a start↔end tool pairing (10 min): a pairing wider than this is
+ *  a parse artifact (interleaved/dropped events), not a real call. Single source of
+ *  truth — each adapter imports this instead of redefining its own copy. */
+export const TOOL_DURATION_CAP_MS = 10 * 60 * 1000;
 
 /**
  * One module per agent. Knows how to find and parse that agent's own logs into

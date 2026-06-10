@@ -215,34 +215,15 @@ CREATE TABLE IF NOT EXISTS activities (
 );
 CREATE INDEX IF NOT EXISTS idx_activities_type_created ON activities (event_type, created_at);
 
--- Realtime in-flight session state (written by a Claude Code hook in later phases).
-CREATE TABLE IF NOT EXISTS live_session_state (
-  session_id   TEXT PRIMARY KEY,
-  state        TEXT,
-  current_tool TEXT,
-  updated_at   TEXT
-);
-
--- MCP server rollup stats (MCP panel — the Phase 1 centerpiece).
-CREATE TABLE IF NOT EXISTS mcp_stats (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  server       TEXT,
-  tools        INTEGER,
-  total_tokens INTEGER,
-  error        TEXT,
-  measured_at  TEXT
-);
-
--- Per-tool MCP schema token measurement (Phase 5).
-CREATE TABLE IF NOT EXISTS mcp_schemas (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  server       TEXT,
-  tool         TEXT,
-  schema_json  TEXT,
-  tokens       INTEGER,
-  collected_at TEXT,
-  UNIQUE (server, tool)
-);
+-- NOTE (review #19): live_session_state, mcp_stats, and mcp_schemas were created
+-- here in Phase 0 as forward-scaffolding but never written or read — the MCP panel
+-- computes live from otel_events/tool_calls and /api/mcp/measure reports observed
+-- tool counts without persisting schemas. Removed from the schema so they stop
+-- reading as live tables; the phase that actually needs persisted MCP schemas or
+-- hook-driven live state will reintroduce the precise shape it wants. (No DROP
+-- here on purpose — a recurring drop would fight a future re-add, and these are
+-- empty. Any pre-existing copies on an old DB remain as inert, unreferenced
+-- orphans; harmless and droppable by hand if desired.)
 
 -- Skills registry (Skills page).
 CREATE TABLE IF NOT EXISTS skills (

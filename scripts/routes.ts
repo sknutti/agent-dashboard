@@ -54,8 +54,22 @@ function rangeStartSql(range: string): string {
   }
 }
 
-/** `DATE(col,'localtime') >= <rangeStart>` predicate fragment. */
-function rangePred(range: string, col = "started_at"): string {
+/** Range lower-bound predicate fragment (review #12). Exported for tests. */
+export function rangePred(range: string, col = "started_at"): string {
+  // The rollup tables (token_usage, burn_daily) store `date` as an ALREADY-LOCAL
+  // YYYY-MM-DD — computed via DATE(started_at,'localtime') at rollup time. Wrapping
+  // it in DATE(date,'localtime') AGAIN re-applied the local offset and shifted each
+  // date back a day in zones west of UTC (Denver: '2026-06-10' → '2026-06-09'),
+  // silently dropping the OLDEST day of every range on the Token-usage/Cache/Burn
+  // panels. Compare the raw column: correct AND sargable (hits the date index
+  // instead of full-scanning).
+  if (col === "date") return `date >= ${rangeStartSql(range)}`;
+  // Timestamp columns (sessions.started_at, tool_calls.ts, otel.timestamp) hold a
+  // UTC instant, so DATE(col,'localtime') buckets to the local day — a single,
+  // correct application. Left non-sargable on purpose: 'localtime' is
+  // non-deterministic (SQLite rejects it in a generated column / index expression),
+  // and a raw-ISO-bound rewrite would depend on every adapter storing an identical
+  // lexical timestamp format — fragile for a marginal win on these small tables.
   return `DATE(${col},'localtime') >= ${rangeStartSql(range)}`;
 }
 
@@ -63,6 +77,16 @@ function rangePred(range: string, col = "started_at"): string {
 function agentFilter(agent: string | undefined): string | null {
   if (!agent || agent === "all") return null;
   return (AGENT_IDS as readonly string[]).includes(agent) ? agent : null;
+}
+
+/** Append an `<col> = ?` agent filter to a where[]/params[] pair (no-op for
+ *  "all"/invalid, where agentFilter returns null). Collapses ~12 copy-pasted
+ *  `if (agent) { where.push(...); params.push(agent); }` blocks (review #21). */
+function pushAgent(where: string[], params: any[], agent: string | null, col = "agent"): void {
+  if (agent) {
+    where.push(`${col} = ?`);
+    params.push(agent);
+  }
 }
 
 function pct(sorted: number[], p: number): number | null {
@@ -168,7 +192,7 @@ export function registerApiRoutes(app: Hono): void {
 
     const where: string[] = [rangePred(range)];
     const params: any[] = [];
-    if (agent) { where.push("agent = ?"); params.push(agent); }
+    pushAgent(where, params, agent);
     if (model) { where.push("model = ?"); params.push(model); }
     if (source) { where.push("source = ?"); params.push(source); }
     if (outcome) { where.push(`(${OUTCOME_CASE}) = ?`); params.push(outcome); }
@@ -267,7 +291,7 @@ export function registerApiRoutes(app: Hono): void {
     const agent = agentFilter(c.req.query("agent"));
     const where = [rangePred(range, "date")];
     const params: any[] = [];
-    if (agent) { where.push("agent = ?"); params.push(agent); }
+    pushAgent(where, params, agent);
     const rows = db.query(/* sql */ `
       SELECT date, agent, model,
              SUM(input_tokens) input, SUM(output_tokens) output,
@@ -289,7 +313,7 @@ export function registerApiRoutes(app: Hono): void {
     const agent = agentFilter(c.req.query("agent"));
     const where = [rangePred(range, "date")];
     const params: any[] = [];
-    if (agent) { where.push("agent = ?"); params.push(agent); }
+    pushAgent(where, params, agent);
     const daily = db.query(/* sql */ `
       SELECT date,
              SUM(cache_read_tokens) cacheRead,
@@ -318,7 +342,7 @@ export function registerApiRoutes(app: Hono): void {
     const agent = agentFilter(c.req.query("agent"));
     const where = [rangePred(range, "ts")];
     const params: any[] = [];
-    if (agent) { where.push("agent = ?"); params.push(agent); }
+    pushAgent(where, params, agent);
     const rows = db.query(/* sql */ `
       SELECT tool_name, duration_ms, error FROM tool_calls
       WHERE ${where.join(" AND ")}`).all(...params) as any[];
@@ -353,7 +377,7 @@ export function registerApiRoutes(app: Hono): void {
     const agent = agentFilter(c.req.query("agent"));
     const where = [rangePred(range)];
     const params: any[] = [];
-    if (agent) { where.push("agent = ?"); params.push(agent); }
+    pushAgent(where, params, agent);
     const rows = db.query(/* sql */ `
       SELECT DATE(started_at,'localtime') date, ${OUTCOME_CASE} outcome, COUNT(*) n
       FROM sessions WHERE ${where.join(" AND ")} AND started_at IS NOT NULL
@@ -430,7 +454,7 @@ export function registerApiRoutes(app: Hono): void {
     const agent = agentFilter(c.req.query("agent"));
     const where = [rangePred(range, "date")];
     const params: any[] = [];
-    if (agent) { where.push("agent = ?"); params.push(agent); }
+    pushAgent(where, params, agent);
     const rows = db.query<BurnRow & { fidelity: string; driver: string | null; evidence: string | null }, any[]>(/* sql */ `
       SELECT date, agent, tokens, cost_usd, cost_estimated_usd, fidelity, driver, evidence
       FROM burn_daily WHERE ${where.join(" AND ")}
@@ -496,7 +520,7 @@ export function registerApiRoutes(app: Hono): void {
     const agent = agentFilter(c.req.query("agent"));
     const where = [rangePred(range), "cwd IS NOT NULL"];
     const params: any[] = [];
-    if (agent) { where.push("agent = ?"); params.push(agent); }
+    pushAgent(where, params, agent);
     const rows = db.query(/* sql */ `
       SELECT cwd, COUNT(*) sessions,
              COALESCE(SUM(effective_tokens),0) eff, COALESCE(SUM(total_tokens),0) tokens
@@ -505,7 +529,7 @@ export function registerApiRoutes(app: Hono): void {
     // Tool counts per cwd via a join under the same range/agent filter.
     const toolWhere = [rangePred(range, "t.ts"), "s.cwd IS NOT NULL"];
     const toolParams: any[] = [];
-    if (agent) { toolWhere.push("s.agent = ?"); toolParams.push(agent); }
+    pushAgent(toolWhere, toolParams, agent, "s.agent");
     const toolRows = db.query(/* sql */ `
       SELECT s.cwd cwd, COUNT(*) n
       FROM tool_calls t JOIN sessions s ON s.session_id = t.session_id
@@ -536,7 +560,7 @@ export function registerApiRoutes(app: Hono): void {
     const agent = agentFilter(c.req.query("agent"));
     const where = [rangePred(range, "t.ts"), "t.tool_name IN ('Agent','Task')"];
     const params: any[] = [];
-    if (agent) { where.push("s.agent = ?"); params.push(agent); }
+    pushAgent(where, params, agent, "s.agent");
     const rows = db.query(/* sql */ `
       SELECT s.session_id, s.agent, s.title, s.cwd, s.started_at, COUNT(*) agentCalls
       FROM tool_calls t JOIN sessions s ON s.session_id = t.session_id
@@ -561,7 +585,7 @@ export function registerApiRoutes(app: Hono): void {
       rangePred(range, "timestamp"),
     ];
     const params: any[] = [...EDIT];
-    if (agent) { where.push("agent = ?"); params.push(agent); }
+    pushAgent(where, params, agent);
     const rows = db.query(/* sql */ `
       SELECT tool_name, decision, COUNT(*) n FROM otel_events
       WHERE ${where.join(" AND ")}
@@ -782,7 +806,7 @@ export function registerApiRoutes(app: Hono): void {
       "(COALESCE(error_count,0) > 0 OR COALESCE(rate_limit_hit,0) = 1 OR stop_reason IN ('max_tokens','length'))",
     ];
     const params: any[] = [];
-    if (agent) { where.push("agent = ?"); params.push(agent); }
+    pushAgent(where, params, agent);
     const rows = db.query(/* sql */ `
       SELECT session_id, agent, model, title, cwd, started_at, error_count, rate_limit_hit,
              stop_reason, ${OUTCOME_CASE} AS outcome

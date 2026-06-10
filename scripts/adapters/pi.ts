@@ -58,9 +58,7 @@ import type {
   Fidelity,
   NormalizedEvent,
 } from "./base.ts";
-
-/** A paired duration longer than this is an orphan (user think-time / crash). */
-const TOOL_DURATION_CAP_MS = 10 * 60 * 1000;
+import { TOOL_DURATION_CAP_MS } from "./base.ts";
 
 export interface PiAdapterOptions {
   /** Absolute sessions dir; defaults to ~/.pi/agent/sessions. */

@@ -38,9 +38,7 @@ import type {
   Fidelity,
   NormalizedEvent,
 } from "./base.ts";
-
-/** A paired duration longer than this is an orphan from a crashed session. */
-const TOOL_DURATION_CAP_MS = 10 * 60 * 1000;
+import { TOOL_DURATION_CAP_MS } from "./base.ts";
 
 export interface CodexAdapterOptions {
   /** Absolute sessions dir; defaults to $CODEX_HOME/sessions (~/.codex/sessions). */

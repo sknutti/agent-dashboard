@@ -31,9 +31,7 @@ import type {
   Fidelity,
   NormalizedEvent,
 } from "./base.ts";
-
-/** tool_result durations longer than this are orphans from a crashed session. */
-const TOOL_DURATION_CAP_MS = 10 * 60 * 1000;
+import { TOOL_DURATION_CAP_MS } from "./base.ts";
 
 export interface ClaudeAdapterOptions {
   /** Absolute projects dir; defaults to ~/.claude/projects. */
