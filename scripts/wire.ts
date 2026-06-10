@@ -14,6 +14,12 @@ import type { BurnRow, BurnDay } from "./burn.ts";
 // layer and base agree by construction (review #17 — was a 2nd hand-kept copy).
 export type { AgentId } from "./adapters/base.ts";
 
+// Display shapes for the on-demand parsed Errors view (ADR-0005). Canonical
+// definitions live in error_context.ts (the parser); re-exported here so the wire
+// layer and the parser agree by construction, same pattern as AgentId above.
+export type { DisplayMessage, ErrorContext } from "./error_context.ts";
+import type { ErrorContext } from "./error_context.ts";
+
 export interface TokenCounts {
   input: number;
   output: number;
@@ -70,6 +76,18 @@ export interface SessionsResponse {
   limit: number;
   offset: number;
   sessions: SessionRow[];
+}
+
+// GET /api/sessions/:id/errors. `supported:false` carries `note` (unsupported
+// agent / missing raw log); a non-errored Failure carries `failureNote` + empty
+// `errors` (rate-limited/truncated have no tool call to anchor); an errored
+// session carries the windowed `errors`. 404 returns `{error}` instead (not this).
+export interface SessionErrorsResponse {
+  supported: boolean;
+  outcome: string;
+  errors?: ErrorContext[];
+  note?: string;
+  failureNote?: string;
 }
 
 export interface BurnResponse {

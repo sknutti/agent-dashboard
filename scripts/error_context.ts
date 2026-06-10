@@ -95,6 +95,10 @@ async function* readLines(filePath: string): AsyncIterable<string> {
   for await (const line of rl) yield line;
 }
 
+/** Agents with a display parser (the three text-JSONL formats). Antigravity
+ *  (protobuf, 0 errored sessions) is intentionally absent — ADR-0005. */
+export const DISPLAY_PARSER_AGENTS = new Set(["claude_code", "codex", "pi"]);
+
 /** Parse a session log into ordered readable messages. Each per-agent reader
  *  mirrors the exact raw shape documented in scripts/adapters/<agent>.ts. */
 export async function parseDisplay(agent: string, filePath: string): Promise<DisplayMessage[]> {

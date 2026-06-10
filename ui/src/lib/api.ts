@@ -89,6 +89,32 @@ export interface SessionDetail {
   tools: { tool_use_id: string | null; tool_name: string; ts: string; duration_ms: number | null; error: string | null }[];
 }
 
+// Parsed Errors view (ADR-0005). Mirrors scripts/error_context.ts + wire.ts.
+export interface DisplayMessage {
+  role: "user" | "assistant" | "tool";
+  text: string;
+  isError: boolean;
+  toolName?: string;
+  toolInput?: string;
+}
+
+export interface ErrorContext {
+  toolName: string;
+  toolInput: string;
+  errorText: string;
+  before: DisplayMessage[];
+  after: DisplayMessage[];
+  index: number;
+}
+
+export interface SessionErrors {
+  supported: boolean;
+  outcome: string;
+  errors?: ErrorContext[];
+  note?: string; // unsupported agent / missing raw log → defer to Messages
+  failureNote?: string; // rate-limited / truncated: no Error to anchor
+}
+
 export interface LiveSession {
   session_id: string;
   agent: string;
@@ -297,6 +323,8 @@ export const getSessions = (q: {
   return getJson<{ total: number; limit: number; offset: number; sessions: SessionRow[] }>(`/api/sessions?${p}`);
 };
 export const getSessionDetail = (id: string) => getJson<SessionDetail>(`/api/sessions/${id}/details`);
+export const getSessionErrors = (id: string) =>
+  getJson<SessionErrors>(`/api/sessions/${encodeURIComponent(id)}/errors`);
 export const getLive = () => getJson<{ sessions: LiveSession[] }>("/api/sessions/live");
 export const getTokenUsage = (range: Range, agent?: string) =>
   getJson<TokenUsage>(`/api/usage/tokens?range=${range}${agent ? `&agent=${agent}` : ""}`);
