@@ -108,6 +108,10 @@ function pct(sorted: number[], p: number): number | null {
   return sorted[idx] ?? null;
 }
 
+/** Tools whose measured latency is human response time (block until the user
+ *  answers/approves), not tool execution — surfaced as a category, not "slow". */
+const HUMAN_GATED = new Set(["AskUserQuestion", "ExitPlanMode"]);
+
 /** Outcome classification SQL (priority: errored > rate_limited > truncated > unfinished > ok). */
 const OUTCOME_CASE = /* sql */ `
   CASE
@@ -389,6 +393,7 @@ export function registerApiRoutes(app: Hono): void {
       const s = t.durs.slice().sort((a, b) => a - b);
       return {
         tool,
+        humanGated: HUMAN_GATED.has(tool),
         calls: t.calls,
         paired: s.length,
         errors: t.errors,
@@ -398,7 +403,10 @@ export function registerApiRoutes(app: Hono): void {
         max: s.length ? s[s.length - 1] : null,
       };
     });
-    tools.sort((a, b) => (b.p95 ?? -1) - (a.p95 ?? -1));
+    // Human-gated tools' latency IS human response time, not execution — keep them
+    // out of the slow ranking (sink to the bottom) so genuinely slow tools surface.
+    tools.sort((a, b) =>
+      a.humanGated !== b.humanGated ? (a.humanGated ? 1 : -1) : (b.p95 ?? -1) - (a.p95 ?? -1));
     return c.json({ range, tools });
   });
 

@@ -8,11 +8,14 @@
 
   const res = resource(() => `tools:${ui.range}`, () => getToolLatency(ui.range));
   const tools = $derived(res.data?.tools ?? []);
+  const hasHumanGated = $derived(tools.some((t) => t.humanGated));
 
-  function flag(p95: number | null): "slow" | "fast" | "" {
-    if (p95 == null) return "";
-    if (p95 >= 10_000) return "slow";
-    if (p95 < 500) return "fast";
+  // Human-gated tools measure your response time, not execution — never flag them
+  // slow/fast (the p95 is think-time, not a performance signal).
+  function flag(t: { p95: number | null; humanGated: boolean }): "slow" | "fast" | "" {
+    if (t.humanGated || t.p95 == null) return "";
+    if (t.p95 >= 10_000) return "slow";
+    if (t.p95 < 500) return "fast";
     return "";
   }
 </script>
@@ -26,7 +29,7 @@
     <div class="tbl">
       <div class="row head">
         <span class="c-tool">tool</span>
-        <span class="c-n">N</span>
+        <span class="c-n">NUM</span>
         <span class="c-num">p50</span>
         <span class="c-num">p95</span>
         <span class="c-num">max</span>
@@ -37,16 +40,19 @@
           <div class="row">
             <span class="c-tool" title={t.tool}>
               {t.tool}
-              {#if flag(t.p95) === "slow"}<span class="tag slow">· slow</span>{:else if flag(t.p95) === "fast"}<span class="tag fast">· fast</span>{/if}
+              {#if t.humanGated}<span class="tag human" title="Latency is your response time, not tool execution — excluded from the slow ranking">· human-gated</span>{:else if flag(t) === "slow"}<span class="tag slow">· slow</span>{:else if flag(t) === "fast"}<span class="tag fast">· fast</span>{/if}
             </span>
             <span class="c-n mono">{compact(t.calls)}</span>
-            <span class="c-num mono">{ms(t.p50)}</span>
-            <span class="c-num mono" class:bad={flag(t.p95) === "slow"} class:good={flag(t.p95) === "fast"}>{ms(t.p95)}</span>
+            <span class="c-num mono" class:dim={t.humanGated}>{ms(t.p50)}</span>
+            <span class="c-num mono" class:bad={flag(t) === "slow"} class:good={flag(t) === "fast"} class:dim={t.humanGated}>{ms(t.p95)}</span>
             <span class="c-num mono dim">{ms(t.max)}</span>
             <span class="c-num mono" class:bad={t.errorRate > 0}>{t.errors ? pct(t.errorRate, 0) : "0"}</span>
           </div>
         {/each}
       </div>
+      {#if hasHumanGated}
+        <p class="note">Human-gated tools (AskUserQuestion, ExitPlanMode) measure your response time, not execution — sunk to the bottom, never flagged slow.</p>
+      {/if}
     </div>
   {/if}
 </Card>
@@ -81,4 +87,6 @@
   .tag { font-size: 9.5px; font-weight: 600; }
   .tag.slow { color: var(--red); }
   .tag.fast { color: var(--cyan); }
+  .tag.human { color: var(--text-subtle); font-weight: 500; }
+  .note { margin: 8px 4px 0; font-size: 10.5px; line-height: 1.4; color: var(--text-subtle); }
 </style>

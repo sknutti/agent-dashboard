@@ -119,7 +119,7 @@ export interface CacheStats {
 
 export interface ToolLatency {
   range: string;
-  tools: { tool: string; calls: number; paired: number; errors: number; errorRate: number; p50: number | null; p95: number | null; max: number | null }[];
+  tools: { tool: string; humanGated: boolean; calls: number; paired: number; errors: number; errorRate: number; p50: number | null; p95: number | null; max: number | null }[];
 }
 
 export interface Outcomes {

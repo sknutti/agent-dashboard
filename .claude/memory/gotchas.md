@@ -223,3 +223,36 @@
   `build.sourcemap=true` + `source-map` pkg to resolve minified frames to source.
 - No Svelte-runes unit-test seam exists (bun test can't compile `.svelte.ts`); a
   vitest + @testing-library/svelte harness would let this be locked with a test.
+
+## Native cost (`claude_code`) is OTEL-only — starves silently when telemetry is off
+- **Symptom:** Burn panel + Claude AgentCard "native cost" frozen on one old date
+  (e.g. Jun 9) while *estimated* cost keeps updating daily.
+- **Why:** for `claude_code`, native USD comes 100% from OTEL metric
+  `claude_code.cost.usage`. Interactive Claude sessions NEVER write JSONL native
+  (`total_cost_usd` is print-mode `claude -p` only → `sessions.cost_usd` is NULL
+  for every claude_code row, every day). `routes.ts` prefers OTEL whenever non-null
+  (`nativeUsd = otelNative ?? tok.costUsd`), so a single stale OTEL sample pins it.
+  Estimated cost is a SEPARATE path (sync worker derives from token counts via
+  cost.ts) — that's why est moves and native doesn't.
+- **Diagnosis is data-starvation, NOT a dashboard bug.** Ingest/storage verified
+  healthy: synthetic OTLP POST to `/v1/metrics` with a `cost.usage` point lands
+  correctly. The whole `otel_metrics` table can be a handful of rows from one batch.
+- **Real root cause (this machine):** OTEL export from Claude Code isn't sustained.
+  `~/.claude/settings.json` has the right OTEL env block (endpoint localhost:8765),
+  but day-to-day sessions are launched by **cmux with a `--settings {...}` override**
+  and the running `claude` procs have NO OTEL vars in env (`ps eww`) → no export.
+  The lone Jun 9 sample was a one-off from a session that did have telemetry on.
+  Also the ingest server (`:8765`) isn't always up in dev → nothing to receive exports.
+- **Parked (2026-06-10):** revisit once the server runs consistently; behavior left
+  as-is (OTEL-first/JSONL-fallback logic is correct, gap is upstream telemetry).
+
+## Tool latency includes human-wait time — "human-gated" tools are tagged & de-ranked
+- **Latency semantics:** `tool_calls.duration_ms` = wall-clock `tool_result.ts − tool_use.ts`,
+  capped at `TOOL_DURATION_CAP_MS` (10 min) in `claude_code.ts`. For tools that BLOCK on
+  the user (AskUserQuestion ~108s avg / 600s cap-clamped; ExitPlanMode), that "latency" is
+  YOUR response time, not execution — a measurement artifact, not a perf signal.
+- **Convention (2026-06-10):** `/api/tools/latency` tags these via `HUMAN_GATED` set
+  (`routes.ts`) → `humanGated: boolean` per tool; sort sinks them to the bottom so genuinely
+  slow tools (query_experts, WebFetch, Skill — real model/system latency) surface at top.
+  `ToolLatencyPanel.svelte` never flags human-gated rows slow/fast, shows a neutral
+  "· human-gated" tag + caption. To add a human-gated tool, extend the `HUMAN_GATED` set only.
