@@ -26,17 +26,23 @@ export function resource<T>(
   });
 
   let nonce = 0;
+  let loadedOnce = false;
   function run(k: string) {
     const my = ++nonce;
-    // Only show the loading skeleton on the FIRST fetch (no data yet). A periodic
-    // background refresh (dataEpoch bump) keeps the stale data visible until the
-    // new data lands, so panels don't flash skeletons every 30s.
-    if (state.data === null) state.loading = true;
+    // Only show the loading skeleton on the FIRST fetch; a periodic background
+    // refresh keeps stale data visible so panels don't flash skeletons every 30s.
+    // CRITICAL: this gate MUST be a plain flag, never a read of `state.data`.
+    // run() executes synchronously inside the $effect below, so reading reactive
+    // state here makes `state.data` a DEPENDENCY of that effect — and the `.then`
+    // sets `state.data`, which would re-trigger the effect → refetch → set → … an
+    // infinite async refetch loop that froze the whole app (every panel uses this).
+    if (!loadedOnce) state.loading = true;
     fetcher(k)
       .then((d) => {
         if (my !== nonce) return; // a newer request superseded this one
         state.data = d;
         state.error = false;
+        loadedOnce = true;
       })
       .catch(() => {
         if (my !== nonce) return;
