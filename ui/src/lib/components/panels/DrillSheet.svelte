@@ -24,6 +24,18 @@
     },
   );
 
+  // The errors drill (AgentCard's errors cell → outcome "errored") hands off to the
+  // session page's Errors tab and closes the drawer; every other drill keeps its
+  // in-drawer detail (ADR-0005 / ADR-0003). The drill type is read from ctx.outcome.
+  function pickSession(id: string) {
+    if (drill.ctx?.outcome === "errored") {
+      navigate(`/session/${encodeURIComponent(id)}`, "?tab=errors");
+      closeDrill();
+    } else {
+      openDetail(id);
+    }
+  }
+
   async function openDetail(id: string) {
     selected = id;
     detail = null;
@@ -101,7 +113,7 @@
       <p class="count">{listRes.data.total} session{listRes.data.total === 1 ? "" : "s"} · range {ui.range}</p>
       <div class="list">
         {#each listRes.data.sessions as s (s.session_id)}
-          <button class="srow" onclick={() => openDetail(s.session_id)}>
+          <button class="srow" onclick={() => pickSession(s.session_id)}>
             <div class="s-main">
               <span class="s-title">{s.title ?? `session:${s.session_id.slice(0, 8)}`}</span>
               <span class="s-sub mono">{projectName(s.cwd)} · {relTime(s.started_at)}</span>

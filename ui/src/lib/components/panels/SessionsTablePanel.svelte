@@ -120,7 +120,23 @@
               <span class="t-sub dim" title={s.cwd ?? ""}>{projectName(s.cwd)}</span>
             </span>
             <span class="c-agent dim">{AGENT_NAMES[s.agent] ?? s.agent}</span>
-            <span class="c-out"><span class="pill {s.outcome}">{s.outcome === "rate_limited" ? "rate-limited" : s.outcome}</span></span>
+            <span class="c-out">
+              {#if s.outcome === "errored"}
+                <!-- The errored pill is a shortcut to that session's Errors tab. It's
+                     a span[role=button] (NOT a <button>) so it's valid inside the row
+                     button; stopPropagation keeps the row's Messages nav from firing
+                     too. ✗ pairs the red (colourblind rule). -->
+                <span
+                  class="pill errored pillbtn" role="button" tabindex="0"
+                  aria-label="View parsed errors for this session"
+                  title="View parsed errors"
+                  onclick={(e) => { e.stopPropagation(); navigate(`/session/${encodeURIComponent(s.session_id)}`, "?tab=errors"); }}
+                  onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); navigate(`/session/${encodeURIComponent(s.session_id)}`, "?tab=errors"); } }}
+                >errored <span class="xmark">✗</span></span>
+              {:else}
+                <span class="pill {s.outcome}">{s.outcome === "rate_limited" ? "rate-limited" : s.outcome}</span>
+              {/if}
+            </span>
             <span class="c-num mono">{compact(s.total_tokens)}</span>
             <span class="c-num mono dim">{usd(s.cost_estimated_usd)}</span>
             <span class="c-when mono dim">{relTime(s.started_at)}</span>
@@ -230,6 +246,10 @@
   .pill.errored { color: var(--red); }
   .pill.rate_limited, .pill.truncated { color: var(--amber); }
   .pill.ok { color: var(--cyan); }
+  .pillbtn { cursor: pointer; }
+  .pillbtn:hover { background: color-mix(in srgb, var(--red) 16%, var(--surface-2)); }
+  .pillbtn:focus-visible { outline: 1px solid var(--red); outline-offset: 1px; }
+  .xmark { font-weight: 700; }
   .pager { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; }
   .pinfo { font-size: 11.5px; color: var(--text-subtle); }
   .pbtns { display: flex; gap: 6px; }

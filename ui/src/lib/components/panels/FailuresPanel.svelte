@@ -28,7 +28,9 @@
     <div class="cap">{d?.total} failed session{d?.total === 1 ? "" : "s"} in range · showing {failures.length}</div>
     <div class="scroll">
       {#each failures as f (f.session_id)}
-        <button class="row rowbtn" type="button" title="Open session" onclick={() => navigate(`/session/${encodeURIComponent(f.session_id)}`)}>
+        <!-- Failures land on the Errors tab — for an errored session that's the
+             parsed windows; rate-limited/truncated get the one-line failure note. -->
+        <button class="row rowbtn" type="button" title="Open session" onclick={() => navigate(`/session/${encodeURIComponent(f.session_id)}`, "?tab=errors")}>
           <span class="c-title" title={f.title ?? f.session_id}>{f.title ?? `session:${f.session_id.slice(0, 8)}`}</span>
           <span class="c-agent dim">{AGENT_NAMES[f.agent] ?? f.agent}</span>
           <span class="c-out"><span class="pill {f.outcome}">{LABEL[f.outcome] ?? f.outcome}</span></span>
