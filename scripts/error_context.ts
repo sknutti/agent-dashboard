@@ -324,7 +324,9 @@ async function parsePi(filePath: string): Promise<DisplayMessage[]> {
               text: "",
               isError: false,
               toolName: typeof block.name === "string" ? block.name : "unknown",
-              toolInput: stringifyInput(block.input),
+              // Real pi stores the input under `arguments` (OpenAI-style); `input`
+              // is the older/ADR-noted key — read either so toolInput is never blank.
+              toolInput: stringifyInput(block.arguments ?? block.input),
             }) - 1;
           toolIndexById.set(block.id, idx);
         }

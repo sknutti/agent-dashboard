@@ -129,6 +129,26 @@ test("pi: toolResult.isError flags the toolCall, with input + content", async ()
   expect(e.after.map((m) => m.role)).toEqual(["assistant"]);
 });
 
+// Real pi toolCall blocks carry the input under `arguments` (OpenAI-style), not
+// `input` as the ADR note assumed — verified against real session files. The
+// parser must read `arguments` (falling back to `input`) or the failing input is
+// blank in the Errors view.
+test("pi: toolCall input is read from the real `arguments` key", async () => {
+  const path = fixture("pi-args", [
+    JSON.stringify({ type: "message", id: "1", timestamp: "2026-06-01T00:00:00Z",
+      message: { role: "assistant", content: [
+        { type: "toolCall", id: "c1", name: "read", arguments: { path: "/etc/secret.conf" } },
+      ] } }),
+    JSON.stringify({ type: "message", id: "2", timestamp: "2026-06-01T00:00:01Z",
+      message: { role: "toolResult", toolCallId: "c1", toolName: "read", isError: true,
+        content: "ENOENT: no such file or directory" } }),
+  ]);
+  const e = windowErrors(await parseDisplay("pi", path))[0]!;
+  expect(e.toolName).toBe("read");
+  expect(e.toolInput).toContain("/etc/secret.conf");
+  expect(e.errorText).toContain("ENOENT");
+});
+
 // ── windowErrors (pure) ──────────────────────────────────────────────────────
 test("window clamps at start and end without crashing", () => {
   const atStart: DisplayMessage[] = [

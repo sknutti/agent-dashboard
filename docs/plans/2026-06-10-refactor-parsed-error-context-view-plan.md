@@ -235,21 +235,21 @@ restructuring. Out of scope here (stays read-only, ADR-0003).
 
 ## Acceptance Criteria
 
-- [ ] `GET /api/sessions/:id/errors` resolves the raw log via `sessions.source_path` (not
+- [x] `GET /api/sessions/:id/errors` resolves the raw log via `sessions.source_path` (not
       `findSessionFile`) and returns, per errored tool call, `{ toolName, toolInput, errorText,
       before[], after[] }` for claude_code / codex / pi.
-- [ ] Antigravity (or any agent without a display parser) returns `supported:false` with the
+- [x] Antigravity (or any agent without a display parser) returns `supported:false` with the
       "parsed error view unavailable for this agent" note; the Errors tab shows it and points to Messages.
-- [ ] A rate-limited / truncated Failure returns `errors:[]` + a one-line failure explanation; the
+- [x] A rate-limited / truncated Failure returns `errors:[]` + a one-line failure explanation; the
       Errors tab defers to Messages.
-- [ ] The session page is tabbed Errors | Messages; Messages is the unchanged, complete, in-order
+- [x] The session page is tabbed Errors | Messages; Messages is the unchanged, complete, in-order
       `SessionFeed`; `?tab=errors` deep-links to Errors; normal nav defaults to Messages.
-- [ ] FailuresPanel row → Errors tab; SessionsTablePanel errored-pill (stopPropagation) → Errors tab
+- [x] FailuresPanel row → Errors tab; SessionsTablePanel errored-pill (stopPropagation) → Errors tab
       while the rest of the row → Messages; AgentCard errors drill → DrillSheet list whose pick
       navigates to the page Errors tab and closes the drawer; other drills keep in-drawer detail.
-- [ ] Every red error indicator is paired with the `✗` glyph (no color-alone signaling).
-- [ ] Display parsers live in a module separate from `scripts/adapters/`.
-- [ ] `bun test scripts` and `cd ui && bun run test` (vitest) pass; `bun run check` is green.
+- [x] Every red error indicator is paired with the `✗` glyph (no color-alone signaling).
+- [x] Display parsers live in a module separate from `scripts/adapters/`.
+- [x] `bun test scripts` and `cd ui && bun run test` (vitest) pass; `bun run check` is green.
 
 ## Risks and Dependencies
 
