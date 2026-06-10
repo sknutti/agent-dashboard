@@ -34,6 +34,56 @@ worker.unref(); // don't keep the process alive on the worker alone
 // ── App ─────────────────────────────────────────────────────────────────────
 const app = new Hono();
 
+// ── Loopback guard (DNS-rebinding + drive-by CSRF defense) ──────────────────
+// Binding to 127.0.0.1 stops the LAN but NOT the user's own browser: a webpage
+// can fetch http://127.0.0.1:<port>, and DNS rebinding can make an attacker
+// domain resolve to 127.0.0.1 to defeat the same-origin policy entirely. Two
+// checks close that:
+//   1. Host allowlist on EVERYTHING — a rebinding request arrives with the
+//      attacker's Host (evil.com:<port>), never 127.0.0.1, so this rejects it.
+//   2. Origin check on state-changing methods + the unauthenticated /v1/* OTLP
+//      ingest — a plain cross-origin POST (e.g. the text/plain no-preflight
+//      trick that poisons cost data) carries a foreign Origin and is rejected,
+//      while real server-to-server emitters (Claude Code OTLP) send NO Origin
+//      and pass. Read routes need no Origin check: with no CORS headers the
+//      browser already blocks cross-origin reads, and check #1 blocks rebinding.
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+
+/** Host/Origin value → bare hostname (strip :port and IPv6 brackets), or null. */
+function hostnameOf(value: string | undefined | null): string | null {
+  if (!value) return null;
+  let v = value.trim();
+  if (v.includes("://")) {
+    try { return new URL(v).hostname.replace(/^\[|\]$/g, ""); } catch { return null; }
+  }
+  if (v.startsWith("[")) return v.slice(1, v.indexOf("]") >= 0 ? v.indexOf("]") : v.length); // [::1]:port
+  const colon = v.lastIndexOf(":");
+  if (colon > 0) v = v.slice(0, colon);
+  return v;
+}
+
+app.use("*", async (c, next) => {
+  // 1. Host must be loopback. A missing Host header (rare, non-browser) is
+  //    allowed since the rebinding vector always carries a non-loopback Host.
+  const host = hostnameOf(c.req.header("host"));
+  if (host !== null && !LOOPBACK_HOSTS.has(host)) {
+    return c.json({ error: "forbidden host" }, 403);
+  }
+  // 2. On writes, a present Origin must be loopback too. Absent Origin =
+  //    server-to-server emitter or same-origin GET → allowed.
+  const method = c.req.method;
+  if (method === "POST" || method === "PATCH" || method === "PUT" || method === "DELETE") {
+    const origin = c.req.header("origin");
+    if (origin) {
+      const oh = hostnameOf(origin);
+      if (oh === null || !LOOPBACK_HOSTS.has(oh)) {
+        return c.json({ error: "forbidden origin" }, 403);
+      }
+    }
+  }
+  await next();
+});
+
 /** Read MAX(col) as an epoch-age in seconds, or null if no rows. */
 function ageSeconds(sql: string): number | null {
   const row = db.query(sql).get() as { latest: string | null } | null;
