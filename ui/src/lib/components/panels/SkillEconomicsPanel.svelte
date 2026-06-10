@@ -10,7 +10,7 @@
   const d = $derived(res.data);
 </script>
 
-<Card title="Skill economics" icon="dollar" kicker="token cost per skill">
+<Card title="Skill economics" icon="dollar" kicker="invocations per skill · token cost needs OTEL">
   {#if res.loading && !res.data}
     <div class="muted">Loading…</div>
   {:else if res.error && !res.data}

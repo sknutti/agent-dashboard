@@ -2,8 +2,9 @@
   import Sheet from "../ui/Sheet.svelte";
   import Badge from "../ui/Badge.svelte";
   import Icon from "../ui/Icon.svelte";
-  import { drill, closeDrill } from "../../stores.svelte";
+  import { drill, closeDrill, ui } from "../../stores.svelte";
   import { getSessions, getSessionDetail, type SessionRow, type SessionDetail } from "../../api";
+  import { navigate } from "../../router.svelte";
   import { resource } from "../../resource.svelte";
   import { compact, usd, ms, relTime, projectName } from "../../format";
 
@@ -13,11 +14,13 @@
   let detail = $state<SessionDetail | null>(null);
   let detailLoading = $state(false);
 
+  // The drill list honours the GLOBAL range toggle (was hardcoded "30d", so cell
+  // counts computed at the page range disagreed with the sheet's contents).
   const listRes = resource(
-    () => `drill:${drill.open}:${drill.ctx?.agent ?? ""}:${drill.ctx?.outcome ?? ""}`,
+    () => `drill:${drill.open}:${ui.range}:${drill.ctx?.agent ?? ""}:${drill.ctx?.outcome ?? ""}`,
     async () => {
       if (!drill.open) return { total: 0, limit: 0, offset: 0, sessions: [] as SessionRow[] };
-      return getSessions({ range: "30d", agent: drill.ctx?.agent, outcome: drill.ctx?.outcome, limit: 100 });
+      return getSessions({ range: ui.range, agent: drill.ctx?.agent, outcome: drill.ctx?.outcome, limit: 100 });
     },
   );
 
@@ -82,7 +85,7 @@
       <div class="timeline">
         {#each detail.tools as t (t.ts + (t.tool_use_id ?? ''))}
           <div class="tl-row" class:err={t.error != null}>
-            <span class="tl-name">{t.tool_name}</span>
+            <span class="tl-name">{#if t.error != null}<span class="xmark" title={t.error}>✗</span> {/if}{t.tool_name}</span>
             <span class="tl-dur mono">{ms(t.duration_ms)}</span>
           </div>
         {/each}
@@ -95,7 +98,7 @@
     {:else if !listRes.data?.sessions.length}
       <div class="muted">No matching sessions.</div>
     {:else}
-      <p class="count">{listRes.data.total} session{listRes.data.total === 1 ? "" : "s"}</p>
+      <p class="count">{listRes.data.total} session{listRes.data.total === 1 ? "" : "s"} · range {ui.range}</p>
       <div class="list">
         {#each listRes.data.sessions as s (s.session_id)}
           <button class="srow" onclick={() => openDetail(s.session_id)}>
@@ -148,6 +151,9 @@
   .timeline { display: flex; flex-direction: column; max-height: 320px; overflow-y: auto; }
   .tl-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 2px; border-bottom: 1px solid var(--border); font-size: 12px; }
   .tl-row.err .tl-name { color: var(--red); }
+  /* Explicit ✗ glyph so an errored row is not signalled by red text alone
+     (red/green CVD) — mirrors FailuresPanel. */
+  .xmark { color: var(--red); font-weight: 700; }
   .tl-name { color: var(--text-dim); }
   .tl-dur { color: var(--text-subtle); }
 </style>

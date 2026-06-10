@@ -2,6 +2,8 @@
 // reactive `key()` changes (Svelte 5 runes). `$effect` here syncs with an external
 // system (the API) — the one legitimate effect use — and cancels stale fetches.
 
+import { dataEpoch } from "./stores.svelte";
+
 export interface Resource<T> {
   data: T | null;
   loading: boolean;
@@ -26,7 +28,10 @@ export function resource<T>(
   let nonce = 0;
   function run(k: string) {
     const my = ++nonce;
-    state.loading = true;
+    // Only show the loading skeleton on the FIRST fetch (no data yet). A periodic
+    // background refresh (dataEpoch bump) keeps the stale data visible until the
+    // new data lands, so panels don't flash skeletons every 30s.
+    if (state.data === null) state.loading = true;
     fetcher(k)
       .then((d) => {
         if (my !== nonce) return; // a newer request superseded this one
@@ -44,6 +49,7 @@ export function resource<T>(
 
   $effect(() => {
     const k = keyFn(); // tracked
+    void dataEpoch.value; // tracked: a poll-driven epoch bump refetches all panels
     run(k);
   });
 

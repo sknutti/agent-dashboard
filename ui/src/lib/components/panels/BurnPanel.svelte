@@ -86,6 +86,12 @@
     <EmptyState icon="gauge" title="Nothing to burn yet" message="A bill tells you what happened — a burn view changes what you hand the computer tomorrow." error={res.error} onRetry={res.reload} />
   {:else}
     <p class="caption">Each box is one local day. Color is log-scaled per-day token spend — brighter (yellow) is heavier, deep blue is lighter.</p>
+    <div class="legend" aria-hidden="true">
+      <span class="lg-lbl">lighter</span>
+      {#each RAMP as c, i (i)}<span class="lg-sw" style="background:{c}"></span>{/each}
+      <span class="lg-lbl">heavier</span>
+      <span class="lg-note">· scaled across this window only</span>
+    </div>
     <div class="heat">
       <div class="dow">
         <span></span><span>M</span><span></span><span>W</span><span></span><span>F</span><span></span>
@@ -123,6 +129,11 @@
       </div>
     </div>
 
+    <p class="colnote">
+      <span class="est">est</span> = rack-rate estimate (every agent) ·
+      <span class="nat">native</span> = exact provider charge when known (Claude OTEL, Pi metered) ·
+      <span class="dash">—</span> = no native figure that day
+    </p>
     <div class="ma">
       <div class="ma-row head"><span>day</span><span>tokens</span><span>est $</span><span>native $</span></div>
       {#each recent as r (r.date)}
@@ -147,7 +158,15 @@
     background: var(--surface-2);
     color: var(--text-dim);
   }
-  .caption { margin: 0 0 12px; font-size: 11.5px; color: var(--text-subtle); }
+  .caption { margin: 0 0 8px; font-size: 11.5px; color: var(--text-subtle); }
+  .legend { display: flex; align-items: center; gap: 4px; margin: 0 0 12px; font-size: 10px; color: var(--text-subtle); }
+  .lg-sw { width: 12px; height: 12px; border-radius: 3px; border: 1px solid color-mix(in srgb, #000 22%, transparent); }
+  .lg-lbl { color: var(--text-subtle); }
+  .lg-note { color: var(--text-subtle); opacity: 0.8; }
+  .colnote { margin: 14px 0 6px; font-size: 10.5px; line-height: 1.5; color: var(--text-subtle); }
+  .colnote .est { color: var(--amber); font-weight: 600; }
+  .colnote .nat { color: var(--cyan); font-weight: 600; }
+  .colnote .dash { color: var(--text-dim); font-weight: 600; }
   .heat { display: flex; gap: 6px; }
   .dow {
     display: grid;

@@ -28,6 +28,39 @@
       onClose();
     }
   }
+
+  // Focus trap (a Svelte action — DOM lifecycle sync, not a component effect).
+  // An aria-modal dialog must keep Tab within itself and restore focus to the
+  // trigger on close; without it, Tab walks back into the page behind the scrim.
+  function trapFocus(node: HTMLElement) {
+    const restoreTo = document.activeElement as HTMLElement | null;
+    const SEL =
+      'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+    const visible = () =>
+      Array.from(node.querySelectorAll<HTMLElement>(SEL)).filter((el) => el.offsetParent !== null);
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Tab") return;
+      const f = visible();
+      if (!f.length) return;
+      const first = f[0]!;
+      const last = f[f.length - 1]!;
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || !node.contains(active))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+    node.addEventListener("keydown", onKey);
+    return {
+      destroy() {
+        node.removeEventListener("keydown", onKey);
+        restoreTo?.focus?.();
+      },
+    };
+  }
 </script>
 
 <svelte:window onkeydown={onKeydown} />
@@ -42,6 +75,7 @@
     role="dialog"
     aria-modal="true"
     aria-label={title}
+    use:trapFocus
     transition:fly={{ x: width, duration: 240, easing: cubicOut }}
   >
     <header class="sheet-head">

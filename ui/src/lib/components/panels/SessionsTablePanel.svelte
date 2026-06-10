@@ -3,6 +3,7 @@
   import EmptyState from "../ui/EmptyState.svelte";
   import Icon from "../ui/Icon.svelte";
   import { getSessions } from "../../api";
+  import { navigate } from "../../router.svelte";
   import { resource } from "../../resource.svelte";
   import { ui } from "../../stores.svelte";
   import { compact, relTime, projectName, usd, AGENT_NAMES } from "../../format";
@@ -92,7 +93,7 @@
       </div>
       <div class="scroll">
         {#each rows as s (s.session_id)}
-          <div class="row">
+          <button class="row rowbtn" type="button" title="Open session" onclick={() => navigate(`/session/${encodeURIComponent(s.session_id)}`)}>
             <span class="c-title">
               <span class="t-main" title={s.title ?? s.session_id}>{s.title ?? `session:${s.session_id.slice(0, 8)}`}</span>
               <span class="t-sub dim" title={s.cwd ?? ""}>{projectName(s.cwd)}</span>
@@ -102,7 +103,7 @@
             <span class="c-num mono">{compact(s.total_tokens)}</span>
             <span class="c-num mono dim">{usd(s.cost_estimated_usd)}</span>
             <span class="c-when mono dim">{relTime(s.started_at)}</span>
-          </div>
+          </button>
         {/each}
       </div>
     </div>
@@ -160,6 +161,19 @@
     padding: 6px 4px;
     border-bottom: 1px solid var(--border);
   }
+  /* Data rows are buttons that open the session detail page (the only other link
+     to /session/:id was the live-session icon — a list you couldn't open). */
+  .rowbtn {
+    width: 100%;
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .rowbtn:hover { background: var(--surface-2); }
   .row.head {
     position: sticky;
     top: 0;

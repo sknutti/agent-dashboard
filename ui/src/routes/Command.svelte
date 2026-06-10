@@ -34,10 +34,11 @@
     <RangeToggle value={ui.range} onChange={setRange} />
   </div>
 
+  <p class="kicker block-kicker">Today · live</p>
   <KpiRow />
 
   <div class="block">
-    <p class="kicker block-kicker">Agents</p>
+    <p class="kicker block-kicker">Agents · {ui.range}</p>
     {#if !agents.length}
       <div class="agent-grid">
         {#each Array(4) as _, i (i)}<div class="skel-card"></div>{/each}

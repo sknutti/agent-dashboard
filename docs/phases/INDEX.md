@@ -15,9 +15,9 @@ This is the mapping index for the phased build of the multi-agent observability 
 |---|---|---|---|
 | ✅ | **0 — Foundation** | Done | all 6 stop conditions pass; launchd verified then unloaded |
 | ✅ | **1 — Claude Code** | Done | adapter + cost engine + orchestrator + all core API routes + Svelte panels, verified against real JSONL (228 sessions) and live OTEL (probe → `cost.usage` native cost flows). UI screenshot-verified, zero console errors. Two stop-cond caveats are data-limited not impl gaps: a *slow* MCP (p95≥10s) needs a slow server in the data (none present), and OTEL MCP tool-latency lights up once a real MCP tool is called under telemetry. |
-| ⬜ | **2 — Codex** | Planned | |
-| ⬜ | **3 — Pi** | Planned | |
-| ⬜ | **4 — Antigravity** | Planned | model-id risk → cost may stay NULL |
+| ✅ | **2 — Codex** | Done | Codex adapter + prices (gpt-5.4/5.5) + seam generalization; 306 sessions ingested `exact`, native NULL + rack-rate est, reasoning a first-class segment. Per-model token attribution later hardened (cumulative→delta) so a mid-session /model switch prices each segment correctly. |
+| ✅ | **3 — Pi** | Done | Pi adapter (disjoint buckets; branch-safe sum) verified vs jq oracle (13 sessions, native $8.35, 386 tools). Pi pays metered list rates so native≈est. Data is Mar–Apr so Pi only shows under Burn's own range, not the 7d/30d Command grid. |
+| ✅ | **4 — Antigravity** | Done | Antigravity adapter (protobuf-.db tokens + sibling-transcript tools) verified vs the Python extractor (640694 tokens / 2 convs). `gemini-3-flash-a` pinned but UNPRICED → both cost cols NULL by the never-guess rule (doctor now flags it). No-transcript convs fall back to .db mtime so their tokens still roll up. |
 | ✅ | **5 — Long-tail** | Done | 13 routes + skills scanner + SSE firehose + 15 panels across all 3 pages; rich where data exists, honest empty/low-sample for OTEL-thin panels. Firehose SSE idle-timeout bug fixed (keepalive + id-dedupe). QA-verified, 0 console errors, tests 10/10, no core regression. |
 | ⬜ | **6 — Operations** | Planned | sub-sliced ↓ |
 | ⬜ | &nbsp;&nbsp;6a — Dispatch spine + safety | Planned | emergency stop ships here |

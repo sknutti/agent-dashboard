@@ -15,6 +15,12 @@ export const health = $state<{
   loading: boolean;
 }>({ data: null, error: false, loading: true });
 
+// Monotonic data epoch, bumped on every health poll. resource() reads it, so a
+// single increment refetches EVERY mounted panel — without it, panels only ever
+// loaded once at mount (KpiRow was keyed on a constant and showed mount-time data
+// forever while the health strip ticked green). This piggybacks the 30s poll.
+export const dataEpoch = $state<{ value: number }>({ value: 0 });
+
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 /** Start polling /api/system/health. Returns a stop fn. Idempotent. */
@@ -27,6 +33,7 @@ export function startHealthPolling(intervalMs = 30_000): () => void {
       health.error = true;
     } finally {
       health.loading = false;
+      dataEpoch.value += 1; // fan out a background refresh to every panel
     }
   }
   void poll();

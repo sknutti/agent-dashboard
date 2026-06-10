@@ -108,7 +108,7 @@
 
     <div class="cache-line">
       <span class="cache-lbl">cache hit</span>
-      <span class="cache-val mono" class:good={(agent.cacheRate ?? 0) >= 0.7}>{pct(agent.cacheRate)}</span>
+      <span class="cache-val mono" class:good={(agent.cacheRate ?? 0) >= 0.7}>{pct(agent.cacheRate)}{(agent.cacheRate ?? 0) >= 0.7 ? " ✓" : ""}</span>
     </div>
   {/if}
 </div>
@@ -247,7 +247,9 @@
     font-size: 12px;
     color: var(--text-dim);
   }
+  /* "Good" is cyan (the app-wide cyan-as-good convention) + a ✓ glyph, not green:
+     green-vs-gray text is the red/green-CVD confusable that read as just "gray". */
   .cache-val.good {
-    color: var(--green);
+    color: var(--cyan);
   }
 </style>
