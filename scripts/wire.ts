@@ -10,7 +10,9 @@
 
 import type { BurnRow, BurnDay } from "./burn.ts";
 
-export type AgentId = "claude_code" | "codex" | "pi" | "antigravity";
+// Single canonical union lives in adapters/base.ts; re-exported here so the wire
+// layer and base agree by construction (review #17 — was a 2nd hand-kept copy).
+export type { AgentId } from "./adapters/base.ts";
 
 export interface TokenCounts {
   input: number;
@@ -23,6 +25,8 @@ export interface TokenCounts {
 
 export interface AgentCardData {
   id: string;
+  name: string;
+  order: number;
   detected: boolean;
   otel: boolean;
   lastSessionAt: string | null;

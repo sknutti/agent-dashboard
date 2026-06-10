@@ -4,10 +4,11 @@
   import { getTokenUsage } from "../../api";
   import { resource } from "../../resource.svelte";
   import { ui } from "../../stores.svelte";
-  import { compact, shortDate, pct, AGENT_NAMES } from "../../format";
+  import { compact, shortDate, pct} from "../../format";
+  import { AGENT_NAMES, agentFilterOptions } from "../../registry.svelte";
 
   // Per-agent dimension the API already returns (was collapsed to all-agents).
-  const AGENTS = ["all", "claude_code", "codex", "pi", "antigravity"];
+  const AGENTS = $derived(agentFilterOptions());
   let agent = $state("all");
   const res = resource(
     () => `tokens:${ui.range}:${agent}`,

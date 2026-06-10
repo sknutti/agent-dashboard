@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { parse as parseYaml } from "yaml";
 import { getDb } from "./db.ts";
+import { loadAgentsConfig } from "./agents_config.ts";
 import { CONFIG_DIR, DB_PATH, PORT, PROJECT_ROOT, UI_DIST } from "./paths.ts";
 
 type Status = "ok" | "warn" | "fail";
@@ -93,28 +94,27 @@ const indexHtml = join(UI_DIST, "index.html");
 add("UI build", existsSync(indexHtml) ? "ok" : "warn", existsSync(indexHtml) ? UI_DIST : "ui/dist missing — run `bun run build:ui`");
 
 // ── Agent dirs (informational in Phase 0; pre-enable is auto-detected) ───────
-try {
-  const cfg = parseYaml(await Bun.file(join(CONFIG_DIR, "agents.yaml")).text()) as {
-    agents: Record<string, { path: string; glob?: string }>;
-  };
-  for (const [id, a] of Object.entries(cfg.agents ?? {})) {
-    const dir = expandHome(a.path);
-    if (!existsSync(dir)) {
-      add(`agent: ${id}`, "warn", `not present (${dir})`);
-      continue;
-    }
-    // Count session files via the configured glob so detection reflects real data.
-    let files = 0;
-    try {
-      const g = new Bun.Glob(a.glob ?? "**/*.jsonl");
-      for (const _ of g.scanSync({ cwd: dir, onlyFiles: true })) files += 1;
-    } catch {
-      /* unreadable dir → report detected with no count */
-    }
-    add(`agent: ${id}`, "ok", `detected (${dir}) · ${files} session file${files === 1 ? "" : "s"}`);
+// Same agents_config.ts loader the orchestrator and routes use (review #17), so
+// doctor reflects the exact registry the rest of the app sees.
+const agents = loadAgentsConfig();
+if (agents.length === 0) {
+  add("agents.yaml parse", "warn", "no agents declared (or file unparseable)");
+}
+for (const a of agents) {
+  const dir = a.path ? expandHome(a.path) : "";
+  if (!dir || !existsSync(dir)) {
+    add(`agent: ${a.id}`, "warn", `not present (${dir || "no path configured"})`);
+    continue;
   }
-} catch (err) {
-  add("agents.yaml parse", "warn", String(err));
+  // Count session files via the configured glob so detection reflects real data.
+  let files = 0;
+  try {
+    const g = new Bun.Glob(a.glob ?? "**/*.jsonl");
+    for (const _ of g.scanSync({ cwd: dir, onlyFiles: true })) files += 1;
+  } catch {
+    /* unreadable dir → report detected with no count */
+  }
+  add(`agent: ${a.id}`, "ok", `detected (${dir}) · ${files} session file${files === 1 ? "" : "s"}`);
 }
 
 // ── Prices (staleness + observed-but-unpriced models) ────────────────────────

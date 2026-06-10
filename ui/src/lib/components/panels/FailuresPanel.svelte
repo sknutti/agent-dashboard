@@ -5,7 +5,8 @@
   import { navigate } from "../../router.svelte";
   import { resource } from "../../resource.svelte";
   import { ui } from "../../stores.svelte";
-  import { relTime, projectName, AGENT_NAMES } from "../../format";
+  import { relTime, projectName} from "../../format";
+  import { AGENT_NAMES } from "../../registry.svelte";
 
   const res = resource(() => `failures:${ui.range}`, () => getFailures(ui.range));
   const d = $derived(res.data);

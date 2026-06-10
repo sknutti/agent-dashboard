@@ -38,6 +38,8 @@ export interface TokenCounts {
 
 export interface AgentCardData {
   id: AgentId;
+  name: string;
+  order: number;
   detected: boolean;
   otel: boolean;
   /** Un-windowed MAX(started_at): distinguishes "no data ever" from "data exists

@@ -21,10 +21,10 @@
   import { ui, setRange } from "../lib/stores.svelte";
 
   const agentsRes = resource(() => `agents:${ui.range}`, () => getAgents(ui.range));
-  // Stable agent order; the API always returns all four.
-  const ORDER = ["claude_code", "codex", "pi", "antigravity"];
+  // Order comes from agents.yaml via each card's `order` (review #17) — no hardcoded
+  // id list. The API already returns them sorted; sorting here is belt-and-braces.
   const agents = $derived(
-    (agentsRes.data?.agents ?? []).slice().sort((a, b) => ORDER.indexOf(a.id) - ORDER.indexOf(b.id)),
+    (agentsRes.data?.agents ?? []).slice().sort((a, b) => a.order - b.order),
   );
 </script>
 

@@ -19,6 +19,7 @@ import type { Database } from "bun:sqlite";
 import { getDb } from "./db.ts";
 import { syncSkills } from "./skills.ts";
 import { mergeBurnByDate, type BurnRow } from "./burn.ts";
+import { loadAgentsConfig, type AgentMeta } from "./agents_config.ts";
 import type {
   AgentCardData,
   AgentsResponse,
@@ -27,7 +28,19 @@ import type {
   SessionsResponse,
 } from "./wire.ts";
 
-const AGENT_IDS = ["claude_code", "codex", "pi", "antigravity"] as const;
+// Agent identity is data-driven from config/agents.yaml (review #17) — no hardcoded
+// id/name/path/cost lists here. Cached per server boot (the file changes only on
+// install/edit, which restarts the process).
+let agentMetaCache: AgentMeta[] | null = null;
+function agentMeta(): AgentMeta[] {
+  return (agentMetaCache ??= loadAgentsConfig());
+}
+function agentIds(): string[] {
+  return agentMeta().map((m) => m.id);
+}
+function expandHome(p: string): string {
+  return p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
+}
 
 // ── DB row shapes for the typed (non-`as any`) reads (review #15) ───────────
 // bun:sqlite's query<Row, Params> returns typed rows, so a column typo or a
@@ -76,7 +89,7 @@ export function rangePred(range: string, col = "started_at"): string {
 /** Validate an agent id from the query; returns null for "all"/invalid. */
 function agentFilter(agent: string | undefined): string | null {
   if (!agent || agent === "all") return null;
-  return (AGENT_IDS as readonly string[]).includes(agent) ? agent : null;
+  return agentIds().includes(agent) ? agent : null;
 }
 
 /** Append an `<col> = ?` agent filter to a where[]/params[] pair (no-op for
@@ -124,13 +137,11 @@ export function registerApiRoutes(app: Hono): void {
   // ── Per-agent cards (ADR-0003) ────────────────────────────────────────────
   app.get("/api/agents", (c) => {
     const range = c.req.query("range") ?? "today";
-    const detected: Record<string, boolean> = {
-      claude_code: existsSync(join(homedir(), ".claude", "projects")),
-      codex: existsSync(join(homedir(), ".codex", "sessions")),
-      pi: existsSync(join(homedir(), ".pi", "agent", "sessions")),
-      antigravity: existsSync(join(homedir(), ".gemini", "antigravity-cli")),
-    };
-    const out: AgentCardData[] = AGENT_IDS.map((id) => {
+    const out: AgentCardData[] = agentMeta().map((meta) => {
+      const id = meta.id;
+      // Detection derives from THIS agent's configured path (was a 3rd hardcoded
+      // copy of the paths — wrong the moment a path was overridden in agents.yaml).
+      const detected = meta.path ? existsSync(expandHome(meta.path)) : false;
       const tok = db.query<AgentTokRow, [string]>(/* sql */ `
         SELECT COALESCE(SUM(input_tokens),0) input, COALESCE(SUM(output_tokens),0) output,
                COALESCE(SUM(cache_read_tokens),0) cacheRead, COALESCE(SUM(cache_create_tokens),0) cacheCreate,
@@ -159,10 +170,12 @@ export function registerApiRoutes(app: Hono): void {
       ).get(id)!.at;
       return {
         id,
-        detected: detected[id]!,
+        name: meta.name,
+        order: meta.order,
+        detected,
         otel,
         lastSessionAt,
-        cost: id === "claude_code" || id === "pi" ? "native" : "none",
+        cost: meta.cost, // from agents.yaml (was a hardcoded id ternary)
         tokens: {
           input: tok.input, output: tok.output, cacheRead: tok.cacheRead,
           cacheCreate: tok.cacheCreate, reasoning: tok.reasoning, total: tok.total,
@@ -177,6 +190,24 @@ export function registerApiRoutes(app: Hono): void {
       };
     });
     return c.json({ range, agents: out } satisfies AgentsResponse);
+  });
+
+  // ── Agent registry (identity metadata, from agents.yaml) ──────────────────
+  // The UI hydrates a store from this once at boot and derives every agent name,
+  // sort order, and filter list from it (was AGENT_NAMES + ORDER + four hardcoded
+  // chip lists). Pure identity — no DB, no range.
+  app.get("/api/registry", (c) => {
+    return c.json({
+      agents: agentMeta().map((m) => ({
+        id: m.id,
+        name: m.name,
+        order: m.order,
+        enabled: m.enabled,
+        cost: m.cost,
+        otel: m.otel,
+        detected: m.path ? existsSync(expandHome(m.path)) : false,
+      })),
+    });
   });
 
   // ── Sessions list (drill-downs) ───────────────────────────────────────────
@@ -737,7 +768,7 @@ export function registerApiRoutes(app: Hono): void {
              SUM(input_tokens + output_tokens + cache_read_tokens + cache_create_tokens + reasoning_tokens) tokens
       FROM token_usage WHERE ${tWhere.join(" AND ")}
       GROUP BY date, model HAVING tokens > 0 ORDER BY date ASC`).all(...tParams) as any[];
-    return c.json({ window: 30, days, maxSessions, agents: AGENT_IDS, tokenSeries });
+    return c.json({ window: 30, days, maxSessions, agents: agentIds(), tokenSeries });
   });
 
   // ── Telemetry firehose (SSE replay of recent OTEL events, then tail) ──────

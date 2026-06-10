@@ -62,9 +62,5 @@ export function projectName(cwd: string | null | undefined): string {
   return parts[parts.length - 1] || homeDir(cwd);
 }
 
-export const AGENT_NAMES: Record<string, string> = {
-  claude_code: "Claude Code",
-  codex: "Codex",
-  pi: "Pi",
-  antigravity: "Antigravity",
-};
+// AGENT_NAMES moved to lib/registry.svelte.ts (review #17) — it is now hydrated
+// from agents.yaml via /api/registry rather than hardcoded here.

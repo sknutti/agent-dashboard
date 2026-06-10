@@ -3,7 +3,8 @@
   import SessionFeed from "../lib/components/panels/SessionFeed.svelte";
   import { getSessionDetail } from "../lib/api";
   import { resource } from "../lib/resource.svelte";
-  import { compact, homeDir, relTime, AGENT_NAMES } from "../lib/format";
+  import { compact, homeDir, relTime} from "../lib/format";
+  import { AGENT_NAMES } from "../lib/registry.svelte";
   import { navigate } from "../lib/router.svelte";
 
   let { id }: { id: string } = $props();

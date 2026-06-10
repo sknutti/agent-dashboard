@@ -1,7 +1,8 @@
 <script lang="ts">
   import OtelIndicator from "../ui/OtelIndicator.svelte";
   import { openDrill } from "../../stores.svelte";
-  import { compact, usd, pct, shortDate, AGENT_NAMES } from "../../format";
+  import { compact, usd, pct, shortDate} from "../../format";
+  import { AGENT_NAMES } from "../../registry.svelte";
   import type { AgentCardData } from "../../api";
 
   let { agent }: { agent: AgentCardData } = $props();

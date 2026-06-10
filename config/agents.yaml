@@ -13,27 +13,38 @@
 
 agents:
   claude_code:
+    name: "Claude Code"
+    order: 1
     enabled: true
     path: "~/.claude/projects"
     glob: "*/*.jsonl"
     otel: true
+    otel_service: "claude-code"
     cost: native
 
   codex:
+    name: "Codex"
+    order: 2
     enabled: true
     path: "~/.codex/sessions"
     glob: "**/*.jsonl"
     otel: false # built-in but opt-in; wizard enables in Phase 2
+    otel_service: "codex"
     cost: none
 
   pi:
+    name: "Pi"
+    order: 3
     enabled: true
     path: "~/.pi/agent/sessions"
     glob: "**/*.jsonl"
     otel: false # plugin (pi-otel); enabled in Phase 3
+    otel_service: "pi-otel"
     cost: native
 
   antigravity:
+    name: "Antigravity"
+    order: 4
     enabled: true
     path: "~/.gemini/antigravity-cli"
     # Session index = the conversation .db (basename = conv-id = session_id, and the
@@ -41,5 +52,6 @@ agents:
     # brain/<conv-id>/.system_generated/logs/transcript_full.jsonl.
     glob: "conversations/*.db"
     otel: false # no usable local OTLP — do NOT enable the Google toggle
+    otel_service: "antigravity"
     cost: none
     tokens: protobuf_db

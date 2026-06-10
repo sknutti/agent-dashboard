@@ -18,17 +18,15 @@
 //   schema-clean. Per-message-day precision is a Phase 5 refinement if ever needed.
 
 import { parentPort } from "node:worker_threads";
-import { statSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { parse as parseYaml } from "yaml";
-import type { AdapterRegistry, AgentAdapter, NormalizedEvent } from "./adapters/base.ts";
+import { statSync } from "node:fs";
+import type { AdapterRegistry, AgentAdapter, AgentId, NormalizedEvent } from "./adapters/base.ts";
 import { ClaudeCodeAdapter } from "./adapters/claude_code.ts";
 import { CodexAdapter } from "./adapters/codex.ts";
 import { PiAdapter } from "./adapters/pi.ts";
 import { AntigravityAdapter } from "./adapters/antigravity.ts";
 import { estimateCostUsd } from "./cost.ts";
 import { getDb } from "./db.ts";
-import { CONFIG_DIR } from "./paths.ts";
+import { loadAgentsConfig } from "./agents_config.ts";
 
 const SYNC_INTERVAL_MS = Number(process.env.CC_SYNC_INTERVAL_MS ?? 120_000);
 /** A file touched within this window is treated as a live (still-active) session. */
@@ -37,39 +35,29 @@ const LIVE_WINDOW_MS = 5 * 60 * 1000;
 const db = getDb();
 
 // ── Build the registry from config/agents.yaml ──────────────────────────────
+// The ONE irreducible code binding: id → adapter constructor (a class can't live
+// in YAML). Typed Record<AgentId, …> so the compiler forces every declared agent
+// to have a constructor and rejects one for an undeclared id. Everything else
+// (path, glob, enabled, name, order, cost) comes from agents_config.ts.
+type AdapterOpts = { baseDir?: string; glob?: string; enabled?: boolean };
+const ADAPTER_CTORS: Record<AgentId, (o: AdapterOpts) => AgentAdapter> = {
+  claude_code: (o) => new ClaudeCodeAdapter(o),
+  codex: (o) => new CodexAdapter(o),
+  pi: (o) => new PiAdapter(o),
+  antigravity: (o) => new AntigravityAdapter(o),
+};
+
 function buildRegistry(): AdapterRegistry {
-  let cfg: any = {};
-  try {
-    cfg = parseYaml(readFileSync(join(CONFIG_DIR, "agents.yaml"), "utf8")) ?? {};
-  } catch {
-    /* missing config → defaults below */
+  const out: AgentAdapter[] = [];
+  for (const m of loadAgentsConfig()) {
+    const ctor = ADAPTER_CTORS[m.id as AgentId];
+    if (!ctor) {
+      console.warn(`[sync] agents.yaml declares '${m.id}' but no adapter is registered for it — skipping`);
+      continue;
+    }
+    out.push(ctor({ baseDir: m.path, glob: m.glob, enabled: m.enabled }));
   }
-  const cc = cfg?.agents?.claude_code ?? {};
-  const cx = cfg?.agents?.codex ?? {};
-  const pi = cfg?.agents?.pi ?? {};
-  const agy = cfg?.agents?.antigravity ?? {};
-  return [
-    new ClaudeCodeAdapter({
-      baseDir: typeof cc.path === "string" ? cc.path : undefined,
-      glob: typeof cc.glob === "string" ? cc.glob : undefined,
-      enabled: cc.enabled !== false,
-    }),
-    new CodexAdapter({
-      baseDir: typeof cx.path === "string" ? cx.path : undefined,
-      glob: typeof cx.glob === "string" ? cx.glob : undefined,
-      enabled: cx.enabled !== false,
-    }),
-    new PiAdapter({
-      baseDir: typeof pi.path === "string" ? pi.path : undefined,
-      glob: typeof pi.glob === "string" ? pi.glob : undefined,
-      enabled: pi.enabled !== false,
-    }),
-    new AntigravityAdapter({
-      baseDir: typeof agy.path === "string" ? agy.path : undefined,
-      glob: typeof agy.glob === "string" ? agy.glob : undefined,
-      enabled: agy.enabled !== false,
-    }),
-  ];
+  return out;
 }
 
 const registry: AdapterRegistry = buildRegistry();

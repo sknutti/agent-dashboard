@@ -3,10 +3,11 @@
   import EmptyState from "../ui/EmptyState.svelte";
   import { getPatterns } from "../../api";
   import { resource } from "../../resource.svelte";
-  import { compact, shortDate, AGENT_NAMES } from "../../format";
+  import { compact, shortDate} from "../../format";
+  import { AGENT_NAMES, agentFilterOptions } from "../../registry.svelte";
 
   // Per-agent dimension the API already returns (was collapsed to all-agents).
-  const AGENTS = ["all", "claude_code", "codex", "pi", "antigravity"];
+  const AGENTS = $derived(agentFilterOptions());
   let agent = $state("all");
   // Heatmap window is fixed at 30 days (independent of the global range toggle).
   const res = resource(

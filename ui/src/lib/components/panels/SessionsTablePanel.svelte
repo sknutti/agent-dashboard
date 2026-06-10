@@ -6,7 +6,8 @@
   import { navigate } from "../../router.svelte";
   import { resource } from "../../resource.svelte";
   import { ui } from "../../stores.svelte";
-  import { compact, relTime, projectName, usd, AGENT_NAMES } from "../../format";
+  import { compact, relTime, projectName, usd} from "../../format";
+  import { AGENT_NAMES, agentFilterOptions } from "../../registry.svelte";
 
   const LIMIT = 25;
   let qInput = $state("");
@@ -55,7 +56,7 @@
     ]),
   ]);
 
-  const AGENTS = ["all", "claude_code", "codex", "pi", "antigravity"];
+  const AGENTS = $derived(agentFilterOptions()); // ["all", …ids] from the registry
   const OUTCOMES = ["all", "ok", "errored", "rate_limited", "truncated", "unfinished"];
   const OUT_LABEL: Record<string, string> = { rate_limited: "rate-limited", all: "all" };
 </script>

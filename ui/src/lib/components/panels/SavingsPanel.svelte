@@ -5,7 +5,8 @@
   import { getAgents } from "../../api";
   import { resource } from "../../resource.svelte";
   import { ui } from "../../stores.svelte";
-  import { usd, AGENT_NAMES } from "../../format";
+  import { usd} from "../../format";
+  import { AGENT_NAMES } from "../../registry.svelte";
 
   const res = resource(() => `agents:${ui.range}`, () => getAgents(ui.range));
   // Subscription savings = estimated (rack-rate) − native; only Claude/Pi have native.

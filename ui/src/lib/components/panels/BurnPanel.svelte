@@ -3,7 +3,8 @@
   import EmptyState from "../ui/EmptyState.svelte";
   import { getBurn, getAgents, type AgentId } from "../../api";
   import { resource } from "../../resource.svelte";
-  import { compact, usd, shortDate, AGENT_NAMES } from "../../format";
+  import { compact, usd, shortDate} from "../../format";
+  import { AGENT_NAMES } from "../../registry.svelte";
 
   // Burn has its OWN range (30/90d) + agent selector (All / per-agent), master §11.
   let range = $state<"30d" | "90d">("30d");

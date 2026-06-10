@@ -15,6 +15,7 @@
 // flattened attribute set as JSON, so Phase 1 enrichment never needs a migration.
 
 import type { Database } from "bun:sqlite";
+import { loadAgentsConfig } from "./agents_config.ts";
 
 type AnyValue = {
   stringValue?: string;
@@ -88,21 +89,23 @@ function asBoolInt(x: unknown): number | null {
 // OTLP resource service.name (or an explicit agent attr) → our agent id. Claude
 // Code sets service.name="claude-code"; other emitters (pi-otel, codex) carry
 // their own. Hardcoding "claude_code" here misattributes every non-Claude event
-// with NO error — Pi's cost/usage would silently land under Claude. Defaults to
-// claude_code (the only emitter wired today) so existing data is unchanged.
-const SERVICE_TO_AGENT: Record<string, string> = {
-  "claude-code": "claude_code",
-  claude_code: "claude_code",
-  pi: "pi",
-  "pi-otel": "pi",
-  codex: "codex",
-  antigravity: "antigravity",
-};
+// with NO error — Pi's cost/usage would silently land under Claude. The mapping is
+// built from agents.yaml `otel_service:` (review #17), so a new agent's telemetry
+// is attributed by adding one config line. Defaults to claude_code (the primary
+// emitter) when nothing matches, so unlabeled Claude data is unaffected.
+const serviceToAgent = (() => {
+  const map: Record<string, string> = {};
+  for (const m of loadAgentsConfig()) {
+    map[m.id] = m.id; // an explicit agent attr may carry the id itself
+    if (m.otelService) map[m.otelService] = m.id;
+  }
+  return map;
+})();
 function agentOf(attrs: Record<string, unknown>): string {
   const explicit = asStr(pick(attrs, "agent", "agent.id", "agent_id"));
-  if (explicit && Object.values(SERVICE_TO_AGENT).includes(explicit)) return explicit;
+  if (explicit && serviceToAgent[explicit]) return serviceToAgent[explicit];
   const svc = asStr(pick(attrs, "service.name", "service_name"));
-  if (svc && SERVICE_TO_AGENT[svc]) return SERVICE_TO_AGENT[svc];
+  if (svc && serviceToAgent[svc]) return serviceToAgent[svc];
   return "claude_code";
 }
 
