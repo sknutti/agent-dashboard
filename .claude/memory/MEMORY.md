@@ -30,9 +30,14 @@ Stack: Bun + Hono + bun:sqlite (WAL) + Svelte 5 SPA (ADR-0001). Built in phases
   `lastSessionAt` un-windowed on /api/agents) so Pi/Codex stop reading as broken; (4) shared EmptyState error
   mode (amber, Retry) applied across 22 panels — a 500 now says "Couldn't load data", not a false "no data"
   (PressurePanel/ContextHealth no longer render blank). NOTE: shortDate() only formats YYYY-MM-DD — slice ISO
-  to 10 chars first. **Review COMPLETE — all 5 batches shipped.** Remaining review items are lower-priority
-  polish (per-agent dim in TokenUsage/Patterns, clickable session rows, burn-spike drill, export, focus trap,
-  Codex last-model mispricing, prices.yaml staleness) — see docs/notes/2026-06-10-adversarial-review.md.
+  to 10 chars first. **Review COMPLETE — 5 batches + Codex mispricing follow-up shipped.**
+  **Codex per-model attribution FIXED (commit pending):** Codex emits CUMULATIVE total_token_usage; was priced
+  entirely at the LAST model (mid-session /model switch mispriced the whole session; unpriced-last-model → whole
+  est NULL). Now attributes each record's DELTA to the active model → one tokens event per model. LATENT here
+  (0/306 sessions switch) → verified byte-identical totals vs DB (no resync); multi-model + counter-reset proven
+  by `codex.test.ts` (first Codex tests). Remaining = pure UI polish (per-agent dim in TokenUsage/Patterns,
+  clickable session rows, burn-spike drill, CSV export, Sheet focus trap, prices.yaml staleness) — see
+  docs/notes/2026-06-10-adversarial-review.md.
 
 ## Status
 - Phase 0 ✅ Done. Phase 1 ✅ Done — adapter, cost engine, orchestrator, all core API routes,

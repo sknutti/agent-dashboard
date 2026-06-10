@@ -126,8 +126,17 @@ export class CodexAdapter implements AgentAdapter {
     let lastTs: string | undefined;
     let sawTaskComplete = false;
 
-    // Last non-null cumulative usage seen; emitted as ONE tokens event at EOF.
-    let lastUsage: Record<string, unknown> | null = null;
+    // Per-model token attribution. total_token_usage is CUMULATIVE; we attribute
+    // each record's DELTA to the model active at that point (the running
+    // turn_context model). Emitting one tokens event per model lets the cost engine
+    // price each segment at its own rate — a mid-session `/model` switch otherwise
+    // prices the whole session at the LAST model (or NULLs it if that model is
+    // unpriced). For a single-model session the deltas telescope to the last
+    // cumulative, so output is byte-identical to the old single-event path.
+    interface RawAcc { input: number; cached: number; output: number; reasoning: number }
+    const perModel = new Map<string, RawAcc>();
+    let prevInput = 0, prevCached = 0, prevOutput = 0, prevReasoning = 0;
+    let anyUsage = false;
     let usageTs: string | undefined;
 
     // call_id → tool invocation, resolved into events at EOF.
@@ -175,7 +184,20 @@ export class CodexAdapter implements AgentAdapter {
               const usage = p.info?.total_token_usage;
               // The first token_count carries `info: null`; only keep real ones.
               if (usage && typeof usage === "object") {
-                lastUsage = usage;
+                const inT = n(usage.input_tokens), ca = n(usage.cached_input_tokens);
+                const outT = n(usage.output_tokens), re = n(usage.reasoning_output_tokens);
+                // Cumulative → this record's delta. A counter RESET (cumulative
+                // drops, e.g. after compaction) starts a fresh epoch: treat the
+                // current values as the delta rather than going negative.
+                const reset = inT + outT < prevInput + prevOutput;
+                const acc = perModel.get(model ?? "") ?? { input: 0, cached: 0, output: 0, reasoning: 0 };
+                acc.input += Math.max(0, reset ? inT : inT - prevInput);
+                acc.cached += Math.max(0, reset ? ca : ca - prevCached);
+                acc.output += Math.max(0, reset ? outT : outT - prevOutput);
+                acc.reasoning += Math.max(0, reset ? re : re - prevReasoning);
+                perModel.set(model ?? "", acc);
+                prevInput = inT; prevCached = ca; prevOutput = outT; prevReasoning = re;
+                anyUsage = true;
                 usageTs = typeof rec.timestamp === "string" ? rec.timestamp : usageTs;
               }
               break;
@@ -235,26 +257,28 @@ export class CodexAdapter implements AgentAdapter {
       }
     }
 
-    // Emit the single cumulative token event, normalized to disjoint buckets so
-    // the schema's `total = Σ buckets` and the additive cost engine both hold.
-    if (lastUsage) {
-      const inputTotal = n(lastUsage.input_tokens);
-      const cached = n(lastUsage.cached_input_tokens);
-      const outputTotal = n(lastUsage.output_tokens);
-      const reasoning = n(lastUsage.reasoning_output_tokens);
-      yield {
-        kind: "tokens",
-        model,
-        timestamp: usageTs ?? lastTs ?? startedAt ?? new Date(0).toISOString(),
-        tokens: {
-          input: Math.max(0, inputTotal - cached),
-          output: Math.max(0, outputTotal - reasoning),
-          cacheRead: cached,
-          reasoning,
-          // No cacheCreate: Codex has no cache-create concept.
-        },
-        costUsd: null, // Codex never stamps native USD → rack-rate estimate only.
-      };
+    // Emit one token event PER model, each normalized to disjoint buckets so the
+    // schema's `total = Σ buckets` holds and each segment is priced at its own
+    // model (cost.ts is called per token event by the orchestrator). For a
+    // single-model session this is exactly one event identical to before.
+    const tsForUsage = usageTs ?? lastTs ?? startedAt ?? new Date(0).toISOString();
+    if (anyUsage) {
+      for (const [key, acc] of perModel) {
+        if (acc.input + acc.cached + acc.output + acc.reasoning === 0) continue;
+        yield {
+          kind: "tokens",
+          model: key || undefined,
+          timestamp: tsForUsage,
+          tokens: {
+            input: Math.max(0, acc.input - acc.cached),
+            output: Math.max(0, acc.output - acc.reasoning),
+            cacheRead: acc.cached,
+            reasoning: acc.reasoning,
+            // No cacheCreate: Codex has no cache-create concept.
+          },
+          costUsd: null, // Codex never stamps native USD → rack-rate estimate only.
+        };
+      }
     }
 
     // Resolve buffered tool calls into events. Prefer exec_command_end's precise
