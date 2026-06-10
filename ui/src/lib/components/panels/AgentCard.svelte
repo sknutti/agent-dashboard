@@ -20,20 +20,24 @@
 
   // Token-mix segments (ADR-0003 gap #2: reasoning is first-class). The bar shows
   // segments; the input·output·reasoning·cacheR·cacheC breakdown is on hover.
+  // EFFECTIVE-token segments only — cache-read is excluded (it's ~95% of raw and
+  // would crush the rest; it lives in CachePanel). `dark` flags whether the
+  // luminance-ramp colour (ADR-0004) needs light text for an in-segment label.
   const SEG_DEFS = [
-    { key: "output", label: "output", color: "var(--tok-output)" },
-    { key: "input", label: "input", color: "var(--tok-input)" },
-    { key: "reasoning", label: "reasoning", color: "var(--tok-reasoning)" },
-    { key: "cacheCreate", label: "cache write", color: "var(--tok-cache-write)" },
-    { key: "cacheRead", label: "cache read", color: "var(--tok-cache-read)" },
+    { key: "output", label: "output", color: "var(--tok-output)", dark: false },
+    { key: "input", label: "input", color: "var(--tok-input)", dark: false },
+    { key: "reasoning", label: "reasoning", color: "var(--tok-reasoning)", dark: true },
+    { key: "cacheCreate", label: "cache write", color: "var(--tok-cache-write)", dark: true },
   ] as const;
+  const effTotal = $derived(
+    (agent.tokens.input + agent.tokens.output + agent.tokens.reasoning + agent.tokens.cacheCreate) || 1,
+  );
   const segs = $derived.by(() => {
     const t = agent.tokens;
-    const total = t.total || 1;
     return SEG_DEFS.map((s) => ({
       ...s,
       val: (t as any)[s.key] as number,
-      pctOf: ((t as any)[s.key] as number) / total,
+      pctOf: ((t as any)[s.key] as number) / effTotal,
     })).filter((s) => s.val > 0);
   });
   const mixTitle = $derived(
@@ -63,12 +67,20 @@
     <!-- Tokens + mix bar -->
     <button class="block-btn" onclick={() => drill("tokens")} title="Open this agent's sessions">
       <div class="tok-head">
-        <span class="tok-total mono">{compact(agent.tokens.total)}</span>
-        <span class="tok-label">tokens</span>
+        <span class="tok-total mono">{compact(effTotal)}</span>
+        <span class="tok-label">effective tokens</span>
       </div>
-      <div class="mixbar" title={mixTitle} aria-label={mixTitle}>
+      <div class="mixbar" role="img" title={mixTitle} aria-label="Token mix (effective): {mixTitle}">
         {#each segs as s (s.key)}
-          <span class="mixseg" style="width:{(s.pctOf * 100).toFixed(2)}%;background:{s.color}"></span>
+          <span
+            class="mixseg"
+            class:ondark={s.dark}
+            style="width:{(s.pctOf * 100).toFixed(2)}%;background:{s.color}"
+          >
+            <!-- Two-tier label so the % never clips: name once it fits (~16%),
+                 add the % only when there's room (~30%). -->
+            {#if s.pctOf >= 0.16}<span class="mixlabel">{s.label}{#if s.pctOf >= 0.3} {pct(s.pctOf, 0)}{/if}</span>{/if}
+          </span>
         {/each}
       </div>
     </button>
@@ -179,7 +191,7 @@
   }
   .mixbar {
     display: flex;
-    height: 7px;
+    height: 20px;
     border-radius: 4px;
     overflow: hidden;
     background: var(--surface-2);
@@ -187,6 +199,27 @@
   }
   .mixseg {
     height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    overflow: hidden;
+  }
+  /* Direct in-segment labels (ADR-0004): colour is redundant, the label names
+     the category in place. Text colour flips with the luminance ramp so it
+     stays legible on both light and dark segments. */
+  .mixlabel {
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: clip;
+    padding: 0 3px;
+    color: #1a1208; /* on light (gold/amber) segments */
+  }
+  .mixseg.ondark .mixlabel {
+    color: #eef3f8; /* on dark (teal/blue) segments */
   }
   .cost-row {
     display: grid;

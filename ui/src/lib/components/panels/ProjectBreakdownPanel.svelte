@@ -32,7 +32,7 @@
             <span class="c-n mono dim">{compact(p.tools)}</span>
             <span class="c-num mono">{compact(p.eff)}</span>
             <span class="c-share">
-              <span class="bar"><span class="fill" style="width:{(p.share * 100).toFixed(1)}%"></span></span>
+              <span class="bar" aria-hidden="true"><span class="fill" style="width:{(p.share * 100).toFixed(1)}%"></span></span>
               <span class="pctv mono dim">{pct(p.share, 0)}</span>
             </span>
           </div>

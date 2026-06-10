@@ -76,6 +76,8 @@
   .figs { display: flex; gap: 16px; }
   .fig { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
   .fig .lbl { font-size: 9.5px; color: var(--text-subtle); }
-  .fig.save .mono { color: var(--green); font-weight: 600; }
+  /* "saved" is cyan, not green — matches the app-wide cyan-as-positive
+     convention and avoids the amber(est)/green(saved) red-green-CVD pairing. */
+  .fig.save .mono { color: var(--cyan); font-weight: 600; }
   .caveat { margin: 12px 0 0; font-size: 11px; line-height: 1.55; color: var(--text-subtle); }
 </style>

@@ -29,6 +29,10 @@ _Avoid_: estimated cost being merged into a total with Native cost.
 **Subscription savings**:
 For Agents with both figures (Claude, Pi): `Estimated cost − Native cost` — what the subscription saves vs. paying API rates.
 
+**Effective tokens**:
+The "work" token figure — `input + output + reasoning + cache-write` — i.e. **total minus cache-read**. Cache-read is replayed context, not new work, and on agentic workloads it's ~95% of raw tokens; excluding it is what makes the other categories legible. The `effective_tokens` DB column, the Project-breakdown rollup, and the token-mix bars all use this exact figure. Cache-read lives in the Cache panel, not the mix.
+_Avoid_: "generative tokens" or any near-synonym that silently drops cache-write — effective tokens **keeps** cache-write.
+
 **Observability layer**:
 The read-only half of the product — ingest + panels that show what the Agents did (tokens, latency, MCP, cache, outcomes, Burn). Multi-agent by nature.
 _Avoid_: monitoring, metrics.

@@ -26,16 +26,19 @@
   /* Teal: the deliberate cool complement to the warm accent (native-cost pop). */
   --cyan: #22d3ee;
 
-  /* Token-mix ramp — one harmonious "sunset → sea" scale shared by every
-     token breakdown viz (AgentCard, TokenUsagePanel). Warm pair anchors on the
-     brand; cool trio fans out so all five segments stay legible on dark — and
-     the cache-read segment (often ~95%+ of the bar) is a calm steel-blue, not
-     a dead gray slab. */
-  --tok-output: #ff7a3c;
-  --tok-reasoning: #ffc24d;
-  --tok-input: #2dd4bf;
-  --tok-cache-write: #22a3c4;
-  --tok-cache-read: #5f86a8;
+  /* Token-mix ramp — LUMINANCE-ORDERED for colour-vision legibility (ADR-0004).
+     Steps monotonically light → dark along the fixed stack order
+     (output → input → reasoning → cache-write), so a segment is decodable by
+     brightness — the channel CVD vision keeps — not hue. Hue still varies
+     (warm-light → cool-dark) as a redundant cue. Reorder the stack and you must
+     re-check that luminance stays monotonic. cache-read is excluded from the mix
+     bars (it's ~95% of raw tokens and lives in CachePanel); its token stays
+     defined but mix-unused. */
+  --tok-output: #ffd27a; /* light gold — lightest */
+  --tok-input: #f0a23a; /* amber */
+  --tok-reasoning: #3aa0b8; /* teal-blue */
+  --tok-cache-write: #2a5f8f; /* deep blue — darkest */
+  --tok-cache-read: #5f86a8; /* mix-unused (CachePanel owns cache-read) */
 
   /* Type */
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,

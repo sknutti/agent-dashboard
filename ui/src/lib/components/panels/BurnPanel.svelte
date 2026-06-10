@@ -97,7 +97,7 @@
       <div class="dow">
         <span></span><span>M</span><span></span><span>W</span><span></span><span>F</span><span></span>
       </div>
-      <div class="weeks">
+      <div class="weeks" role="img" aria-label="Daily token-spend heatmap over {range}: {compact(d.totals.tokens)} tokens total, colour log-scaled per day (brighter = heavier).">
         {#each cells as week, wi (wi)}
           <div class="week">
             {#each week as cell, di (di)}

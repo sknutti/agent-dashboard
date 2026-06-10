@@ -32,7 +32,7 @@
       {#each d.byTool as t (t.tool)}
         <div class="brow">
           <span class="bt">{t.tool}</span>
-          <span class="bar"><span class="fill" style="width:{((t.acceptRate ?? 0) * 100).toFixed(0)}%"></span></span>
+          <span class="bar" aria-hidden="true"><span class="fill" style="width:{((t.acceptRate ?? 0) * 100).toFixed(0)}%"></span></span>
           <span class="bv mono dim">{pct(t.acceptRate, 0)}</span>
           <span class="bn mono dim">N={t.accepted + t.rejected}</span>
         </div>
