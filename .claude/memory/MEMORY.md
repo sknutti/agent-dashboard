@@ -35,9 +35,31 @@ Stack: Bun + Hono + bun:sqlite (WAL) + Svelte 5 SPA (ADR-0001). Built in phases
   entirely at the LAST model (mid-session /model switch mispriced the whole session; unpriced-last-model → whole
   est NULL). Now attributes each record's DELTA to the active model → one tokens event per model. LATENT here
   (0/306 sessions switch) → verified byte-identical totals vs DB (no resync); multi-model + counter-reset proven
-  by `codex.test.ts` (first Codex tests). Remaining = pure UI polish (per-agent dim in TokenUsage/Patterns,
-  clickable session rows, burn-spike drill, CSV export, Sheet focus trap, prices.yaml staleness) — see
-  docs/notes/2026-06-10-adversarial-review.md.
+  by `codex.test.ts` (first Codex tests).
+  **Batches 6–11 FIXED (commits Review batch 6–11):** the reliability/perf, tooling, type, and UX-polish tail.
+  - B6 reliability: live SSE tails by BYTE offset (was full re-read every 1.5s); OTEL agent attribution from
+    resource service.name not hardcoded `claude_code` (+`otel.test.ts`); OTLP per-batch txn; health = MAX of 3
+    indexed sub-MAXes (+`idx_otel_metrics/spans_received`); 90d retention sweep (~hourly, ISO-Z cutoff vs raw col
+    to dodge the #5 'T'>' ' trap); source-went-empty warn.
+  - B7 tooling: `bun run check` (tsc+test+svelte-check) + CI workflow; prices.yaml machine-parseable
+    `last_updated:` + doctor "prices freshness"/"unpriced models" checks (flags gemini-3-flash-a); doctor glyphs
+    ✓/▲/✗ (CVD).
+  - B8 UX: global `dataEpoch` bumped on the 30s health poll → resource() refetches ALL panels (were mount-once);
+    DrillSheet honors global range; clickable session rows → /session/:id (SessionsTable+Failures); CVD ✗/cyan+✓;
+    BurnPanel heatmap legend + est/native/"—" note; Sheet focus trap (Svelte action); INDEX.md phases 2–4 → Done.
+  - B9 types (#15 targeted): `scripts/wire.ts` contract; agents/sessions/burn handlers use `query<Row,Params>` +
+    `satisfies` (server can't drift); api.ts documents wire.ts as source of truth.
+  - B10: **#12 rollup predicate was a DOUBLE-localtime bug** — `DATE(date,'localtime')` on an already-local date
+    shifted it back a day (Denver), dropping the oldest day of every range (live: 7d 4→5 days, +418K tok). Now
+    raw `date >=` (sargable: SCAN→SEARCH) +`routes.test.ts`. Timestamp cols stay DATE(,'localtime') — 'localtime'
+    is non-deterministic so it can't go in a generated column/index. #19 dead tables removed from schema (live
+    orphans inert; DROP blocked by damage-control hook, harmless). #21 TOOL_DURATION_CAP_MS → one base.ts export;
+    `pushAgent()` helper collapses ~11 copy-pasted agent filters.
+  - B11 (#30 viz): agent selector on TokenUsage+Patterns; model filter on SessionsTable (APIs already supported).
+  **STILL OPEN (deliberately):** #17 agent-identity refactor — ARCHITECTURAL, Scott wants to discuss design first
+  (buildRegistry iterate agents.yaml + one metadata endpoint + delete ~9 hardcoded lists). #2 Claude resume
+  cross-file double-count — confidence 0.7, NEEDS a real resumed session to verify; this machine has none, not
+  fake-fixed (intra-file content-block dedup already shipped in B3). Full #15 49-site sweep declined (targeted done).
 
 ## Status
 - Phase 0 ✅ Done. Phase 1 ✅ Done — adapter, cost engine, orchestrator, all core API routes,
