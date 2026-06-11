@@ -1,0 +1,44 @@
+[workspace]
+# resolver = "2" must live on [workspace] itself — it does not inherit from a member.
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/git",
+    "crates/secrets",
+    "crates/prompt-library-bridge",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Scott Knutti"]
+license = "MIT"
+
+# Pruned from the reference Prompt Library workspace: Tauri-only entries
+# (tauri-specta, specta-typescript) and deps no imported crate references
+# (anyhow, tracing*, time) are dropped. Only deps used by core/git/secrets
+# (and their dev-deps) remain, plus what the bridge binary needs.
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+marked-yaml = "0.8"
+toml_edit = "0.22"
+thiserror = "1"
+camino = { version = "1", features = ["serde1"] }
+tokio = { version = "1", features = ["rt-multi-thread", "process", "fs", "macros", "sync", "time", "io-util"] }
+regex = "1"
+fd-lock = "4"
+blake3 = "1"
+tar = "0.4"
+flate2 = "1"
+futures = "0.3"
+# C1: hard-pin specta to the known-good pre-release. A caret requirement on a
+# pre-release rc floats up to rc.25, which removed the `Type` trait members
+# core's hand-written `impl specta::Type` relies on (12 compile errors). The
+# `=` pin holds it at rc.22 regardless of lockfile state.
+specta = { version = "=2.0.0-rc.22", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "charset"] }
+# dev-dependencies of the imported crates
+tempfile = "3"
+httpmock = "0.7"

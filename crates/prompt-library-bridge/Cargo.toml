@@ -1,0 +1,25 @@
+[package]
+name = "prompt-library-bridge"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "prompt-library-bridge"
+path = "src/main.rs"
+
+[dependencies]
+prompt-library-core = { path = "../core" }
+prompt-library-git = { path = "../git" }
+prompt-library-secrets = { path = "../secrets" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+camino = { workspace = true }
+# current_thread runtime only — the read path touches std::fs; git status uses
+# async process calls through the git crate's TokioProcessRunner. No multi-thread
+# worker pool is spun up per one-shot invocation (perf note, Phase 1 insights).
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

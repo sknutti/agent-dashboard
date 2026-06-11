@@ -1,0 +1,27 @@
+[package]
+name = "prompt-library-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+marked-yaml = { workspace = true }
+toml_edit = { workspace = true }
+thiserror = { workspace = true }
+camino = { workspace = true }
+fd-lock = { workspace = true }
+blake3 = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+specta = { workspace = true, features = ["derive"] }
+reqwest = { workspace = true, features = ["json"] }
+tokio = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+httpmock = { workspace = true }
