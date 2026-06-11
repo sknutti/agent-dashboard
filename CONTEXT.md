@@ -55,6 +55,14 @@ _Avoid_: using "error" for session-level operational stoppages (those are a Fail
 The umbrella for any session that didn't finish cleanly — the union of three disjoint **outcomes**: `errored` (has Errors), `rate_limited` (hit a provider rate limit), and `truncated` (cut off at the token limit). Rate-limited and truncated Failures carry **no** Error — there's no failed tool call to point at, just a session-level signal. The Failures panel lists all three; the Errors view only opens windows on `errored` Failures.
 _Avoid_: treating "Failure" and "Error" as synonyms — every Error implies a Failure, but not every Failure has an Error.
 
+**Message**:
+One readable entry in a session's **Transcript** — a *user* prompt, an *assistant* reply, a *thinking* step, or a *tool* call paired with its result. Parsed on demand from the raw log; **not** the same as a raw log *line* (one Agent message can span several lines, and a tool's call + result are two lines collapsed into one Message). A *thinking* Message exists only where the reasoning text is readable — **Claude only**; Codex and Pi store reasoning as `encrypted_content`, so no thinking Message is emitted for them (no empty placeholders).
+_Avoid_: equating a Message with a JSONL line; calling the raw line a "message".
+
+**Transcript**:
+The full ordered list of **Messages** for one session, produced by re-parsing the raw log on demand (same parse the Errors view uses). The **Errors** view *windows* it around errored tool Messages; the **Messages** tab renders it *whole* as cards — but only for **ended** sessions. A still-live session shows the raw byte-tail feed instead (a live tail can't be reassembled into Messages mid-stream), switching to cards once it ends.
+_Avoid_: "the feed" for both — the live raw tail and the parsed Transcript cards are different views chosen by session state.
+
 ## Relationships
 
 - The **Foundation** defines the **Adapter** seam; each **Agent** contributes exactly one **Adapter**.
@@ -74,3 +82,4 @@ _Avoid_: treating "Failure" and "Error" as synonyms — every Error implies a Fa
 
 - "the dashboard" was used to mean both the whole product and the read-only Observability half — resolved: **Observability layer** vs **Operations layer** are distinct, and Phase ordering deliberately ships all Observability (Phases 0–4) before any Operations (Phase 5).
 - "error" vs "failure" were used interchangeably (the Failures panel spans crashes/rate-limits/truncations, while the AgentCard "errors" cell counts only `error_count`) — resolved: an **Error** is one failed tool call (code-actionable); a **Failure** is any unclean session outcome (`errored` · `rate_limited` · `truncated`). The Errors view anchors context windows only on **Errors**; rate-limited/truncated **Failures** show a one-line explanation and defer to the Messages feed.
+- "the Messages feed" originally meant the raw byte-tail JSONL stream (ADR-0005 made it the *raw* "source of truth", deliberately un-parsed) — amended: for **ended** sessions the Messages tab now renders the parsed **Transcript** as cards; the raw tail survives only for **live** sessions. The Errors and Messages views are now both *parsed* (windowed vs whole), no longer *parsed vs raw*. See ADR-0006.

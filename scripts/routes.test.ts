@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initSchema } from "./db.ts";
-import { rangePred, buildSessionErrors } from "./routes.ts";
+import { rangePred, buildSessionErrors, buildSessionMessages } from "./routes.ts";
 
 // The rollup tables store `date` as an already-local YYYY-MM-DD. The old predicate
 // wrapped it in DATE(date,'localtime') a SECOND time, which shifts each date back a
@@ -126,6 +126,102 @@ describe("buildSessionErrors (#errors-endpoint)", () => {
     expect(status).toBe(200);
     expect(body).toMatchObject({ supported: false, outcome: "errored" });
     expect((body as any).note).toBeTruthy();
+    db.close();
+  });
+});
+
+// GET /api/sessions/:id/messages core logic (buildSessionMessages). Serves the
+// WHOLE parsed Transcript for an ENDED session (vs the windowed Errors view), and
+// signals a still-live session so the client renders the raw byte-tail instead.
+describe("buildSessionMessages (#messages-endpoint)", () => {
+  function freshDb(): Database {
+    const db = new Database(":memory:");
+    initSchema(db);
+    return db;
+  }
+  function insertSession(db: Database, row: Record<string, unknown>): void {
+    const cols = Object.keys(row);
+    db.run(
+      `INSERT INTO sessions (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`,
+      cols.map((k) => row[k] as any),
+    );
+  }
+
+  /** A minimal claude transcript: user prompt + a (split) thinking/text turn. */
+  function claudeMsgLog(): string {
+    const dir = mkdtempSync(join(tmpdir(), "msg-route-"));
+    const path = join(dir, "session.jsonl");
+    const asst = (id: string, ts: string, block: any) =>
+      JSON.stringify({ type: "assistant", timestamp: ts, message: { id, content: [block] } });
+    writeFileSync(path, [
+      JSON.stringify({ type: "user", timestamp: "2026-06-01T00:00:00Z", message: { content: "hi" } }),
+      asst("a", "2026-06-01T00:00:01Z", { type: "thinking", thinking: "pondering" }),
+      asst("a", "2026-06-01T00:00:02Z", { type: "text", text: "hello there" }),
+    ].join("\n") + "\n", "utf8");
+    return path;
+  }
+
+  test("ended claude session returns live:false + the whole parsed Transcript (incl thinking)", async () => {
+    const db = freshDb();
+    // ended_at far in the past ⟹ outside the 5-min live window ⟹ ended.
+    insertSession(db, { session_id: "m1", agent: "claude_code", source_path: claudeMsgLog(),
+      ended_at: "2020-01-01T00:00:00Z" });
+    const { status, body } = await buildSessionMessages(db, "m1");
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ supported: true, live: false });
+    const msgs = (body as any).messages as { role: string; ts: string }[];
+    expect(msgs.length).toBeGreaterThan(0);
+    expect(msgs.some((m) => m.role === "thinking")).toBe(true);
+    expect(msgs.every((m) => typeof m.ts === "string")).toBe(true);
+    db.close();
+  });
+
+  test("live session (null ended_at) returns live:true with no messages", async () => {
+    const db = freshDb();
+    insertSession(db, { session_id: "m2", agent: "claude_code", source_path: claudeMsgLog(), ended_at: null });
+    const { status, body } = await buildSessionMessages(db, "m2");
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ supported: true, live: true });
+    expect((body as any).messages ?? []).toEqual([]);
+    db.close();
+  });
+
+  test("a session that ended in the last 5 min still reads as live (reuses /sessions/live window)", async () => {
+    const db = freshDb();
+    // ended just now → inside the 5-min window → still tail-able as live.
+    const recent = (db.query("SELECT datetime('now','-1 minutes') t").get() as { t: string }).t;
+    insertSession(db, { session_id: "m2b", agent: "claude_code", source_path: claudeMsgLog(), ended_at: recent });
+    const { body } = await buildSessionMessages(db, "m2b");
+    expect(body).toMatchObject({ supported: true, live: true });
+    db.close();
+  });
+
+  test("antigravity (no parser) on an ended session returns supported:false + a note", async () => {
+    const db = freshDb();
+    insertSession(db, { session_id: "m3", agent: "antigravity", source_path: "/tmp/whatever",
+      ended_at: "2020-01-01T00:00:00Z" });
+    const { status, body } = await buildSessionMessages(db, "m3");
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ supported: false, live: false });
+    expect((body as any).note).toBeTruthy();
+    db.close();
+  });
+
+  test("null source_path on an ended session degrades to a supported:false note, not a 500", async () => {
+    const db = freshDb();
+    insertSession(db, { session_id: "m4", agent: "claude_code", source_path: null,
+      ended_at: "2020-01-01T00:00:00Z" });
+    const { status, body } = await buildSessionMessages(db, "m4");
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ supported: false, live: false });
+    expect((body as any).note).toBeTruthy();
+    db.close();
+  });
+
+  test("unknown session id returns 404", async () => {
+    const db = freshDb();
+    const { status } = await buildSessionMessages(db, "nope");
+    expect(status).toBe(404);
     db.close();
   });
 });

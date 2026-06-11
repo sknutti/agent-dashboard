@@ -33,6 +33,7 @@ import type {
   SessionRow,
   SessionsResponse,
   SessionErrorsResponse,
+  SessionMessagesResponse,
 } from "./wire.ts";
 
 // Agent identity is data-driven from config/agents.yaml (review #17) — no hardcoded
@@ -203,6 +204,68 @@ export async function buildSessionErrors(
   }
 }
 
+/** One row's worth of the fields the Messages view needs. `is_live` is computed
+ *  in SQL (so 'now' is the DB clock, matching /sessions/live) — a session is live
+ *  while ended_at IS NULL or within the 5-min window, else ended. */
+interface SessionMsgRow {
+  agent: string;
+  source_path: string | null;
+  is_live: number; // 0/1
+}
+
+/** Core of GET /api/sessions/:id/messages, factored out for direct unit testing
+ *  against an in-memory DB (mirrors buildSessionErrors). Resolves the raw log via
+ *  sessions.source_path — agent-agnostic, NOT findSessionFile. A still-LIVE session
+ *  (within the /sessions/live window) returns `live:true` so the client renders the
+ *  raw byte-tail; an ENDED in-scope session returns the WHOLE parsed Transcript.
+ *  Unsupported agent / missing log degrade to a `supported:false` note, not a 500. */
+export async function buildSessionMessages(
+  db: Database,
+  id: string,
+): Promise<{ status: 200 | 404; body: SessionMessagesResponse | { error: string } }> {
+  const row = db.query<SessionMsgRow, [string]>(/* sql */ `
+    SELECT agent, source_path,
+           (ended_at IS NULL OR datetime(ended_at) >= datetime('now','-5 minutes')) AS is_live
+    FROM sessions WHERE session_id = ?`).get(id);
+  if (!row) return { status: 404, body: { error: "not found" } };
+
+  // Live (or just-ended, within the window): the raw byte-tail is agent-agnostic
+  // and needs no parser, so don't even resolve the log — signal the client to tail.
+  if (row.is_live) return { status: 200, body: { supported: true, live: true, messages: [] } };
+
+  // Ended: parse the whole transcript. Agent without a display parser (antigravity)
+  // → a note (this IS the Messages tab, so no "open Messages" affordance).
+  if (!DISPLAY_PARSER_AGENTS.has(row.agent)) {
+    return {
+      status: 200,
+      body: { supported: false, live: false,
+        note: "Parsed message view is unavailable for this agent." },
+    };
+  }
+  // A missing path or a deleted file degrades to a note, not a 500 (same A1 fallback
+  // the Errors endpoint uses).
+  if (!row.source_path || !existsSync(row.source_path)) {
+    return {
+      status: 200,
+      body: { supported: false, live: false,
+        note: "The raw log for this session is unavailable." },
+    };
+  }
+  try {
+    const messages = await parseDisplay(row.agent, row.source_path);
+    return { status: 200, body: { supported: true, live: false, messages } };
+  } catch (err) {
+    if (err instanceof UnsupportedAgentError) {
+      return {
+        status: 200,
+        body: { supported: false, live: false,
+          note: "Parsed message view is unavailable for this agent." },
+      };
+    }
+    throw err;
+  }
+}
+
 export function registerApiRoutes(app: Hono): void {
   const db = getDb();
 
@@ -350,6 +413,16 @@ export function registerApiRoutes(app: Hono): void {
   // basenames ≠ session_id. See buildSessionErrors for the response branches.
   app.get("/api/sessions/:id/errors", async (c) => {
     const { status, body } = await buildSessionErrors(db, c.req.param("id"));
+    return c.json(body, status);
+  });
+
+  // ── Parsed whole-Transcript Messages (on-demand re-parse for ENDED sessions) ──
+  // ADR-0006: an ended session's Messages tab renders the WHOLE parsed Transcript
+  // as grouped-turn cards (vs the Errors tab's ±N windows around each failure). A
+  // still-live session returns live:true so the client keeps the raw SSE byte-tail.
+  // See buildSessionMessages for the response branches.
+  app.get("/api/sessions/:id/messages", async (c) => {
+    const { status, body } = await buildSessionMessages(db, c.req.param("id"));
     return c.json(body, status);
   });
 

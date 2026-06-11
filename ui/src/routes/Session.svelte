@@ -1,6 +1,6 @@
 <script lang="ts">
   import Icon from "../lib/components/ui/Icon.svelte";
-  import SessionFeed from "../lib/components/panels/SessionFeed.svelte";
+  import SessionMessages from "../lib/components/panels/SessionMessages.svelte";
   import SessionErrors from "../lib/components/panels/SessionErrors.svelte";
   import { getSessionDetail } from "../lib/api";
   import { resource } from "../lib/resource.svelte";
@@ -66,9 +66,10 @@
     {#if activeTab === "errors"}
       <SessionErrors sessionId={id} />
     {:else}
-      <!-- Messages stays the UNCHANGED, complete live tail. Mounted only while
-           active; it re-tails on mount (its own SSE lifecycle, ADR-0005). -->
-      <SessionFeed sessionId={id} fill />
+      <!-- Messages auto-branches on session state (ADR-0006): an ended session
+           renders the parsed Transcript as grouped-turn cards; a still-live one
+           keeps the raw byte-tail. Mounted only while active. -->
+      <SessionMessages sessionId={id} />
     {/if}
   </div>
 </div>

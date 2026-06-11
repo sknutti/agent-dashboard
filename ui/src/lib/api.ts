@@ -89,11 +89,14 @@ export interface SessionDetail {
   tools: { tool_use_id: string | null; tool_name: string; ts: string; duration_ms: number | null; error: string | null }[];
 }
 
-// Parsed Errors view (ADR-0005). Mirrors scripts/error_context.ts + wire.ts.
+// Parsed Errors/Messages views. Mirrors scripts/error_context.ts + wire.ts —
+// keep in sync (ADR-0005/0006). `thinking` is the agent's reasoning as its own
+// Message; `ts` is the source line's timestamp (empty when the line carries none).
 export interface DisplayMessage {
-  role: "user" | "assistant" | "tool";
+  role: "user" | "assistant" | "thinking" | "tool";
   text: string;
   isError: boolean;
+  ts: string;
   toolName?: string;
   toolInput?: string;
 }
@@ -113,6 +116,16 @@ export interface SessionErrors {
   errors?: ErrorContext[];
   note?: string; // unsupported agent / missing raw log → defer to Messages
   failureNote?: string; // rate-limited / truncated: no Error to anchor
+}
+
+// GET /api/sessions/:id/messages (ADR-0006). Mirrors wire.ts SessionMessagesResponse.
+// `live:true` → render the raw byte-tail (no messages); `live:false` → the whole
+// parsed Transcript. `supported:false` carries a note (unsupported agent / missing log).
+export interface SessionMessages {
+  supported: boolean;
+  live: boolean;
+  messages?: DisplayMessage[];
+  note?: string;
 }
 
 export interface LiveSession {
@@ -325,6 +338,8 @@ export const getSessions = (q: {
 export const getSessionDetail = (id: string) => getJson<SessionDetail>(`/api/sessions/${id}/details`);
 export const getSessionErrors = (id: string) =>
   getJson<SessionErrors>(`/api/sessions/${encodeURIComponent(id)}/errors`);
+export const getSessionMessages = (id: string) =>
+  getJson<SessionMessages>(`/api/sessions/${encodeURIComponent(id)}/messages`);
 export const getLive = () => getJson<{ sessions: LiveSession[] }>("/api/sessions/live");
 export const getTokenUsage = (range: Range, agent?: string) =>
   getJson<TokenUsage>(`/api/usage/tokens?range=${range}${agent ? `&agent=${agent}` : ""}`);

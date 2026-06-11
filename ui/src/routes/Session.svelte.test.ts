@@ -27,6 +27,12 @@ beforeEach(() => {
     tools: [],
   } as any);
   vi.spyOn(api, "getSessionErrors").mockResolvedValue({ supported: true, outcome: "errored", errors: [] });
+  // The Messages tab now mounts SessionMessages (ADR-0006), which fetches the
+  // parsed Transcript — mock it so the panel renders without a real fetch.
+  vi.spyOn(api, "getSessionMessages").mockResolvedValue({
+    supported: true, live: false,
+    messages: [{ role: "user", text: "hello from the transcript", isError: false, ts: "" }],
+  });
 });
 
 // Globals aren't enabled in vitest.config, so testing-library's auto-cleanup
@@ -49,5 +55,13 @@ describe("Session page tabs", () => {
     const messagesTab = await screen.findByRole("tab", { name: /messages/i });
     expect(messagesTab.getAttribute("aria-selected")).toBe("true");
     expect(screen.getByRole("tab", { name: /errors/i }).getAttribute("aria-selected")).toBe("false");
+  });
+
+  test("the Messages tab mounts the parsed SessionMessages panel", async () => {
+    navigate("/session/x", "?tab=messages");
+    render(Session, { id: "x" });
+    // The parsed Transcript's prompt text renders — proves SessionMessages (not the
+    // old raw SessionFeed) is mounted on the Messages tab.
+    expect(await screen.findByText("hello from the transcript")).toBeTruthy();
   });
 });
