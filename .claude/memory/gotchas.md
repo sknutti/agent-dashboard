@@ -274,3 +274,21 @@
   build is minutes — plan m4/m7). Gate is `cargo test --workspace` (575 passed). Bridge bin at
   `target/{debug,release}/prompt-library-bridge`. Per-request spawn ~26ms incl. shell overhead →
   process-per-request fine, no daemon needed.
+
+## Bun.spawn `timeout` option is unreliable under concurrent load (Phase 3)
+- `library_bridge.ts runBridge` first used `Bun.spawn([...], { timeout: 200, killSignal:"SIGKILL" })`
+  to bound a hung bridge. Passed in isolation but in the FULL `bun test scripts` run a `sleep 5`
+  fake bridge ran the **entire 5s** (timeout never fired) → exited 0 with empty stdout →
+  `bridge_bad_output` instead of `bridge_timeout`, failing the test. Flaky = silent prod risk
+  (a hung bridge would block a request 5s+, not the intended bound).
+- **Fix:** don't trust the spawn `timeout` option. Use an explicit JS watchdog —
+  `setTimeout(() => { timedOut=true; proc.kill("SIGKILL") }, ms)` + a `timedOut` flag that forces
+  `bridge_timeout` regardless of how the exit reads; `clearTimeout` in `finally`. A JS timer fires
+  as soon as the loop frees, deterministically, even under suite concurrency.
+- **Bridge contract shapes (captured from the REAL binary, not the prototype):** `kind_info`
+  `primary_filename` is a TAGGED union `{kind:"fixed",value} | {kind:"templated",extension}` — NOT a
+  bare string as the plan research assumed. `working` (detail) is tagged `{kind:"md",frontmatter,body}
+  | {kind:"toml",text}`. Fixtures in `scripts/fixtures/bridge/*.json` are captured via the committed
+  `seed_fixture_library` example + `capture.ts`; Rust golden tests in the bridge crate guard
+  kind_info/target_info against serde drift. TS validators (`library_models.ts`) turn any shape drift
+  into a typed `bridge_bad_output`, never `undefined` deep in the UI.
