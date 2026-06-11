@@ -227,7 +227,7 @@ Errors view and is the only change that can regress existing behavior.
 - [x] `parseDisplay` emits a distinct `thinking` Message (text-gated, Claude-only in practice) and a
       per-Message `ts`; `DisplayMessage.role` includes `"thinking"`; the Errors view's context windows
       now include thinking Messages and its parser tests are updated to match (no Errors regression).
-- [ ] `GET /api/sessions/:id/messages` resolves the raw log via `sessions.source_path` (not
+- [x] `GET /api/sessions/:id/messages` resolves the raw log via `sessions.source_path` (not
       `findSessionFile`); for an **ended** in-scope session returns the whole `DisplayMessage[]`; for a
       **live** session returns `live:true` with no messages; antigravity / missing log →
       `supported:false` + note; unknown id → 404.

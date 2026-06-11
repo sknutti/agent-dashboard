@@ -18,7 +18,7 @@ export type { AgentId } from "./adapters/base.ts";
 // definitions live in error_context.ts (the parser); re-exported here so the wire
 // layer and the parser agree by construction, same pattern as AgentId above.
 export type { DisplayMessage, ErrorContext } from "./error_context.ts";
-import type { ErrorContext } from "./error_context.ts";
+import type { DisplayMessage, ErrorContext } from "./error_context.ts";
 
 export interface TokenCounts {
   input: number;
@@ -88,6 +88,18 @@ export interface SessionErrorsResponse {
   errors?: ErrorContext[];
   note?: string;
   failureNote?: string;
+}
+
+// GET /api/sessions/:id/messages (ADR-0006). For a still-LIVE session (within the
+// /sessions/live 5-min window) `live:true` with no `messages` — the client renders
+// the raw byte-tail. For an ENDED in-scope session `live:false` + the WHOLE parsed
+// Transcript. An unsupported agent / missing raw log → `supported:false` + `note`.
+// 404 returns `{error}` instead (not this).
+export interface SessionMessagesResponse {
+  supported: boolean;
+  live: boolean;
+  messages?: DisplayMessage[];
+  note?: string;
 }
 
 export interface BurnResponse {

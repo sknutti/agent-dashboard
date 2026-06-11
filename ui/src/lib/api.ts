@@ -118,6 +118,16 @@ export interface SessionErrors {
   failureNote?: string; // rate-limited / truncated: no Error to anchor
 }
 
+// GET /api/sessions/:id/messages (ADR-0006). Mirrors wire.ts SessionMessagesResponse.
+// `live:true` → render the raw byte-tail (no messages); `live:false` → the whole
+// parsed Transcript. `supported:false` carries a note (unsupported agent / missing log).
+export interface SessionMessages {
+  supported: boolean;
+  live: boolean;
+  messages?: DisplayMessage[];
+  note?: string;
+}
+
 export interface LiveSession {
   session_id: string;
   agent: string;
@@ -328,6 +338,8 @@ export const getSessions = (q: {
 export const getSessionDetail = (id: string) => getJson<SessionDetail>(`/api/sessions/${id}/details`);
 export const getSessionErrors = (id: string) =>
   getJson<SessionErrors>(`/api/sessions/${encodeURIComponent(id)}/errors`);
+export const getSessionMessages = (id: string) =>
+  getJson<SessionMessages>(`/api/sessions/${encodeURIComponent(id)}/messages`);
 export const getLive = () => getJson<{ sessions: LiveSession[] }>("/api/sessions/live");
 export const getTokenUsage = (range: Range, agent?: string) =>
   getJson<TokenUsage>(`/api/usage/tokens?range=${range}${agent ? `&agent=${agent}` : ""}`);
