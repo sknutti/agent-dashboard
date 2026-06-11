@@ -246,7 +246,15 @@
   }
   .input { color: var(--text-dim); }
   .output { color: var(--text-subtle); }
-  .clamped { max-height: 14em; overflow: hidden; }
+  /* Clamp long content and fade the cut-off edge to transparent (masks the text
+     itself, so it works over any card background) — a softer "there's more" cue
+     than a hard clip; the Show more toggle reveals the rest. */
+  .clamped {
+    max-height: 14em;
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent);
+    mask-image: linear-gradient(to bottom, #000 70%, transparent);
+  }
 
   .expand {
     align-self: flex-start;
