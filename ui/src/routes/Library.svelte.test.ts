@@ -100,43 +100,58 @@ describe("Library route — failure & empty states", () => {
   });
 });
 
-describe("Library route — explorer, selection, detail", () => {
-  test("renders primitives grouped by Kind and auto-loads the first detail", async () => {
+describe("Library route — explorer, collapse, selection, detail", () => {
+  test("Kind sections render collapsed by default: headers shown, items hidden", async () => {
     mockValidLibrary();
     render(Library);
-    // explorer groups
+    // every Kind header + its count is shown…
     expect(await screen.findByText("Skills")).toBeTruthy();
     expect(screen.getByText("Commands")).toBeTruthy();
-    // "diagnose" appears in BOTH the explorer button and the auto-selected detail
-    expect(screen.getAllByText("diagnose").length).toBeGreaterThanOrEqual(1);
-    // first primitive auto-selected → its working-copy body renders in the detail
-    expect(await screen.findByText(/Reproduce\./)).toBeTruthy();
-    // CVD: the dirty primitive carries a text label, not color alone
-    expect(screen.getByText(/modified/)).toBeTruthy();
+    // …but the items inside are collapsed away (diagnose lives under Skills)
+    expect(screen.queryByText("diagnose")).toBeNull();
+    expect(screen.queryByText("deploy")).toBeNull();
+    // and nothing is auto-selected — the detail pane invites a pick
+    expect(await screen.findByText(/Select a primitive/)).toBeTruthy();
   });
 
-  test("filtering by name narrows the explorer", async () => {
+  test("clicking a Kind header expands it to reveal its primitives", async () => {
     mockValidLibrary();
     render(Library);
-    await screen.findByText("browser-check");
-    const input = screen.getByPlaceholderText("Filter primitives");
-    await fireEvent.input(input, { target: { value: "deploy" } });
-    // browser-check appears only in the explorer (never in the mocked detail), so
-    // its disappearance proves the explorer list narrowed.
+    const header = await screen.findByRole("button", { name: /Skills/i });
+    expect(header.getAttribute("aria-expanded")).toBe("false");
+    await fireEvent.click(header);
+    expect(header.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("diagnose")).toBeTruthy();
+    expect(screen.getByText("browser-check")).toBeTruthy();
+    // CVD: the dirty primitive carries a text label, not color alone
+    expect(screen.getByText(/modified/)).toBeTruthy();
+    // collapsing hides them again
+    await fireEvent.click(header);
+    expect(screen.queryByText("diagnose")).toBeNull();
+  });
+
+  test("an active filter force-expands groups so matches aren't hidden behind collapse", async () => {
+    mockValidLibrary();
+    render(Library);
+    await screen.findByText("Skills");
+    // nothing expanded yet → items hidden
     expect(screen.queryByText("browser-check")).toBeNull();
-    expect(screen.getByText("deploy")).toBeTruthy();
+    await fireEvent.input(screen.getByPlaceholderText("Filter primitives"), { target: { value: "browser" } });
+    // matching item surfaces without any manual expand; non-matches stay gone
+    expect(screen.getByText("browser-check")).toBeTruthy();
+    expect(screen.queryByText("deploy")).toBeNull();
   });
 
   test("a filter with no matches shows a 'No matches' state", async () => {
     mockValidLibrary();
     render(Library);
-    await screen.findByText("diagnose");
+    await screen.findByText("Skills");
     await fireEvent.input(screen.getByPlaceholderText("Filter primitives"), { target: { value: "zzz" } });
     expect(await screen.findByText(/No matches/)).toBeTruthy();
   });
 
-  test("selecting a different primitive loads its detail on demand", async () => {
-    const codexDetail: LibraryPrimitiveDetail = {
+  test("expanding then selecting a primitive loads its detail on demand", async () => {
+    const deployDetail: LibraryPrimitiveDetail = {
       kind: "command", name: "deploy",
       metadata: { allowed_targets: ["claude"], created_at: "2026-04-30T12:00:00Z" },
       working: { kind: "md", frontmatter: "", body: "deploy the thing" },
@@ -149,11 +164,11 @@ describe("Library route — explorer, selection, detail", () => {
     const detailSpy = vi
       .spyOn(api, "getLibraryPrimitiveDetail")
       .mockImplementation((_kind, name) =>
-        Promise.resolve(name === "deploy" ? codexDetail : DETAIL),
+        Promise.resolve(name === "deploy" ? deployDetail : DETAIL),
       );
 
     render(Library);
-    await screen.findByText(/Reproduce\./); // first auto-selected
+    await fireEvent.click(await screen.findByRole("button", { name: /Commands/i }));
     await fireEvent.click(screen.getByText("deploy"));
     expect(await screen.findByText(/deploy the thing/)).toBeTruthy();
     expect(detailSpy).toHaveBeenCalledWith("command", "deploy");

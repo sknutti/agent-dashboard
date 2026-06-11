@@ -48,20 +48,31 @@
 
   let query = $state("");
   let selected = $state<string | null>(null);
+  // Kind sections the user has explicitly expanded — empty by default, so every
+  // section starts collapsed. An active filter force-opens groups (below) so
+  // matches are never hidden behind a collapsed header.
+  let expanded = $state<Set<string>>(new Set());
 
   const primitives = $derived(primitivesRes.data ?? []);
   const filtered = $derived(filterPrimitives(primitives, query));
   const groups = $derived(groupByKind(filtered));
-  // Default selection = first filtered primitive; an explicit click overrides it.
-  const firstKey = $derived(
-    groups[0]?.items[0] ? selectionKey(groups[0].items[0].kind, groups[0].items[0].name) : null,
-  );
-  const effectiveKey = $derived(selected ?? firstKey);
+  const filtering = $derived(query.trim() !== "");
+
+  function isOpen(kind: string): boolean {
+    return filtering || expanded.has(kind);
+  }
+  function toggle(kind: string): void {
+    const next = new Set(expanded); // reassign — Svelte tracks the binding, not mutation
+    next.has(kind) ? next.delete(kind) : next.add(kind);
+    expanded = next;
+  }
 
   // On-demand detail, keyed by the selected kind/name (ADR: detail loads per
-  // selection, file bytes are not bundled into the list payload).
+  // selection, file bytes are not bundled into the list payload). No
+  // auto-selection — with every section collapsed by default, the detail pane
+  // invites the user to pick rather than showing a primitive from a hidden group.
   const detailRes = resource(
-    () => effectiveKey ?? "library:none",
+    () => selected ?? "library:none",
     (k) => {
       const sel = parseSelection(k);
       return sel ? getLibraryPrimitiveDetail(sel.kind, sel.name) : Promise.resolve(null);
@@ -147,22 +158,39 @@
         {:else}
           <div class="kind-groups">
             {#each groups as group (group.kind)}
+              {@const open = isOpen(group.kind)}
               <section>
-                <h4>{group.label}</h4>
-                {#each group.items as p (p.kind + "/" + p.name)}
-                  {@const key = selectionKey(p.kind, p.name)}
-                  {@const cue = dirtyCue(p.dirty)}
-                  <button
-                    type="button"
-                    class:selected={effectiveKey === key}
-                    onclick={() => (selected = key)}
-                  >
-                    <span class="item-name">{p.name}</span>
-                    {#if p.dirty}
-                      <small class="cue" title={cue.label}>{cue.glyph} {cue.label}</small>
-                    {/if}
-                  </button>
-                {/each}
+                <button
+                  type="button"
+                  class="group-head"
+                  aria-expanded={open}
+                  onclick={() => toggle(group.kind)}
+                >
+                  <span class="group-label">
+                    <Icon name={open ? "chevron-down" : "chevron-right"} size={13} />
+                    {group.label}
+                  </span>
+                  <span class="group-count">{group.items.length}</span>
+                </button>
+                {#if open}
+                  <div class="group-items">
+                    {#each group.items as p (p.kind + "/" + p.name)}
+                      {@const key = selectionKey(p.kind, p.name)}
+                      {@const cue = dirtyCue(p.dirty)}
+                      <button
+                        type="button"
+                        class="item"
+                        class:selected={selected === key}
+                        onclick={() => (selected = key)}
+                      >
+                        <span class="item-name">{p.name}</span>
+                        {#if p.dirty}
+                          <small class="cue" title={cue.label}>{cue.glyph} {cue.label}</small>
+                        {/if}
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
               </section>
             {/each}
           </div>
@@ -372,10 +400,9 @@
   }
   .kind-groups {
     display: grid;
-    gap: 16px;
+    gap: 6px;
     margin-top: 16px;
   }
-  .kind-groups h4,
   .versions h4 {
     margin: 0 0 7px;
     color: var(--text-subtle);
@@ -384,19 +411,55 @@
     font-weight: 500;
     text-transform: uppercase;
   }
-  .kind-groups button {
+  /* Collapsible Kind section header — click to expand/collapse. */
+  .group-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 6px;
+    border-radius: 7px;
+    color: var(--text-subtle);
+    text-align: left;
+  }
+  .group-head:hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+  .group-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    text-transform: uppercase;
+  }
+  .group-count {
+    color: var(--text-subtle);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+  }
+  .group-items {
+    display: grid;
+    gap: 2px;
+    margin: 2px 0 4px;
+  }
+  .group-items .item {
     display: flex;
     justify-content: space-between;
     align-items: center;
     gap: 8px;
     width: 100%;
     padding: 8px;
+    padding-left: 19px;
     border-radius: 7px;
     color: var(--text-dim);
     text-align: left;
   }
-  .kind-groups button:hover,
-  .kind-groups button.selected {
+  .group-items .item:hover,
+  .group-items .item.selected {
     background: var(--surface-2);
     color: var(--text);
   }
