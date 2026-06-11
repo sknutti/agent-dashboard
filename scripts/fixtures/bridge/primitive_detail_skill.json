@@ -1,0 +1,21 @@
+{
+  "data": {
+    "current_version": null,
+    "kind": "skill",
+    "metadata": {
+      "allowed_targets": [],
+      "author": "Ada Lovelace",
+      "created_at": "2026-04-30T12:00:00Z",
+      "source_url": "https://example.com/skills/diagnose"
+    },
+    "name": "diagnose",
+    "versions": [],
+    "working": {
+      "body": "# Diagnose\n\nReproduce, minimise, fix.\n",
+      "frontmatter": "display_name: Diagnose\n",
+      "kind": "md"
+    }
+  },
+  "ok": true,
+  "v": 1
+}

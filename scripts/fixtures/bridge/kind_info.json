@@ -1,0 +1,51 @@
+{
+  "data": {
+    "agent": {
+      "allowed_targets": [
+        "claude",
+        "pi"
+      ],
+      "primary_filename": {
+        "kind": "fixed",
+        "value": "agent.md"
+      },
+      "supports_ref_files": true
+    },
+    "codex_agent": {
+      "allowed_targets": [
+        "codex"
+      ],
+      "primary_filename": {
+        "extension": "toml",
+        "kind": "templated"
+      },
+      "supports_ref_files": false
+    },
+    "command": {
+      "allowed_targets": [
+        "claude",
+        "pi",
+        "codex"
+      ],
+      "primary_filename": {
+        "extension": "md",
+        "kind": "templated"
+      },
+      "supports_ref_files": false
+    },
+    "skill": {
+      "allowed_targets": [
+        "claude",
+        "pi",
+        "codex"
+      ],
+      "primary_filename": {
+        "kind": "fixed",
+        "value": "SKILL.md"
+      },
+      "supports_ref_files": true
+    }
+  },
+  "ok": true,
+  "v": 1
+}

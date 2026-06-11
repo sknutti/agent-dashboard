@@ -1,0 +1,30 @@
+{
+  "data": [
+    {
+      "author": "Ada Lovelace",
+      "dirty": false,
+      "kind": "skill",
+      "name": "diagnose"
+    },
+    {
+      "author": null,
+      "dirty": false,
+      "kind": "agent",
+      "name": "reviewer"
+    },
+    {
+      "author": null,
+      "dirty": false,
+      "kind": "command",
+      "name": "deploy"
+    },
+    {
+      "author": null,
+      "dirty": false,
+      "kind": "codex_agent",
+      "name": "code-gen"
+    }
+  ],
+  "ok": true,
+  "v": 1
+}

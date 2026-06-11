@@ -558,6 +558,41 @@ mod tests {
         assert_eq!(env["error"]["code"], json!("unknown_command"));
     }
 
+    // ---- golden fixtures (drift guard vs the dashboard's committed JSON) ----
+
+    /// The path-independent capability tables are the dashboard's source for
+    /// legal Kinds/Targets/filenames. If a core serde rename changes their
+    /// shape, the committed `scripts/fixtures/bridge/*.json` (which the TS
+    /// validators are tested against) would silently desync — they're frozen.
+    /// These goldens make that a Rust test failure instead, pointing at
+    /// `capture.ts` for regeneration.
+    fn golden_data(fixture: &str) -> Value {
+        let env: Value = serde_json::from_str(fixture).expect("fixture is valid JSON");
+        env["data"].clone()
+    }
+
+    #[tokio::test]
+    async fn kind_info_matches_committed_fixture() {
+        let env = handle(r#"{"v":1,"command":"kind_info"}"#).await;
+        let expected = golden_data(include_str!("../../../scripts/fixtures/bridge/kind_info.json"));
+        assert_eq!(
+            env["data"], expected,
+            "kind_info drifted from the committed fixture — regenerate with \
+             `bun run scripts/fixtures/bridge/capture.ts`"
+        );
+    }
+
+    #[tokio::test]
+    async fn target_info_matches_committed_fixture() {
+        let env = handle(r#"{"v":1,"command":"target_info"}"#).await;
+        let expected = golden_data(include_str!("../../../scripts/fixtures/bridge/target_info.json"));
+        assert_eq!(
+            env["data"], expected,
+            "target_info drifted from the committed fixture — regenerate with \
+             `bun run scripts/fixtures/bridge/capture.ts`"
+        );
+    }
+
     #[tokio::test]
     async fn error_message_carries_no_filesystem_path() {
         // m4: `message` is path-free; only `detail` may carry the path.

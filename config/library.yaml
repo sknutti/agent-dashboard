@@ -1,0 +1,14 @@
+# Prompt Library location for the dashboard's read-only Library route (ADR-0007).
+#
+# This file is the persisted setting; the `CC_LIBRARY_PATH` /
+# `CC_LIBRARY_BRIDGE_PATH` env vars override it for dev. A missing/blank
+# `library_path` leaves the Library route reporting "unconfigured" — it never
+# affects Observability routes, /healthz, or doctor.
+#
+# library_path: the chosen Prompt Library directory (must contain a
+#   `.prompt-library` marker). Left blank until a library is configured.
+# bridge_path: optional override for the prompt-library-bridge binary;
+#   defaults to <repo>/target/debug/prompt-library-bridge.
+
+library_path:
+# bridge_path:

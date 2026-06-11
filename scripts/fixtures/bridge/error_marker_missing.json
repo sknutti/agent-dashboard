@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": "library_marker_missing",
+    "detail": "missing .prompt-library marker at `/private<LIBRARY_PATH>`",
+    "message": "not a prompt-library directory"
+  },
+  "ok": false,
+  "v": 1
+}
