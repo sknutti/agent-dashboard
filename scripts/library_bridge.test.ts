@@ -187,7 +187,12 @@ describe("runBridge — spawn transport (fake bridge)", () => {
   });
 
   test("a hanging bridge is killed and reported as bridge_timeout", async () => {
-    const { dir, path } = fakeBridge(`sleep 5`);
+    // `exec` so `sleep` REPLACES the shell (same pid that owns the stdout pipe).
+    // Without it, SIGKILL to the shell orphans `sleep`, which keeps the pipe's
+    // write-end open → the stdout drain blocks until sleep naturally exits,
+    // racing the test runner's own 5s timeout. (A real single-process bridge has
+    // no such child, so the watchdog kill closes stdout at once.)
+    const { dir, path } = fakeBridge(`exec sleep 30`);
     try {
       const r = await runBridge(path, "kind_info", {}, { timeoutMs: 200 });
       expect(r.ok).toBe(false);
