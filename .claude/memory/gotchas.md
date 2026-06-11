@@ -256,3 +256,21 @@
   slow tools (query_experts, WebFetch, Skill — real model/system latency) surface at top.
   `ToolLatencyPanel.svelte` never flags human-gated rows slow/fast, shows a neutral
   "· human-gated" tag + caption. To add a human-gated tool, extend the `HUMAN_GATED` set only.
+
+## Rust workspace (prompt-library bridge, Phase 1 — 2026-06-11)
+- **`cc` shadow breaks cargo builds.** `~/.local/bin/cc` (a non-compiler) sorts before
+  `/usr/bin/cc` on PATH → rustc's linker step + cc-rs (blake3) fail with
+  `cc: unknown command ... (try: cc help)`. Fixed by committed `.cargo/config.toml`:
+  `[env] CC/CXX=/usr/bin/...` + `[target.aarch64-apple-darwin] linker=/usr/bin/cc`.
+  No-op on a clean machine; defers to a set CC/CXX. Root cause is the PATH shadow, not the repo.
+- **specta hard-pinned `=2.0.0-rc.22`** in root `Cargo.toml` (C1): a caret on the rc floats
+  to rc.25, which drops `Type` trait members core's hand-written `impl specta::Type` needs (12
+  errors at version_label.rs:16 / primitive_name.rs:13). Cargo.lock committed too.
+- **Bridge contract finding:** `read_primitive_detail` has NO `PrimitiveNotFound` path — a
+  missing primitive hits the `metadata.yaml` read first → `Io` (`library_unreadable`/502). Bridge
+  pre-checks `layout.primitive_dir(kind,&name).exists()` → `primitive_not_found` (404) so the two
+  stay distinct for HTTP mapping.
+- **Build/test needs no env ritual now** but is NOT on `bun run check` (cold reqwest/hyper/rustls
+  build is minutes — plan m4/m7). Gate is `cargo test --workspace` (575 passed). Bridge bin at
+  `target/{debug,release}/prompt-library-bridge`. Per-request spawn ~26ms incl. shell overhead →
+  process-per-request fine, no daemon needed.
