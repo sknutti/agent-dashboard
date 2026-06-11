@@ -30,6 +30,26 @@
   function toMessages(): void {
     navigate(`/session/${sessionId}`, "?tab=messages");
   }
+
+  // The failing input arrives as a verbatim JSON string. Render it as readable
+  // text: a command-bearing tool (Bash `command`, codex exec `cmd`/`command[]`)
+  // shows the command itself — the thing you'd re-run — with real newlines; any
+  // other tool gets indented JSON instead of a crushed one-liner. Unparseable
+  // (e.g. truncated) input falls through to the raw string.
+  function readableInput(raw: string): string {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+    if (typeof parsed === "string") return parsed;
+    if (!parsed || typeof parsed !== "object") return raw;
+    const o = parsed as Record<string, unknown>;
+    const cmd = o.command ?? o.cmd;
+    if (cmd != null) return Array.isArray(cmd) ? cmd.map(String).join(" ") : String(cmd);
+    return JSON.stringify(parsed, null, 2);
+  }
 </script>
 
 {#snippet ctxRow(m: DisplayMessage)}
@@ -70,7 +90,7 @@
               <span class="xmark" title="errored tool call">✗</span>
               <span class="tool mono">{e.toolName}</span>
             </div>
-            {#if e.toolInput}<pre class="input mono">{e.toolInput}</pre>{/if}
+            {#if e.toolInput}<pre class="input mono">{readableInput(e.toolInput)}</pre>{/if}
             {#if e.errorText}<pre class="err-text mono">{e.errorText}</pre>{/if}
           </div>
 

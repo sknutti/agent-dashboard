@@ -44,6 +44,46 @@ describe("SessionErrors", () => {
     expect(screen.getByRole("button", { name: /messages/i })).toBeTruthy();
   });
 
+  test("a command tool input is shown as plain text, not a raw JSON blob", async () => {
+    vi.spyOn(api, "getSessionErrors").mockResolvedValue({
+      supported: true,
+      outcome: "errored",
+      errors: [{
+        toolName: "Bash",
+        toolInput: JSON.stringify({ command: 'git add foo.ts && git commit -m "msg"', description: "commit it" }),
+        errorText: "exit 1",
+        before: [],
+        after: [],
+        index: 0,
+      }],
+    });
+    render(SessionErrors, { sessionId: "sc" });
+    await screen.findByText("Bash");
+    // The command is rendered as readable text…
+    expect(screen.getByText(/git add foo\.ts && git commit -m "msg"/)).toBeTruthy();
+    // …with the JSON wrapper (keys/braces) parsed away, not shown verbatim.
+    expect(screen.queryByText(/"command":/)).toBeNull();
+  });
+
+  test("a non-command tool input is shown as readable indented JSON", async () => {
+    vi.spyOn(api, "getSessionErrors").mockResolvedValue({
+      supported: true,
+      outcome: "errored",
+      errors: [{
+        toolName: "Edit",
+        toolInput: JSON.stringify({ file_path: "foo.ts", old_string: "a" }),
+        errorText: "no match",
+        before: [],
+        after: [],
+        index: 0,
+      }],
+    });
+    render(SessionErrors, { sessionId: "se" });
+    await screen.findByText("Edit");
+    // Pretty-printed (indented) rather than a crushed single line.
+    expect(screen.getByText(/"file_path": "foo\.ts"/)).toBeTruthy();
+  });
+
   test("a non-errored Failure renders its one-line failureNote", async () => {
     vi.spyOn(api, "getSessionErrors").mockResolvedValue({
       supported: true,
