@@ -139,31 +139,21 @@ export async function buildLibraryStatus(config: LibraryConfig, run: Run = runBr
 // Registration
 // ---------------------------------------------------------------------------
 
-export function registerLibraryRoutes(app: Hono): void {
+/** `loadConfig` is injectable so the HTTP-wiring test is deterministic — it must
+ *  not depend on the machine's actual config/library.yaml contents. */
+export function registerLibraryRoutes(
+  app: Hono,
+  loadConfig: () => LibraryConfig = loadLibraryConfig,
+): void {
+  const json = (c: any, r: LibraryRouteResult) =>
+    c.json(r.body as object, r.status as ContentfulStatusCode);
   // Config is resolved per-request so editing config/library.yaml (or the env
   // override) takes effect without a server restart — cheap (one small YAML read).
-  app.get("/api/library/status", async (c) => {
-    const { status, body } = await buildLibraryStatus(loadLibraryConfig());
-    return c.json(body as object, status as ContentfulStatusCode);
-  });
-  app.get("/api/library/kind-info", async (c) => {
-    const { status, body } = await buildKindInfo(loadLibraryConfig());
-    return c.json(body as object, status as ContentfulStatusCode);
-  });
-  app.get("/api/library/target-info", async (c) => {
-    const { status, body } = await buildTargetInfo(loadLibraryConfig());
-    return c.json(body as object, status as ContentfulStatusCode);
-  });
-  app.get("/api/library/primitives", async (c) => {
-    const { status, body } = await buildLibraryPrimitives(loadLibraryConfig());
-    return c.json(body as object, status as ContentfulStatusCode);
-  });
-  app.get("/api/library/primitives/:kind/:name", async (c) => {
-    const { status, body } = await buildPrimitiveDetail(
-      loadLibraryConfig(),
-      c.req.param("kind"),
-      c.req.param("name"),
-    );
-    return c.json(body as object, status as ContentfulStatusCode);
-  });
+  app.get("/api/library/status", async (c) => json(c, await buildLibraryStatus(loadConfig())));
+  app.get("/api/library/kind-info", async (c) => json(c, await buildKindInfo(loadConfig())));
+  app.get("/api/library/target-info", async (c) => json(c, await buildTargetInfo(loadConfig())));
+  app.get("/api/library/primitives", async (c) => json(c, await buildLibraryPrimitives(loadConfig())));
+  app.get("/api/library/primitives/:kind/:name", async (c) =>
+    json(c, await buildPrimitiveDetail(loadConfig(), c.req.param("kind"), c.req.param("name"))),
+  );
 }

@@ -136,7 +136,9 @@ describe("registerLibraryRoutes — HTTP wiring + Observability isolation", () =
   test("library routes are additive; an unconfigured library leaves siblings 200", async () => {
     const app = new Hono();
     app.get("/api/summary", (c) => c.json({ ok: true })); // stand-in Observability route
-    registerLibraryRoutes(app); // resolves real (blank) config/library.yaml → unconfigured
+    // Inject an unconfigured config so the test is deterministic — independent of
+    // the machine's actual config/library.yaml (env override, a local edit, etc).
+    registerLibraryRoutes(app, () => UNCONFIGURED);
 
     const summary = await app.request("/api/summary");
     expect(summary.status).toBe(200); // unaffected by the library being unconfigured
