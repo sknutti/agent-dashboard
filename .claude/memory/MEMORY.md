@@ -151,6 +151,38 @@ Stack: Bun + Hono + bun:sqlite (WAL) + Svelte 5 SPA (ADR-0001). Built in phases
 - Verify the app by running the server (`bun start`) + a `claude -p` probe to generate OTEL,
   then screenshot via a playwright-bowser agent. I (Claude) can't restart my own CC session.
 
+## Prompt Library consolidation — read-only slice ✅ Done (2026-06-11, ADR-0007/0008)
+- Brings the Prompt Library Rust crates (`core`/`git`/`secrets`) into this repo under a root Cargo
+  workspace, behind a short-lived `prompt-library-bridge` binary (JSON stdin/stdout), exposed as
+  read-only `/api/library/*` routes + a production `/library` Svelte route (Variant B). File-backed
+  Library is source of truth; dashboard SQLite owns nothing. Drift + install-records DEFERRED
+  (Option A / C2 — no per-machine deploy state in a read slice).
+- **Phase 1** (prior): workspace + crates + bridge read commands. specta hard-pinned `=2.0.0-rc.22`;
+  cc-shadow handled by `.cargo/config.toml`. NOT on `bun run check` (cold Rust build minutes); gate
+  is `cargo test --workspace` (577 pass). See [[gotchas]] "Rust workspace".
+- **Phase 2**: `scripts/library_{config,bridge,models}.ts` + `config/library.yaml`. `loadLibraryConfig`
+  never throws, fail-closed null path, env>file>default precedence (env read at call-time for
+  testability). `runBridge` two-layer errors (transport vs application), explicit SIGKILL watchdog
+  (Bun.spawn `timeout` unreliable under load — see [[gotchas]]). Read models hand-written from REAL
+  captured serde shapes (`scripts/fixtures/bridge/*.json` via committed `seed_fixture_library` example
+  + `capture.ts`); Rust golden tests guard kind_info/target_info; TS validators → typed
+  `bridge_bad_output`. **primary_filename is a TAGGED union, not a string.**
+- **Phase 3**: `scripts/library_routes.ts` — factored handlers, code→HTTP (409/422/404/502), body is
+  `{code,message}` only (detail logged server-side, m4). status route is informational (always 200 +
+  `configured` flag). Registered in `registerApiRoutes`; shares NO state with Observability (proven:
+  unconfigured library leaves /api/summary + /healthz at 200). `registerLibraryRoutes(app, loadConfig?)`
+  injects config for deterministic tests.
+- **Phase 4**: `ui/src/routes/Library.svelte` + pure helpers `ui/src/lib/library.ts`. resource()-driven
+  (status gates kind/target/primitives; detail lazy per selection); 4 route-local states
+  (unconfigured/invalid/bridge-fail/empty). CVD-safe cues (dirty→label+glyph, git spelled out, current
+  version cyan — never red/green-only — Scott is colorblind). Prototype + PrototypeSwitcher removed.
+- **Verified end-to-end** through the real server + real release bridge: status/list/detail serve real
+  data, traversal→422, Observability stays 200; browser QA of /library (real data) + unconfigured state,
+  0 console errors. **Tilde (`~/`) in library_path is NOT expanded** → would surface as invalid_path;
+  a known follow-up (loader could `expandHome` like routes.ts).
+- Branch `feat/prompt-library-readonly-slice`; ADR-0008 records replace-not-coexist + install-state
+  ownership for the future write-flow slice. Drift/`/api/library/drift` + write flows are next.
+
 ## Load-bearing facts (don't re-derive)
 - **Cost model (ADR-0002):** tokens = exact cross-agent unit; rack-rate `cost_estimated_usd`
   = uniform cross-agent money axis (always `estimated`); native `cost_usd` = exact Claude/Pi.
