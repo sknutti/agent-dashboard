@@ -2,7 +2,7 @@ import { expect, test, describe } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadLibraryConfig } from "./library_config.ts";
+import { loadLibraryConfig, checkLibraryBridge } from "./library_config.ts";
 import { DEFAULT_BRIDGE_PATH } from "./paths.ts";
 
 // An empty env so call-time env-override resolution is deterministic (the host
@@ -88,5 +88,29 @@ describe("loadLibraryConfig", () => {
     withYaml(`bridge_path: 12345\n`, (dir) => {
       expect(loadLibraryConfig(dir, NO_ENV).bridgePath).toBe(DEFAULT_BRIDGE_PATH);
     });
+  });
+});
+
+describe("checkLibraryBridge (doctor)", () => {
+  const present = () => true;
+  const absent = () => false;
+
+  test("configured library + missing bridge binary warns with a cargo build hint", () => {
+    const r = checkLibraryBridge({ libraryPath: "/libs/x", bridgePath: "/repo/target/debug/prompt-library-bridge" }, absent);
+    expect(r.status).toBe("warn");
+    expect(r.detail).toContain("cargo build");
+  });
+
+  test("configured library + built bridge is ok", () => {
+    const r = checkLibraryBridge({ libraryPath: "/libs/x", bridgePath: "/repo/target/debug/prompt-library-bridge" }, present);
+    expect(r.status).toBe("ok");
+    expect(r.detail).toContain("/repo/target/debug/prompt-library-bridge");
+  });
+
+  test("an unconfigured library is ok (the feature is optional), never a warning", () => {
+    // bridge presence is irrelevant when no library is configured
+    const r = checkLibraryBridge({ libraryPath: null, bridgePath: "/whatever" }, absent);
+    expect(r.status).toBe("ok");
+    expect(r.detail).toMatch(/not configured/i);
   });
 });

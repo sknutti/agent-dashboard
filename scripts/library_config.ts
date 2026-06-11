@@ -12,7 +12,7 @@
 // `null` — never a half-parsed or coerced path that could turn the read routes
 // into a filesystem-read oracle over an arbitrary directory.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { CONFIG_DIR, DEFAULT_BRIDGE_PATH } from "./paths.ts";
@@ -47,4 +47,33 @@ export function loadLibraryConfig(
     str(env.CC_LIBRARY_BRIDGE_PATH) ?? str(cfg?.bridge_path) ?? DEFAULT_BRIDGE_PATH;
 
   return { libraryPath, bridgePath };
+}
+
+export interface BridgeHealth {
+  status: "ok" | "warn";
+  detail: string;
+}
+
+/**
+ * Doctor check for the prompt-library bridge. The bridge defaults to
+ * `target/debug/prompt-library-bridge`, which only exists after `cargo build`
+ * — so a configured library with no built bridge yields the cryptic
+ * `bridge_not_found` at runtime. Surface that as a warning here (the library is
+ * an optional feature, so it never fails the run). `fileExists` is injected for
+ * tests.
+ */
+export function checkLibraryBridge(
+  config: LibraryConfig,
+  fileExists: (p: string) => boolean = existsSync,
+): BridgeHealth {
+  if (!config.libraryPath) {
+    return { status: "ok", detail: "not configured (optional)" };
+  }
+  if (!fileExists(config.bridgePath)) {
+    return {
+      status: "warn",
+      detail: `library configured but bridge not built at ${config.bridgePath} — run \`cargo build\``,
+    };
+  }
+  return { status: "ok", detail: `bridge built · ${config.bridgePath}` };
 }
