@@ -1460,7 +1460,6 @@ dependencies = [
  "camino",
  "prompt-library-core",
  "prompt-library-git",
- "prompt-library-secrets",
  "serde",
  "serde_json",
  "tempfile",
