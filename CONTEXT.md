@@ -41,11 +41,79 @@ _Avoid_: monitoring, metrics.
 The write half — acting on agents: Mission Control dispatcher, HITL decisions/inbox, schedules, Telegram pager, emergency stop. **Claude-Code-only** (it spawns and kills `claude -p` processes); does not generalize across Agents.
 _Avoid_: ops, control plane.
 
+**Library layer**:
+The reusable-content half — editing, versioning, installing, and drift-managing Prompt Library **Primitives** across downstream agent-tool **Targets**. Cross-Target and write-capable, but distinct from the Claude-only **Operations layer**.
+_Avoid_: treating library writes as operations, prompt management.
+
+**Primitive**:
+A versioned content artifact owned by the **Library**, with a **Kind**, name, and current **Version**.
+_Avoid_: artifact, asset, item.
+
+**Kind**:
+The shape of a **Primitive**: `Skill`, `Agent`, `Command`, or `CodexAgent`.
+_Avoid_: type, category, primitive type.
+
+**Agent Primitive**:
+The Prompt Library **Primitive** whose **Kind** is `Agent`; not a dashboard **Agent**.
+_Avoid_: Agent when the surrounding sentence could mean the coding-agent CLI.
+
+**Target**:
+A downstream agent-tool that consumes **Primitives**: `Claude`, `Pi`, or `Codex`.
+_Avoid_: tool, destination, host.
+
+**Target name**:
+The Prompt Library value for a downstream install destination (`Claude`, `Pi`, `Codex`), kept distinct from dashboard **Agent** ids like `claude_code`.
+_Avoid_: normalizing Targets into Agent ids.
+
+**Library**:
+The user-chosen directory holding all **Primitives**, identified by a `.prompt-library` marker file at its root.
+_Avoid_: vault, store, project.
+
+**Working copy**:
+The editable in-progress content of a **Primitive**.
+_Avoid_: draft, scratch.
+
+**Version**:
+A published, frozen snapshot of a **Primitive**.
+_Avoid_: snapshot, release, revision.
+
+**Overlay**:
+Target-specific bytes that replace base content for one **Target** on one **Primitive**.
+_Avoid_: variant, override.
+
+**Materialized**:
+The output of merging **Working copy** base content plus any **Overlay** for a **Kind**, **Target**, and name.
+_Avoid_: rendered, built, baked.
+
+**KindTarget**:
+A legal (**Kind**, **Target**) pair backed by the install matrix.
+_Avoid_: slot, install slot, kind/target pair.
+
+**InstallLayout**:
+Whether a **Materialized** **Primitive** lands on disk as a single file or a directory.
+_Avoid_: shape, form, flatten flag.
+
+**Install**:
+The act of writing **Materialized** bytes for a **Primitive** to its on-disk **Target** destination.
+_Avoid_: deploy, push, sync.
+
+**Install record**:
+A persisted entry tracking that a specific **Primitive** **Version** was installed to a specific **KindTarget**, with hashes and mtimes for **Drift** detection.
+_Avoid_: install entry, deployment record.
+
+**Drift**:
+Divergence between an **Install record** and the current on-disk bytes at the install path.
+_Avoid_: diff, mismatch, out-of-sync.
+
 **Foundation**:
 The agent-agnostic substrate every Agent rides on: the multi-agent schema, the Adapter seam + orchestrator, the dashboard shell, and the OTEL ingest endpoints. Contains no Agent-specific logic.
 
 **Phase**:
 One self-contained delivery slice, documented in its own file under `docs/phases/`. Phase 0 = Foundation; Phases 1–4 = one Agent each (Claude → Codex → Pi → Antigravity); Phase 5 = Operations layer.
+
+**Library consolidation track**:
+A staged delivery track for bringing Prompt Library into the dashboard: read-only bridge/backend, dashboard overview/detail UI, then write/editor/install parity.
+_Avoid_: calling it Phase 5 or rewriting the existing Phase sequence.
 
 **Error**:
 A single failed tool call within a session — a `tool_result` the Agent marked `is_error` (a command that exit-coded non-zero, an Edit whose match failed, etc.). Code-actionable: it has a locatable point in the transcript, a failing tool input, and captured error text. Counted as `error_count`; the `errored` outcome means `error_count > 0`.
@@ -67,9 +135,20 @@ _Avoid_: "the feed" for both — the live raw tail and the parsed Transcript car
 
 - The **Foundation** defines the **Adapter** seam; each **Agent** contributes exactly one **Adapter**.
 - The **Observability layer** spans all four **Agents**; the **Operations layer** covers only Claude Code.
+- The **Library layer** manages reusable Prompt Library **Primitives** across downstream **Targets**; it is neither read-only **Observability** nor Claude-only **Operations**.
+- The **Library layer** is being consolidated from the standalone Prompt Library app in stages; the Prompt Library Rust crates move into this repo, while the standalone app remains the reference implementation until dashboard parity.
+- The file-backed **Library** remains the source of truth; dashboard SQLite may cache or index Library data but must not own it.
+- The **Library layer** gets its own top-level Library route; the existing Skills & MCP route remains an **Observability layer** surface.
+- A **Primitive** has exactly one **Kind** and zero-or-more allowed **Targets**.
+- **Target names** stay in Prompt Library vocabulary; map them to dashboard **Agents** only for explicit cross-links.
+- A **Primitive** has one **Working copy** and zero-or-more **Versions**.
+- A **Working copy** has one base and zero-or-more **Overlays**.
+- A (**Primitive**, **Target**) pair **Materializes** into bytes whose **InstallLayout** is determined by the **KindTarget** and bundle shape.
+- An **Install** produces an **Install record**; later **Drift** is detected by comparing the install path against that record.
 - Every token figure produced by an **Adapter** carries a **Fidelity**; **Burn** aggregates them per **Agent** per day.
 - Every **Agent** gets an **Estimated cost** (rack-rate, uniform); only Claude and Pi also get a **Native cost**. The two are never summed into one total; **Estimated cost** is the cross-agent money axis, **tokens** the rawest one.
 - A **Phase** delivers either the Foundation, one Agent's Adapter + panels, or the Operations layer — never a mix.
+- The **Library consolidation track** is separate from the existing **Phase** sequence; it does not become Phase 5 or renumber Observability/Operations work.
 
 ## Example dialogue
 
@@ -81,5 +160,9 @@ _Avoid_: "the feed" for both — the live raw tail and the parsed Transcript car
 ## Flagged ambiguities
 
 - "the dashboard" was used to mean both the whole product and the read-only Observability half — resolved: **Observability layer** vs **Operations layer** are distinct, and Phase ordering deliberately ships all Observability (Phases 0–4) before any Operations (Phase 5).
+- "pull Prompt Library into the dashboard" could mean adding it to the **Operations layer** because it writes to local agent-tool homes — resolved: the imported capability is a separate **Library layer**, since it manages reusable content across downstream **Targets** rather than dispatching or killing running **Agents**.
+- "Agent" now appears in two domains: dashboard **Agent** means a coding-agent CLI, while Prompt Library `Agent` is a **Kind** of **Primitive** — resolved: keep **Agent** for the CLI and say **Agent Primitive** or **Agent Kind** when discussing the reusable content kind.
+- "pulling Prompt Library in" could mean a permanent companion integration or full product consolidation — resolved: pursue staged full consolidation into the dashboard, using the standalone Prompt Library as the reference implementation until parity.
+- "Library consolidation" could be treated as Phase 5 because it writes to local agent-tool homes — resolved: it is a separate **Library consolidation track** and the existing Phase 5 remains the Claude-only **Operations layer**.
 - "error" vs "failure" were used interchangeably (the Failures panel spans crashes/rate-limits/truncations, while the AgentCard "errors" cell counts only `error_count`) — resolved: an **Error** is one failed tool call (code-actionable); a **Failure** is any unclean session outcome (`errored` · `rate_limited` · `truncated`). The Errors view anchors context windows only on **Errors**; rate-limited/truncated **Failures** show a one-line explanation and defer to the Messages feed.
 - "the Messages feed" originally meant the raw byte-tail JSONL stream (ADR-0005 made it the *raw* "source of truth", deliberately un-parsed) — amended: for **ended** sessions the Messages tab now renders the parsed **Transcript** as cards; the raw tail survives only for **live** sessions. The Errors and Messages views are now both *parsed* (windowed vs whole), no longer *parsed vs raw*. See ADR-0006.

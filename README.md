@@ -6,8 +6,12 @@ token burn, tool latency, MCP cost, session outcomes, cache efficiency — acros
 **Claude Code, Codex, Antigravity (`agy`), and Pi**. No cloud, no account, no
 outbound telemetry.
 
-> **Status:** design spec complete; implementation not started. Everything in
-> this repo today is the buildable specification under [`docs/`](docs/).
+> **Status:** implementation in progress. The Bun/Hono backend, SQLite schema,
+> per-agent adapters, and Svelte dashboard shell are live; the original build
+> spec remains under [`docs/`](docs/). The planned Prompt Library consolidation
+> is tracked as the **Library layer** in [`CONTEXT.md`](CONTEXT.md) and
+> [`ADR-0007`](docs/adr/0007-prompt-library-rust-command-bridge.md), with the
+> actionable stages in [`docs/library-consolidation-track.md`](docs/library-consolidation-track.md).
 
 ## Where the data comes from
 
@@ -30,17 +34,16 @@ runnable [`docs/antigravity_token_extractor.py`](docs/antigravity_token_extracto
 
 ```
 agent-dashboard/
-└── docs/
-    ├── 2026-06-08-multi-agent-observability-command-centre.md   # the spec — start here
-    ├── antigravity_token_extractor.py                           # verified Antigravity token decoder
-    └── sources/                                                 # original source material
-        ├── build-your-own-dashboard-guide.html
-        └── build-your-own-dashboard-prompt.md
+├── scripts/    # Bun/Hono backend, SQLite schema, ingest, adapters, routes
+├── ui/         # Svelte dashboard UI
+├── config/     # local agent registry and rack-rate price table
+└── docs/       # original build spec, ADRs, and source material
 ```
 
 ## Start here
 
-Read **[`docs/2026-06-08-multi-agent-observability-command-centre.md`](docs/2026-06-08-multi-agent-observability-command-centre.md)**:
+For the original product spec, read
+**[`docs/2026-06-08-multi-agent-observability-command-centre.md`](docs/2026-06-08-multi-agent-observability-command-centre.md)**:
 
 - **Part I — Orientation:** what this is and how the pieces connect.
 - **Part II — Multi-Agent & Burn Extension:** the agent-adapter model, the
