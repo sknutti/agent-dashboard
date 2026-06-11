@@ -157,8 +157,6 @@ export async function runBridge<T>(
       stdout: "pipe",
       stderr: "pipe", // async spawn defaults stderr to "inherit" — pin it so
       // diagnostics land in our error envelope, not the dashboard log.
-      timeout: opts.timeoutMs ?? 10_000,
-      killSignal: "SIGKILL",
     });
   } catch (e) {
     // ENOENT / not executable — the binary isn't where config says it is.
@@ -169,16 +167,37 @@ export async function runBridge<T>(
     );
   }
 
-  proc.stdin.write(JSON.stringify({ v: PROTOCOL_VERSION, command, args }));
-  proc.stdin.end(); // EOF — flush() alone would hang the bridge's read_to_string
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-  await proc.exited;
+  // Explicit watchdog (NOT Bun.spawn's `timeout` option — observed not to fire
+  // reliably under concurrent load). A JS timer that kills the process is
+  // deterministic: it fires as soon as the loop is free, well before any real
+  // hang would matter.
+  let timedOut = false;
+  const watchdog = setTimeout(() => {
+    timedOut = true;
+    proc.kill("SIGKILL");
+  }, opts.timeoutMs ?? 10_000);
 
-  return interpretBridgeOutcome(
-    { exitCode: proc.exitCode, signalCode: proc.signalCode, stdout, stderr },
-    validate,
-  );
+  try {
+    proc.stdin.write(JSON.stringify({ v: PROTOCOL_VERSION, command, args }));
+    proc.stdin.end(); // EOF — flush() alone would hang the bridge's read_to_string
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    await proc.exited;
+
+    if (timedOut) {
+      return transportError(
+        "bridge_timeout",
+        "the library bridge was terminated before it responded",
+        `killed after ${opts.timeoutMs ?? 10_000}ms; stderr=${stderr.trim()}`,
+      );
+    }
+    return interpretBridgeOutcome(
+      { exitCode: proc.exitCode, signalCode: proc.signalCode, stdout, stderr },
+      validate,
+    );
+  } finally {
+    clearTimeout(watchdog);
+  }
 }
