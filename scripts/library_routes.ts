@@ -131,7 +131,27 @@ export async function buildLibraryStatus(config: LibraryConfig, run: Run = runBr
     { path: config.libraryPath },
     { validate: parseLibraryStatus },
   );
-  if (!r.ok) return errorResult(r.error);
+  if (!r.ok) {
+    // A bridge transport fault (binary missing, timeout, unreadable output) is
+    // reported as informational DATA, not a 502 — the UI gates on status, and a
+    // 502 here collapses to a generic "couldn't load" with no way to act. The
+    // `unavailable` descriptor (code + safe message, NOT detail — m4) lets the
+    // UI render an actionable state (e.g. "the bridge isn't built — cargo build").
+    console.error(`[library] status ${r.error.code}: ${r.error.detail}`);
+    return {
+      status: 200,
+      body: {
+        configured: true,
+        is_valid: false,
+        marker_exists: false,
+        is_git_repo: false,
+        branch: null,
+        dirty: null,
+        unpushed: null,
+        unavailable: { code: r.error.code, message: r.error.message },
+      },
+    };
+  }
   return { status: 200, body: { configured: true, ...r.data } };
 }
 

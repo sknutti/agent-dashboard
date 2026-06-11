@@ -456,6 +456,9 @@ export interface LibraryStatus {
   branch: string | null;
   dirty: boolean | null;
   unpushed: boolean | null;
+  /** Set when the bridge itself couldn't answer (binary missing, timeout, bad
+   *  output). The route reports this as data (200) so the UI can act on it. */
+  unavailable?: { code: string; message: string };
 }
 
 export const getLibraryStatus = () => getJson<LibraryStatus>("/api/library/status");

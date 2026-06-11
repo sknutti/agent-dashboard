@@ -128,6 +128,16 @@ describe("buildLibraryStatus (informational — never errors on a bad path)", ()
     expect(r.status).toBe(200);
     expect(r.body).toMatchObject({ configured: true, is_valid: true, marker_exists: true });
   });
+  test("a bridge transport fault is reported as data (200 + unavailable), never a 502", async () => {
+    // The UI gates on status; a 502 here collapses to a generic "couldn't load".
+    // Reporting the fault as data lets the UI render an actionable message.
+    const r = await buildLibraryStatus(CONFIGURED, errRun(libErr("bridge_not_found")));
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ configured: true, is_valid: false });
+    expect((r.body as any).unavailable).toMatchObject({ code: "bridge_not_found", message: "msg:bridge_not_found" });
+    // m4: the path-bearing detail still never reaches the client
+    expect(JSON.stringify(r.body)).not.toContain("/Users/");
+  });
 });
 
 // Route-local isolation: library routes mounted on a Hono app must not affect a

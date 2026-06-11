@@ -89,6 +89,20 @@
         onRetry={status.reload}
       />
     </div>
+  {:else if status.data?.unavailable}
+    <div class="panel pad">
+      <EmptyState icon="alert" title="Library bridge unavailable">
+        {#if status.data.unavailable.code === "bridge_not_found"}
+          The library bridge binary isn’t built. Run <code>cargo build</code> in the
+          repo root to compile it, then reload.
+        {:else}
+          The library bridge couldn’t respond ({status.data.unavailable.message}).
+        {/if}
+        <div class="retry-row">
+          <button type="button" class="retry-btn" onclick={status.reload}>Reload</button>
+        </div>
+      </EmptyState>
+    </div>
   {:else if !status.data?.configured}
     <div class="panel pad">
       <EmptyState icon="book-open" title="No library configured">
@@ -268,6 +282,20 @@
     margin: 8px 0 0;
     color: var(--text-subtle);
     font-size: 12px;
+  }
+  .retry-row {
+    margin-top: 12px;
+  }
+  .retry-btn {
+    padding: 5px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 12px;
+  }
+  .retry-btn:hover {
+    border-color: var(--border-glow);
   }
   .panel {
     min-width: 0;

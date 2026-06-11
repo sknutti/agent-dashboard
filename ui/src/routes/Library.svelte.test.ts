@@ -75,6 +75,21 @@ describe("Library route — failure & empty states", () => {
     expect(await screen.findByText(/Not a prompt-library directory/)).toBeTruthy();
   });
 
+  test("a missing bridge binary shows an actionable 'cargo build' hint, not a generic error", async () => {
+    // Regression: a fresh clone that set library_path but never ran `cargo build`
+    // got "Couldn't load data" with no guidance. status now reports the fault as
+    // data so the UI can tell the user exactly what to do.
+    vi.spyOn(api, "getLibraryStatus").mockResolvedValue({
+      configured: true, is_valid: false, marker_exists: false,
+      is_git_repo: false, branch: null, dirty: null, unpushed: null,
+      unavailable: { code: "bridge_not_found", message: "the library bridge binary could not be launched" },
+    });
+    render(Library);
+    expect(await screen.findByText(/Library bridge unavailable/)).toBeTruthy();
+    expect(screen.getByText("cargo build")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /reload/i })).toBeTruthy();
+  });
+
   test("an empty but valid library reads as empty, not broken", async () => {
     vi.spyOn(api, "getLibraryStatus").mockResolvedValue(VALID);
     vi.spyOn(api, "getLibraryPrimitives").mockResolvedValue([]);
