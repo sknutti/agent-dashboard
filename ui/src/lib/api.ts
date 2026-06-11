@@ -390,3 +390,80 @@ export const setSkillAutonomy = (name: string, autonomy_level: string) =>
   }).then((r) => r.json());
 export const getContextHealth = () => getJson<ContextHealth>("/api/context/health");
 export const getMcpMeasure = (range: Range) => getJson<McpMeasure>(`/api/mcp/measure?range=${range}`);
+
+// ── Prompt Library (read-only, ADR-0007) ───────────────────────────────────
+// These mirror the bridge read models in scripts/library_models.ts (derived
+// from the real Rust serde structs, NOT the prototype's flattened PrimitiveRow).
+// Drift + per-target install records are deferred (Option A / C2), so no drift
+// types live here. Kept in sync by hand like the rest of this file.
+
+export type LibraryKind = "skill" | "agent" | "command" | "codex_agent";
+export type LibraryTarget = "claude" | "pi" | "codex";
+
+/** Per-Kind primary filename — a tagged union, not a bare string. */
+export type PrimaryFilename =
+  | { kind: "fixed"; value: string }
+  | { kind: "templated"; extension: string };
+
+export interface LibraryKindInfo {
+  primary_filename: PrimaryFilename;
+  allowed_targets: LibraryTarget[];
+  supports_ref_files: boolean;
+}
+export type LibraryKindInfoTable = Record<LibraryKind, LibraryKindInfo>;
+
+export interface LibraryTargetInfo {
+  targets: { target: LibraryTarget; dir_name: string }[];
+}
+
+export interface LibraryPrimitiveSummary {
+  kind: LibraryKind;
+  name: string;
+  /** Working copy differs from the pinned version. */
+  dirty: boolean;
+  author: string | null;
+}
+
+/** Working copy content — tagged on `kind` (md kinds vs codex_agent toml). */
+export type WorkingContent =
+  | { kind: "md"; frontmatter: string; body: string }
+  | { kind: "toml"; text: string };
+
+export interface LibraryPrimitiveMetadata {
+  allowed_targets: LibraryTarget[];
+  created_at: string;
+  display_name?: string;
+  author?: string;
+  source_url?: string;
+}
+
+export interface LibraryPrimitiveDetail {
+  kind: LibraryKind;
+  name: string;
+  metadata: LibraryPrimitiveMetadata;
+  working: WorkingContent;
+  versions: string[];
+  current_version: string | null;
+}
+
+/** /api/library/status — `configured` is the dashboard-route wrapper around the
+ *  bridge's git/marker status; the route always 200s so the UI can branch on it. */
+export interface LibraryStatus {
+  configured: boolean;
+  is_valid: boolean;
+  marker_exists: boolean;
+  is_git_repo: boolean;
+  branch: string | null;
+  dirty: boolean | null;
+  unpushed: boolean | null;
+}
+
+export const getLibraryStatus = () => getJson<LibraryStatus>("/api/library/status");
+export const getLibraryKindInfo = () => getJson<LibraryKindInfoTable>("/api/library/kind-info");
+export const getLibraryTargetInfo = () => getJson<LibraryTargetInfo>("/api/library/target-info");
+export const getLibraryPrimitives = () =>
+  getJson<LibraryPrimitiveSummary[]>("/api/library/primitives");
+export const getLibraryPrimitiveDetail = (kind: string, name: string) =>
+  getJson<LibraryPrimitiveDetail>(
+    `/api/library/primitives/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`,
+  );

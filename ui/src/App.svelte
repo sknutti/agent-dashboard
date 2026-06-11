@@ -3,7 +3,7 @@
   import Command from "./routes/Command.svelte";
   import Activity from "./routes/Activity.svelte";
   import Skills from "./routes/Skills.svelte";
-  import LibraryPrototype from "./routes/LibraryPrototype.svelte";
+  import Library from "./routes/Library.svelte";
   import Session from "./routes/Session.svelte";
   import DrillSheet from "./lib/components/panels/DrillSheet.svelte";
   import { router, ROUTES, sessionIdFromPath } from "./lib/router.svelte";
@@ -35,8 +35,8 @@
       <Activity />
     {:else if router.path === "/skills"}
       <Skills />
-    {:else if router.path === "/library-prototype"}
-      <LibraryPrototype />
+    {:else if router.path === "/library"}
+      <Library />
     {:else}
       <Command />
     {/if}

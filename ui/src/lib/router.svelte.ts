@@ -2,13 +2,13 @@
 // dynamic `/session/:id` detail pages; everything else falls through to the
 // command page. Reactive via Svelte 5 runes.
 
-export type RoutePath = "/" | "/activity" | "/skills" | "/library-prototype";
+export type RoutePath = "/" | "/activity" | "/skills" | "/library";
 
 export const ROUTES: { path: RoutePath; label: string; icon: string }[] = [
   { path: "/", label: "Command", icon: "command" },
   { path: "/activity", label: "Activity", icon: "activity" },
   { path: "/skills", label: "Skills & MCP", icon: "sparkles" },
-  { path: "/library-prototype", label: "Library", icon: "book-open" },
+  { path: "/library", label: "Library", icon: "book-open" },
 ];
 
 // Store the raw pathname so dynamic routes (e.g. /session/abc) survive — nav
