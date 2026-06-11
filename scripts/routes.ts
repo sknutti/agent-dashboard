@@ -20,6 +20,7 @@ import { getDb } from "./db.ts";
 import { syncSkills } from "./skills.ts";
 import { mergeBurnByDate, type BurnRow } from "./burn.ts";
 import { loadAgentsConfig, type AgentMeta } from "./agents_config.ts";
+import { registerLibraryRoutes } from "./library_routes.ts";
 import {
   parseDisplay,
   windowErrors,
@@ -268,6 +269,12 @@ export async function buildSessionMessages(
 
 export function registerApiRoutes(app: Hono): void {
   const db = getDb();
+
+  // ── Prompt Library (read-only, ADR-0007) ─────────────────────────────────
+  // Route-local: delegates to the Rust bridge and shares no state with the
+  // Observability routes below, so a missing/invalid library can't degrade
+  // /api/summary, /healthz, or doctor.
+  registerLibraryRoutes(app);
 
   // ── Summary (KpiRow) ──────────────────────────────────────────────────────
   app.get("/api/summary", (c) => {

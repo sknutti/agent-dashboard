@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { parse as parseYaml } from "yaml";
 import { getDb } from "./db.ts";
 import { loadAgentsConfig } from "./agents_config.ts";
+import { loadLibraryConfig, checkLibraryBridge } from "./library_config.ts";
 import { CONFIG_DIR, DB_PATH, PORT, PROJECT_ROOT, UI_DIST } from "./paths.ts";
 
 type Status = "ok" | "warn" | "fail";
@@ -92,6 +93,12 @@ try {
 // ── UI build ─────────────────────────────────────────────────────────────────
 const indexHtml = join(UI_DIST, "index.html");
 add("UI build", existsSync(indexHtml) ? "ok" : "warn", existsSync(indexHtml) ? UI_DIST : "ui/dist missing — run `bun run build:ui`");
+
+// ── Prompt Library bridge (ADR-0007) ─────────────────────────────────────────
+// A configured library with no built bridge binary is the exact setup that
+// surfaces as a cryptic runtime `bridge_not_found`; flag it here instead.
+const libBridge = checkLibraryBridge(loadLibraryConfig());
+add("library bridge", libBridge.status, libBridge.detail);
 
 // ── Agent dirs (informational in Phase 0; pre-enable is auto-detected) ───────
 // Same agents_config.ts loader the orchestrator and routes use (review #17), so

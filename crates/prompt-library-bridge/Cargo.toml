@@ -1,0 +1,30 @@
+[package]
+name = "prompt-library-bridge"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "prompt-library-bridge"
+path = "src/main.rs"
+
+# m5 invariant (read slice is secrets-free): the bridge deliberately does NOT
+# depend on prompt-library-secrets, so a SecretStore is unconstructible at
+# compile time. The secrets crate stays a workspace member (built + tested) for
+# boundary parity per ADR-0007, just not reachable from the read path.
+# core links reqwest transitively, but the read path never constructs a Client
+# (no url_import calls) — a code-discipline invariant covered by tests.
+[dependencies]
+prompt-library-core = { path = "../core" }
+prompt-library-git = { path = "../git" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+camino = { workspace = true }
+# current_thread runtime only — the read path touches std::fs; git status uses
+# async process calls through the git crate's TokioProcessRunner. No multi-thread
+# worker pool is spun up per one-shot invocation (perf note, Phase 1 insights).
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -18,6 +18,21 @@ export const UI_DIST = process.env.CC_UI_DIST ?? join(PROJECT_ROOT, "ui", "dist"
 
 export const PORT = Number(process.env.CC_PORT ?? 8765);
 
+/**
+ * Default location of the prompt-library-bridge binary (the read-model bridge
+ * over the imported Rust crates). The bridge is built into the workspace
+ * `target/debug/` by `cargo build`. `loadLibraryConfig()` layers an optional
+ * `config/library.yaml` `bridge_path` and the `CC_LIBRARY_BRIDGE_PATH` env
+ * override on top of this default. Env reads for the library live in the loader
+ * (call-time) so config-vs-env precedence stays testable.
+ */
+export const DEFAULT_BRIDGE_PATH = join(
+  PROJECT_ROOT,
+  "target",
+  "debug",
+  "prompt-library-bridge",
+);
+
 /** IANA-ish timezone name for local-time bucketing and health display. */
 export function tzName(): string {
   return (

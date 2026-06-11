@@ -37,3 +37,6 @@ screenshots/
 .DS_Store
 .idea/
 .vscode/
+
+# Rust build artifacts
+/target

@@ -1,0 +1,18 @@
+# Build fix for this workspace.
+#
+# On some dev machines a non-compiler binary named `cc` shadows the real C
+# compiler on PATH (here: ~/.local/bin/cc sorts before /usr/bin/cc). That
+# breaks two things: rustc's linker step (it drives `cc`) and cc-rs's C
+# compilation of native deps like blake3. Point both at the real system
+# compiler.
+#
+# These are effectively no-ops on a machine without the shadow — /usr/bin/cc is
+# the compiler cargo would select anyway. The [env] entries are NOT forced, so
+# an explicitly-set CC/CXX in the environment still wins (e.g. a Linux CI using
+# a different toolchain). The linker override is scoped to the dev target.
+[env]
+CC = "/usr/bin/cc"
+CXX = "/usr/bin/clang++"
+
+[target.aarch64-apple-darwin]
+linker = "/usr/bin/cc"

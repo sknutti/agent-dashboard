@@ -1,0 +1,18 @@
+{
+  "data": {
+    "current_version": null,
+    "kind": "codex_agent",
+    "metadata": {
+      "allowed_targets": [],
+      "created_at": "2026-04-30T12:00:00Z"
+    },
+    "name": "code-gen",
+    "versions": [],
+    "working": {
+      "kind": "toml",
+      "text": ""
+    }
+  },
+  "ok": true,
+  "v": 1
+}

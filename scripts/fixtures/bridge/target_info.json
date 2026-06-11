@@ -1,0 +1,20 @@
+{
+  "data": {
+    "targets": [
+      {
+        "dir_name": "claude",
+        "target": "claude"
+      },
+      {
+        "dir_name": "pi",
+        "target": "pi"
+      },
+      {
+        "dir_name": "codex",
+        "target": "codex"
+      }
+    ]
+  },
+  "ok": true,
+  "v": 1
+}
