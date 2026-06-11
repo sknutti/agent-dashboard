@@ -231,15 +231,15 @@ Errors view and is the only change that can regress existing behavior.
       `findSessionFile`); for an **ended** in-scope session returns the whole `DisplayMessage[]`; for a
       **live** session returns `live:true` with no messages; antigravity / missing log →
       `supported:false` + note; unknown id → 404.
-- [ ] The Messages tab renders **layout C grouped turns** for ended sessions (user prompt heads each
+- [x] The Messages tab renders **layout C grouped turns** for ended sessions (user prompt heads each
       turn; thinking/assistant/tool nest on a left-gutter timeline) and the **unchanged raw
       `SessionFeed`** for live sessions — auto-branched, **no raw/cards toggle**.
-- [ ] Tool cards show the call input (via the shared `readableInput`) + result/output, truncate long
+- [x] Tool cards show the call input (via the shared `readableInput`) + result/output, truncate long
       output with an expand control, and pair red with `✗` on error (no colour-alone signalling; dot
       legend avoids red/green).
-- [ ] Each card renders its `ts` subtly; no model/token metadata on cards.
-- [ ] Display parsing stays in `scripts/error_context.ts` (one parser, two views: whole vs windowed).
-- [ ] `bun test scripts` and `cd ui && bun run test` (vitest) pass; `bun run check` is green.
+- [x] Each card renders its `ts` subtly; no model/token metadata on cards.
+- [x] Display parsing stays in `scripts/error_context.ts` (one parser, two views: whole vs windowed).
+- [x] `bun test scripts` and `cd ui && bun run test` (vitest) pass; `bun run check` is green.
 
 ## Risks and Dependencies
 
