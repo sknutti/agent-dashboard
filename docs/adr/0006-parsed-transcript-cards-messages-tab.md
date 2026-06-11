@@ -42,3 +42,9 @@ A throwaway prototype (3 variants on the real Messages tab, `?variant=`) settled
 - `parseDisplay` gains a *thinking* role and a per-Message `ts`; the Errors view inherits both (thinking now appears in context windows). The shared-parser coupling that ADR-0005 called out tightens — one more reason both views must stay test-pinned against the same fixtures.
 - The Messages tab is no longer a guaranteed-complete *raw* record in the UI; for an ended session the raw JSONL is reachable only on disk (auto-only, no toggle). Accepted: the parser is resilient and falls back to raw text it can't structure.
 - Coverage stays Agent-dependent (Claude/Codex/Pi parse; Antigravity falls back to a note). Thinking coverage is narrower still — Claude-only by the encryption reality, not by choice.
+
+## Empirical reality (noted post-implementation, 2026-06-10)
+
+During Phase-1 verification the assumption above — that Claude logs carry *readable* thinking text — was checked against real data and **did not hold**: across **230 local Claude Code logs / 5,388 `thinking` blocks, every one had empty `thinking` text** (only an encrypted `signature` survives; the reasoning is not persisted in plaintext). Combined with Codex/Pi's encrypted reasoning, **text-gating currently suppresses 100% of thinking Messages** — the *thinking* card renders nothing on today's data.
+
+This does **not** change the decision. The implementation is kept because it is (a) **correct** — text-gating is exactly the right behavior for empty reasoning, no empty cards appear — and (b) **future-proof** — the moment Claude Code (or any agent) persists plaintext thinking, the card lights up with no further work. The genuinely-active wins of Phase 1 are the per-Message `ts` and the `role:"thinking"` union, both of which the Errors and Messages views use regardless. The headline "thinking now appears as its own Message" should be read as *dormant-but-ready*, not *visible today*.
