@@ -20,12 +20,19 @@ import { getDb } from "./db.ts";
 import { syncSkills } from "./skills.ts";
 import { mergeBurnByDate, type BurnRow } from "./burn.ts";
 import { loadAgentsConfig, type AgentMeta } from "./agents_config.ts";
+import {
+  parseDisplay,
+  windowErrors,
+  DISPLAY_PARSER_AGENTS,
+  UnsupportedAgentError,
+} from "./error_context.ts";
 import type {
   AgentCardData,
   AgentsResponse,
   BurnResponse,
   SessionRow,
   SessionsResponse,
+  SessionErrorsResponse,
 } from "./wire.ts";
 
 // Agent identity is data-driven from config/agents.yaml (review #17) — no hardcoded
@@ -121,6 +128,80 @@ const OUTCOME_CASE = /* sql */ `
     WHEN ended_at IS NULL THEN 'unfinished'
     ELSE 'ok'
   END`;
+
+/** One row's worth of the fields the Errors view needs to decide how to respond. */
+interface SessionErrRow {
+  agent: string;
+  source_path: string | null;
+  error_count: number | null;
+  rate_limit_hit: number | null;
+  stop_reason: string | null;
+  outcome: string;
+}
+
+/** Core of GET /api/sessions/:id/errors, factored out for direct unit testing
+ *  against an in-memory DB (the singleton getDb() can't be injected). Resolves the
+ *  raw log via sessions.source_path — agent-agnostic, NOT findSessionFile (which is
+ *  hardcoded to ~/.claude/projects) — and degrades to a note rather than 500ing
+ *  when the agent has no parser, the path is missing, or the file is gone (ADR-0005). */
+export async function buildSessionErrors(
+  db: Database,
+  id: string,
+): Promise<{ status: 200 | 404; body: SessionErrorsResponse | { error: string } }> {
+  const row = db.query<SessionErrRow, [string]>(/* sql */ `
+    SELECT agent, source_path, error_count, rate_limit_hit, stop_reason,
+           ${OUTCOME_CASE} AS outcome
+    FROM sessions WHERE session_id = ?`).get(id);
+  if (!row) return { status: 404, body: { error: "not found" } };
+  const outcome = row.outcome;
+
+  // Agent without a display parser (antigravity) → fall back to Messages regardless
+  // of source_path. The note is what the Errors tab shows.
+  if (!DISPLAY_PARSER_AGENTS.has(row.agent)) {
+    return {
+      status: 200,
+      body: { supported: false, outcome,
+        note: "Parsed error view is unavailable for this agent — open Messages for the raw transcript." },
+    };
+  }
+
+  // A non-errored Failure carries no failed tool call to anchor a window on; show a
+  // one-line explanation and defer to Messages (ADR-0005 "errors anchor only on
+  // Errors"). error_count>0 ⟺ outcome 'errored' (OUTCOME_CASE priority), so this
+  // also covers clean/unfinished sessions (no failureNote, just an empty list).
+  if (!row.error_count || row.error_count <= 0) {
+    const failureNote =
+      outcome === "rate_limited"
+        ? "This session hit a provider rate limit — there's no failed tool call to inspect. See Messages."
+        : outcome === "truncated"
+          ? "This session was cut off at the token limit — there's no failed tool call to inspect. See Messages."
+          : undefined;
+    return { status: 200, body: { supported: true, outcome, errors: [], failureNote } };
+  }
+
+  // Errored: resolve and re-parse the raw log. A missing path or a deleted file
+  // degrades to the same fallback note as an unsupported agent (A1), not a 500.
+  if (!row.source_path || !existsSync(row.source_path)) {
+    return {
+      status: 200,
+      body: { supported: false, outcome,
+        note: "The raw log for this session is unavailable — open Messages for the live feed." },
+    };
+  }
+  try {
+    const messages = await parseDisplay(row.agent, row.source_path);
+    return { status: 200, body: { supported: true, outcome, errors: windowErrors(messages) } };
+  } catch (err) {
+    if (err instanceof UnsupportedAgentError) {
+      return {
+        status: 200,
+        body: { supported: false, outcome,
+          note: "Parsed error view is unavailable for this agent — open Messages for the raw transcript." },
+      };
+    }
+    throw err;
+  }
+}
 
 export function registerApiRoutes(app: Hono): void {
   const db = getDb();
@@ -259,6 +340,17 @@ export function registerApiRoutes(app: Hono): void {
       SELECT tool_use_id, tool_name, ts, duration_ms, error
       FROM tool_calls WHERE session_id = ? ORDER BY ts ASC`).all(id);
     return c.json({ session, tools });
+  });
+
+  // ── Parsed error-context (on-demand re-parse of the raw log) ──────────────
+  // ADR-0005: re-reads the session's raw JSONL — where tool INPUT survives, unlike
+  // the DB's tool_calls — and returns, per errored tool call, the failing input +
+  // captured error text wrapped in a ±N readable-message window. Resolves the file
+  // via sessions.source_path (agent-agnostic), so it works for codex/pi whose
+  // basenames ≠ session_id. See buildSessionErrors for the response branches.
+  app.get("/api/sessions/:id/errors", async (c) => {
+    const { status, body } = await buildSessionErrors(db, c.req.param("id"));
+    return c.json(body, status);
   });
 
   // ── Live sessions (active in last 5 min) ──────────────────────────────────
