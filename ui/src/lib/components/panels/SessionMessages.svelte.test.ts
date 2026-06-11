@@ -3,7 +3,7 @@
 // *.svelte.test.ts so the runes + resource() compile (see vitest.config.ts).
 
 import { describe, test, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/svelte";
+import { render, screen, cleanup, fireEvent } from "@testing-library/svelte";
 import SessionMessages from "./SessionMessages.svelte";
 import * as api from "../../api";
 import type { DisplayMessage } from "../../api";
@@ -59,6 +59,32 @@ describe("SessionMessages", () => {
     render(SessionMessages, { sessionId: "err1" });
     await screen.findByText("deploy", { selector: ".tool-name" });
     expect(screen.getAllByText("✗").length).toBeGreaterThan(0);
+  });
+
+  test("a long user prompt is collapsible — starts clamped, expands on toggle", async () => {
+    // A big prompt (e.g. the /work command pasted in) dominates the turn; it should
+    // collapse to a preview with a Show more/less toggle like the entry cards do.
+    const longPrompt = "Please do the following extensive task. ".repeat(20); // > 320 chars
+    vi.spyOn(api, "getSessionMessages").mockResolvedValue({
+      supported: true, live: false,
+      messages: [m("user", longPrompt), m("assistant", "on it")],
+    });
+    render(SessionMessages, { sessionId: "long1" });
+    // The toggle appears for the long prompt (the short "on it" assistant has none).
+    const toggle = await screen.findByRole("button", { name: /show more/i });
+    expect(toggle).toBeTruthy();
+    await fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: /show less/i })).toBeTruthy();
+  });
+
+  test("a short user prompt has no collapse toggle", async () => {
+    vi.spyOn(api, "getSessionMessages").mockResolvedValue({
+      supported: true, live: false,
+      messages: [m("user", "fix the typo"), m("assistant", "done")],
+    });
+    render(SessionMessages, { sessionId: "short1" });
+    await screen.findByText("fix the typo");
+    expect(screen.queryByRole("button", { name: /show more/i })).toBeNull();
   });
 
   test("supported:false renders the note (no Messages affordance — this IS Messages)", async () => {

@@ -77,11 +77,19 @@
       {#each turns as turn, ti (ti)}
         <section class="turn">
           {#if turn.prompt}
+            {@const pkey = `p${ti}`}
             <div class="prompt">
               <span class="dot user" aria-hidden="true"></span>
               <div class="prompt-body">
-                <div class="prompt-text">{turn.prompt.text}</div>
-                {#if turn.prompt.ts}<time class="ts">{relTime(turn.prompt.ts)}</time>{/if}
+                <div class="prompt-row">
+                  <div class="prompt-text" class:clamped={isLong(turn.prompt.text) && !expanded[pkey]}>{turn.prompt.text}</div>
+                  {#if turn.prompt.ts}<time class="ts">{relTime(turn.prompt.ts)}</time>{/if}
+                </div>
+                {#if isLong(turn.prompt.text)}
+                  <button class="expand" onclick={() => (expanded[pkey] = !expanded[pkey])}>
+                    {expanded[pkey] ? "Show less" : "Show more"}
+                  </button>
+                {/if}
               </div>
             </div>
           {/if}
@@ -128,12 +136,17 @@
     flex: 1;
     min-width: 0;
     display: flex;
-    align-items: baseline;
-    gap: 10px;
+    flex-direction: column;
+    gap: 6px;
     padding: 8px 12px;
     border: 1px solid var(--border);
     border-radius: 10px;
     background: var(--surface-2);
+  }
+  .prompt-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
   }
   .prompt-text {
     flex: 1;
