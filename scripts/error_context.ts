@@ -19,11 +19,15 @@ import { createInterface } from "node:readline";
 
 /** One readable entry in a session transcript. A `tool` entry collapses a tool
  *  call and its result: `toolInput` is the failing input, `text` is the captured
- *  result/error text, `isError` is set once the matching result comes back. */
+ *  result/error text, `isError` is set once the matching result comes back.
+ *  `thinking` is the agent's reasoning as its own Message (ADR-0006), emitted only
+ *  when readable thinking text exists (Claude-only in practice — codex/pi store
+ *  reasoning encrypted). `ts` is the source line's timestamp (empty when absent). */
 export interface DisplayMessage {
-  role: "user" | "assistant" | "tool";
+  role: "user" | "assistant" | "thinking" | "tool";
   text: string;
   isError: boolean;
+  ts: string;
   toolName?: string;
   toolInput?: string;
 }
@@ -140,19 +144,23 @@ export function windowErrors(
 // ── Claude Code ──────────────────────────────────────────────────────────────
 // assistant lines: message.content[] blocks (text | thinking | tool_use{id,name,
 // input}); one logical message is split across lines sharing message.id → collapse
-// thinking+text into one assistant turn. user lines: either real prompt text OR
-// tool_result{tool_use_id,is_error,content} blocks (synthetic) — the latter fold
-// back onto the matching tool entry, never their own message.
+// the TEXT blocks into one assistant turn. A `thinking` block becomes its OWN
+// Message (ADR-0006), text-gated (skipped when empty). user lines: either real
+// prompt text OR tool_result{tool_use_id,is_error,content} blocks (synthetic) —
+// the latter fold back onto the matching tool entry, never their own message.
+// Every Message carries `ts` from its source line's top-level timestamp.
 async function parseClaude(filePath: string): Promise<DisplayMessage[]> {
   const messages: DisplayMessage[] = [];
   const toolIndexById = new Map<string, number>();
   let curMsgId: string | null = null;
   let curText: string[] = [];
+  let curTs = ""; // ts of the line that opened the current assistant text buffer
 
   const flushAsstText = () => {
     const text = curText.join("\n").trim();
-    if (text) messages.push({ role: "assistant", text, isError: false });
+    if (text) messages.push({ role: "assistant", text, isError: false, ts: curTs });
     curText = [];
+    curTs = "";
   };
 
   for await (const line of readLines(filePath)) {
@@ -163,6 +171,7 @@ async function parseClaude(filePath: string): Promise<DisplayMessage[]> {
     } catch {
       continue;
     }
+    const ts = typeof rec.timestamp === "string" ? rec.timestamp : "";
 
     if (rec.type === "assistant") {
       const msg = rec.message ?? {};
@@ -174,9 +183,16 @@ async function parseClaude(filePath: string): Promise<DisplayMessage[]> {
       const content = Array.isArray(msg.content) ? msg.content : [];
       for (const block of content) {
         if (block?.type === "text" && typeof block.text === "string") {
+          if (curText.length === 0) curTs = ts;
           curText.push(block.text);
         } else if (block?.type === "thinking" && typeof block.thinking === "string") {
-          curText.push(block.thinking);
+          // Thinking is its own Message, in order — but text-gated: an empty/
+          // whitespace thinking block emits nothing (A2). Flush any preceding
+          // assistant text first so order is preserved.
+          if (block.thinking.trim()) {
+            flushAsstText();
+            messages.push({ role: "thinking", text: block.thinking, isError: false, ts });
+          }
         } else if (block?.type === "tool_use" && typeof block.id === "string") {
           flushAsstText(); // the turn's text precedes its tool call
           const idx =
@@ -184,6 +200,7 @@ async function parseClaude(filePath: string): Promise<DisplayMessage[]> {
               role: "tool",
               text: "",
               isError: false,
+              ts,
               toolName: typeof block.name === "string" ? block.name : "unknown",
               toolInput: stringifyInput(block.input),
             }) - 1;
@@ -206,7 +223,7 @@ async function parseClaude(filePath: string): Promise<DisplayMessage[]> {
         flushAsstText();
         curMsgId = null;
         const text = contentText(rec.message?.content).trim();
-        if (text) messages.push({ role: "user", text, isError: false });
+        if (text) messages.push({ role: "user", text, isError: false, ts });
       }
     }
     // ai-title / system / api-error carry no readable turn → ignored.
@@ -225,11 +242,13 @@ async function parseCodex(filePath: string): Promise<DisplayMessage[]> {
   const messages: DisplayMessage[] = [];
   const toolIndexById = new Map<string, number>();
 
-  const ensureTool = (callId: string): DisplayMessage => {
+  // ts is the envelope timestamp; on a tool it's the line that first created the
+  // entry (the call, normally), so later output/exec lines don't overwrite it.
+  const ensureTool = (callId: string, ts: string): DisplayMessage => {
     let idx = toolIndexById.get(callId);
     if (idx == null) {
       idx =
-        messages.push({ role: "tool", text: "", isError: false, toolName: "unknown", toolInput: "" }) - 1;
+        messages.push({ role: "tool", text: "", isError: false, ts, toolName: "unknown", toolInput: "" }) - 1;
       toolIndexById.set(callId, idx);
     }
     return messages[idx]!;
@@ -244,19 +263,20 @@ async function parseCodex(filePath: string): Promise<DisplayMessage[]> {
       continue;
     }
     const p = rec.payload ?? {};
+    const ts = typeof rec.timestamp === "string" ? rec.timestamp : "";
 
     if (rec.type === "response_item") {
       switch (p.type) {
         case "message": {
           const role = p.role === "user" ? "user" : "assistant";
           const text = contentText(p.content).trim();
-          if (text) messages.push({ role, text, isError: false });
+          if (text) messages.push({ role, text, isError: false, ts });
           break;
         }
         case "function_call":
         case "custom_tool_call": {
           if (typeof p.call_id !== "string") break;
-          const m = ensureTool(p.call_id);
+          const m = ensureTool(p.call_id, ts);
           if (typeof p.name === "string") m.toolName = p.name;
           // function_call → JSON `arguments`; custom_tool_call → raw `input` (the patch).
           m.toolInput = stringifyInput(p.arguments ?? p.input);
@@ -266,7 +286,7 @@ async function parseCodex(filePath: string): Promise<DisplayMessage[]> {
         case "function_call_output":
         case "custom_tool_call_output": {
           if (typeof p.call_id !== "string") break;
-          const m = ensureTool(p.call_id);
+          const m = ensureTool(p.call_id, ts);
           const out = typeof p.output === "string" ? p.output : contentText(p.output) || safeJson(p.output);
           m.text = clip(out, TEXT_CAP);
           break;
@@ -274,7 +294,7 @@ async function parseCodex(filePath: string): Promise<DisplayMessage[]> {
       }
     } else if (rec.type === "event_msg" && p.type === "exec_command_end") {
       if (typeof p.call_id === "string" && typeof p.exit_code === "number" && p.exit_code !== 0) {
-        ensureTool(p.call_id).isError = true;
+        ensureTool(p.call_id, ts).isError = true;
       }
     }
   }
@@ -301,16 +321,19 @@ async function parsePi(filePath: string): Promise<DisplayMessage[]> {
     if (rec.type !== "message") continue;
     const m = rec.message;
     if (!m || typeof m !== "object") continue;
+    // pi carries the timestamp on the envelope (`timestamp`, older logs `ts`).
+    const ts =
+      typeof rec.timestamp === "string" ? rec.timestamp : typeof rec.ts === "string" ? rec.ts : "";
 
     if (m.role === "user") {
       const text = contentText(m.content).trim();
-      if (text) messages.push({ role: "user", text, isError: false });
+      if (text) messages.push({ role: "user", text, isError: false, ts });
     } else if (m.role === "assistant") {
       const content = Array.isArray(m.content) ? m.content : [];
       let buf: string[] = [];
       const flush = () => {
         const text = buf.join("\n").trim();
-        if (text) messages.push({ role: "assistant", text, isError: false });
+        if (text) messages.push({ role: "assistant", text, isError: false, ts });
         buf = [];
       };
       for (const block of content) {
@@ -323,6 +346,7 @@ async function parsePi(filePath: string): Promise<DisplayMessage[]> {
               role: "tool",
               text: "",
               isError: false,
+              ts,
               toolName: typeof block.name === "string" ? block.name : "unknown",
               // Real pi stores the input under `arguments` (OpenAI-style); `input`
               // is the older/ADR-noted key — read either so toolInput is never blank.

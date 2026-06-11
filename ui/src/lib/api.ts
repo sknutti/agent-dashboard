@@ -89,11 +89,14 @@ export interface SessionDetail {
   tools: { tool_use_id: string | null; tool_name: string; ts: string; duration_ms: number | null; error: string | null }[];
 }
 
-// Parsed Errors view (ADR-0005). Mirrors scripts/error_context.ts + wire.ts.
+// Parsed Errors/Messages views. Mirrors scripts/error_context.ts + wire.ts —
+// keep in sync (ADR-0005/0006). `thinking` is the agent's reasoning as its own
+// Message; `ts` is the source line's timestamp (empty when the line carries none).
 export interface DisplayMessage {
-  role: "user" | "assistant" | "tool";
+  role: "user" | "assistant" | "thinking" | "tool";
   text: string;
   isError: boolean;
+  ts: string;
   toolName?: string;
   toolInput?: string;
 }

@@ -57,13 +57,44 @@ test("claude: errored tool carries failing input + error text + ±N context", as
   expect(e.toolName).toBe("Edit");
   expect(e.toolInput).toContain("foo.ts");
   expect(e.errorText).toContain("String to replace not found");
-  // before: the user prompt + the collapsed assistant turn (clamped at i=2).
-  expect(e.before.map((m) => m.role)).toEqual(["user", "assistant"]);
-  expect(e.before[1]!.text).toContain("I'll edit it");
-  expect(e.before[1]!.text).toContain("the match looks off"); // thinking folded in
+  // before: the user prompt + the now-DISTINCT thinking Message + the assistant
+  // turn (ADR-0006 unfolds thinking; window clamps at i=3).
+  expect(e.before.map((m) => m.role)).toEqual(["user", "thinking", "assistant"]);
+  expect(e.before[1]!.text).toContain("the match looks off"); // thinking is its own Message now
+  expect(e.before[1]!.ts).toBe("2026-06-01T00:00:01Z"); // carries the thinking line's ts
+  expect(e.before[2]!.text).toContain("I'll edit it");
   // after: the next assistant turn + the (successful) Bash tool.
   expect(e.after.map((m) => m.role)).toEqual(["assistant", "tool"]);
   expect(e.after[1]!.isError).toBe(false);
+});
+
+// ADR-0006: thinking is unfolded into its own Message (text-gated) and every
+// Message carries a `ts` from its source line.
+test("claude: thinking is a distinct Message and every Message carries a ts", async () => {
+  const msgs = await parseDisplay("claude_code", claudeFixture());
+  expect(msgs.map((m) => m.role)).toEqual([
+    "user", "thinking", "assistant", "tool", "assistant", "tool",
+  ]);
+  // Every Message has a non-empty ts sourced from its line's timestamp.
+  expect(msgs.every((m) => m.ts.length > 0)).toBe(true);
+  const thinking = msgs.find((m) => m.role === "thinking")!;
+  expect(thinking.text).toBe("the match looks off");
+  expect(thinking.ts).toBe("2026-06-01T00:00:01Z");
+  const asst = msgs.find((m) => m.role === "assistant")!;
+  expect(asst.text).toBe("I'll edit it");
+  expect(asst.ts).toBe("2026-06-01T00:00:02Z");
+});
+
+test("claude: empty/whitespace thinking emits NO thinking Message (text-gated)", async () => {
+  const asst = (id: string, ts: string, block: any) =>
+    JSON.stringify({ type: "assistant", timestamp: ts, message: { id, content: [block] } });
+  const msgs = await parseDisplay("claude_code", fixture("claude-empty-think", [
+    JSON.stringify({ type: "user", timestamp: "2026-06-01T00:00:00Z", message: { content: "go" } }),
+    asst("m", "2026-06-01T00:00:01Z", { type: "thinking", thinking: "   " }),
+    asst("m", "2026-06-01T00:00:02Z", { type: "text", text: "done" }),
+  ]));
+  expect(msgs.some((m) => m.role === "thinking")).toBe(false);
+  expect(msgs.map((m) => m.role)).toEqual(["user", "assistant"]);
 });
 
 // ── Codex ──────────────────────────────────────────────────────────────────
@@ -98,6 +129,13 @@ test("codex: exec exit_code≠0 flags the tool, with command + captured output",
   expect(e.before.map((m) => m.role)).toEqual(["user"]);
   expect(e.before[0]!.text).toContain("run the tests");
   expect(e.after.map((m) => m.role)).toEqual(["assistant"]);
+});
+
+test("codex: every Message carries the envelope ts and NO thinking is emitted", async () => {
+  const msgs = await parseDisplay("codex", codexFixture());
+  expect(msgs.every((m) => m.ts.length > 0)).toBe(true);
+  expect(msgs.some((m) => m.role === "thinking")).toBe(false);
+  expect(msgs.find((m) => m.role === "user")!.ts).toBe("2026-06-01T00:00:00Z");
 });
 
 // ── Pi ───────────────────────────────────────────────────────────────────────
@@ -152,20 +190,35 @@ test("pi: toolCall input is read from the real `arguments` key", async () => {
 // ── windowErrors (pure) ──────────────────────────────────────────────────────
 test("window clamps at start and end without crashing", () => {
   const atStart: DisplayMessage[] = [
-    { role: "tool", text: "boom", isError: true, toolName: "X", toolInput: "y" },
-    { role: "assistant", text: "after", isError: false },
+    { role: "tool", text: "boom", isError: true, toolName: "X", toolInput: "y", ts: "" },
+    { role: "assistant", text: "after", isError: false, ts: "" },
   ];
   const a = windowErrors(atStart);
   expect(a[0]!.before).toEqual([]);
   expect(a[0]!.after.length).toBe(1);
 
   const atEnd: DisplayMessage[] = [
-    { role: "user", text: "hi", isError: false },
-    { role: "tool", text: "boom", isError: true, toolName: "X", toolInput: "y" },
+    { role: "user", text: "hi", isError: false, ts: "" },
+    { role: "tool", text: "boom", isError: true, toolName: "X", toolInput: "y", ts: "" },
   ];
   const b = windowErrors(atEnd);
   expect(b[0]!.before.length).toBe(1);
   expect(b[0]!.after).toEqual([]);
+});
+
+// ADR-0006: thinking Messages now appear in the Errors view's context windows.
+test("window includes a thinking Message in the before/after slice", () => {
+  const msgs: DisplayMessage[] = [
+    { role: "user", text: "do it", isError: false, ts: "t0" },
+    { role: "thinking", text: "weighing options", isError: false, ts: "t1" },
+    { role: "assistant", text: "trying", isError: false, ts: "t2" },
+    { role: "tool", text: "boom", isError: true, toolName: "X", toolInput: "y", ts: "t3" },
+    { role: "thinking", text: "that failed", isError: false, ts: "t4" },
+  ];
+  const [e] = windowErrors(msgs);
+  expect(e!.before.map((m) => m.role)).toEqual(["user", "thinking", "assistant"]);
+  expect(e!.after.map((m) => m.role)).toEqual(["thinking"]);
+  expect(e!.before[1]!.text).toBe("weighing options");
 });
 
 test("a session with zero errored tool calls yields no error contexts", async () => {
