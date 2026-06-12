@@ -121,6 +121,31 @@ export interface PublishResult {
   commit_error: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// Target-overlay wire models (target-overlays slice)
+//
+// Mirror core's `detail.rs::TargetView` (the merged primary for a target + a
+// `has_overlay` flag) and `detail.rs::OverlayList` (one per target that carries
+// ≥1 overlay file). `TargetView.working` reuses the same `WorkingContent` union
+// as the base editor — the merged primary decodes identically. `has_overlay` is
+// the editor's signal: false ⇒ render the base read-only with an "Add overlay"
+// affordance; true ⇒ the overlay file exists and the tab is editable.
+// ---------------------------------------------------------------------------
+
+/** The merged primary for a (primitive, target) pair + whether an overlay
+ *  file shadows the base. */
+export interface TargetView {
+  working: WorkingContent;
+  has_overlay: boolean;
+}
+
+/** One target's overlay surface — the relative paths under
+ *  `working/targets/<target>/`. */
+export interface OverlayList {
+  target: TargetName;
+  paths: string[];
+}
+
 export interface LibraryStatus {
   is_valid: boolean;
   marker_exists: boolean;
@@ -581,4 +606,36 @@ export function parseWorkingFileBytes(v: unknown): WorkingFileBytes {
     default:
       return fail("WorkingFileBytes (unknown kind)");
   }
+}
+
+// ---------------------------------------------------------------------------
+// Target-overlay validators (target-overlays slice)
+// ---------------------------------------------------------------------------
+
+const TARGET_NAMES: readonly TargetName[] = ["claude", "pi", "codex"];
+
+function parseTargetName(v: unknown, what: string): TargetName {
+  if (typeof v === "string" && (TARGET_NAMES as readonly string[]).includes(v)) return v as TargetName;
+  return fail(what);
+}
+
+export function parseTargetView(v: unknown): TargetView {
+  if (!isObject(v)) fail("TargetView");
+  return {
+    working: parseWorkingContent(v.working),
+    has_overlay: asBool(v.has_overlay, "TargetView.has_overlay"),
+  };
+}
+
+function parseOverlayList(v: unknown): OverlayList {
+  if (!isObject(v)) fail("OverlayList");
+  return {
+    target: parseTargetName(v.target, "OverlayList.target"),
+    paths: asStringArray(v.paths, "OverlayList.paths"),
+  };
+}
+
+export function parseOverlayLists(v: unknown): OverlayList[] {
+  if (!Array.isArray(v)) fail("OverlayList[]");
+  return v.map(parseOverlayList);
 }

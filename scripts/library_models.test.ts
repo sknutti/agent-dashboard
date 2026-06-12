@@ -10,6 +10,8 @@ import {
   parseWorkingFileBytes,
   parsePrimitiveVersionView,
   parsePublishResult,
+  parseTargetView,
+  parseOverlayLists,
 } from "./library_models.ts";
 
 // These parsers guard the WRITE-side process boundary. The load-bearing check
@@ -311,5 +313,62 @@ describe("parsePublishResult (non-fatal commit contract)", () => {
     expect(() => parsePublishResult({ commit_error: null })).toThrow(BridgeShapeError);
     expect(() => parsePublishResult({ committed: true, commit_error: 5 })).toThrow(BridgeShapeError);
     expect(() => parsePublishResult(null)).toThrow(BridgeShapeError);
+  });
+});
+
+describe("parseTargetView (merged primary for a target)", () => {
+  test("parses an md merged view with an overlay present", () => {
+    const v = parseTargetView({
+      working: { kind: "md", frontmatter: "", body: "claude-only\n" },
+      has_overlay: true,
+    });
+    expect(v.working).toEqual({ kind: "md", frontmatter: "", body: "claude-only\n" });
+    expect(v.has_overlay).toBe(true);
+  });
+
+  test("parses a base passthrough (has_overlay:false)", () => {
+    const v = parseTargetView({ working: { kind: "toml", text: "x = 1\n" }, has_overlay: false });
+    expect(v.has_overlay).toBe(false);
+  });
+
+  test("rejects a non-boolean has_overlay", () => {
+    expect(() =>
+      parseTargetView({ working: { kind: "md", frontmatter: "", body: "b" }, has_overlay: "yes" }),
+    ).toThrow(BridgeShapeError);
+  });
+
+  test("rejects an unknown working-content discriminant (serde rename guard)", () => {
+    expect(() =>
+      parseTargetView({ working: { kind: "markdown", frontmatter: "", body: "b" }, has_overlay: true }),
+    ).toThrow(BridgeShapeError);
+  });
+});
+
+describe("parseOverlayLists (per-target overlay surface)", () => {
+  test("parses a list of target → sorted paths", () => {
+    const v = parseOverlayLists([
+      { target: "claude", paths: ["SKILL.md"] },
+      { target: "pi", paths: ["SKILL.md", "ref/extra.md"] },
+    ]);
+    expect(v).toEqual([
+      { target: "claude", paths: ["SKILL.md"] },
+      { target: "pi", paths: ["SKILL.md", "ref/extra.md"] },
+    ]);
+  });
+
+  test("parses the empty list (no overlays)", () => {
+    expect(parseOverlayLists([])).toEqual([]);
+  });
+
+  test("rejects an unknown target value (closed-enum guard)", () => {
+    expect(() => parseOverlayLists([{ target: "antigravity", paths: [] }])).toThrow(BridgeShapeError);
+  });
+
+  test("rejects a non-array paths field", () => {
+    expect(() => parseOverlayLists([{ target: "claude", paths: "SKILL.md" }])).toThrow(BridgeShapeError);
+  });
+
+  test("rejects a non-array top level", () => {
+    expect(() => parseOverlayLists({ target: "claude", paths: [] })).toThrow(BridgeShapeError);
   });
 });
