@@ -4,7 +4,7 @@
 // compile (see vitest.config.ts).
 
 import { describe, test, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/svelte";
+import { render, screen, fireEvent, cleanup, within } from "@testing-library/svelte";
 import Library from "./Library.svelte";
 import * as api from "../lib/api";
 import type {
@@ -55,6 +55,11 @@ function mockValidLibrary(
   vi.spyOn(api, "getInstallsForPrimitive").mockResolvedValue(opts.installs ?? []);
   vi.spyOn(api, "getDrift").mockResolvedValue(opts.drift ?? []);
   vi.spyOn(api, "getDriftBatch").mockResolvedValue(opts.batch ?? []);
+  // The working-copy editor mounts inside the detail pane and lists its files;
+  // default to a primary-only bundle so the tree doesn't hit a real fetch.
+  vi.spyOn(api, "getWorkingFiles").mockResolvedValue([
+    { path: "SKILL.md", role: "primary", is_text: true, size_bytes: 30 },
+  ]);
 }
 
 // A published, installable skill (current_version set + allowed_targets) so the
@@ -190,6 +195,9 @@ describe("Library route — explorer, collapse, selection, detail", () => {
     vi.spyOn(api, "getLibraryPrimitives").mockResolvedValue(PRIMS);
     vi.spyOn(api, "getLibraryKindInfo").mockResolvedValue({} as any);
     vi.spyOn(api, "getLibraryTargetInfo").mockResolvedValue({ targets: [] });
+    vi.spyOn(api, "getWorkingFiles").mockResolvedValue([
+      { path: "deploy.md", role: "primary", is_text: true, size_bytes: 20 },
+    ]);
     const detailSpy = vi
       .spyOn(api, "getLibraryPrimitiveDetail")
       .mockImplementation((_kind, name) =>
@@ -199,7 +207,10 @@ describe("Library route — explorer, collapse, selection, detail", () => {
     render(Library);
     await fireEvent.click(await screen.findByRole("button", { name: /Commands/i }));
     await fireEvent.click(screen.getByText("deploy"));
-    expect(await screen.findByText(/deploy the thing/)).toBeTruthy();
+    // The working copy is now an EDITOR (textarea), not a read-only <pre>: the body
+    // rides the textarea value, always re-fenced (empty frontmatter → `---\n---\n…`).
+    const editor = (await screen.findByLabelText("file contents")) as HTMLTextAreaElement;
+    expect(editor.value).toContain("deploy the thing");
     expect(detailSpy).toHaveBeenCalledWith("command", "deploy");
     // versions strip renders the on-demand versions ("v2" is also the current
     // version in the rail, so there are two — assert at least one).
@@ -241,9 +252,11 @@ describe("Library route — install rows, two-phase confirm, drift, import", () 
     await selectDiagnose();
     await fireEvent.click(screen.getByRole("button", { name: "Install" }));
 
-    // dialog appears, naming the captured target + the exact conflict path
-    expect(await screen.findByText(/Overwrite drifted files/)).toBeTruthy();
-    expect(screen.getByText("SKILL.md")).toBeTruthy();
+    // dialog appears, naming the captured target + the exact conflict path.
+    // Scope to the dialog — "SKILL.md" also appears in the editor's file tree now.
+    const conflictDialog = await screen.findByRole("dialog");
+    expect(within(conflictDialog).getByText(/Overwrite drifted files/)).toBeTruthy();
+    expect(within(conflictDialog).getByText("SKILL.md")).toBeTruthy();
     // the FIRST call was force:false; force:true has NOT fired yet (no auto-force)
     expect(installSpy).toHaveBeenCalledWith("skill", "diagnose", { targets: ["claude"], force: false });
     expect(installSpy).not.toHaveBeenCalledWith("skill", "diagnose", { targets: ["claude"], force: true });

@@ -7,6 +7,7 @@
   import Badge from "../lib/components/ui/Badge.svelte";
   import Icon from "../lib/components/ui/Icon.svelte";
   import EmptyState from "../lib/components/ui/EmptyState.svelte";
+  import WorkingFileEditor from "../lib/components/WorkingFileEditor.svelte";
   import { resource } from "../lib/resource.svelte";
   import {
     getLibraryStatus,
@@ -184,6 +185,15 @@
     installsRes.reload();
     driftDetailRes.reload();
     driftBatchRes.reload(); // refresh explorer badges too
+  }
+
+  // W6 — after any successful working-file write, re-read the detail (its
+  // `working` primary may have changed) and the primitive list (the `dirty` badge
+  // recomputes). The editor owns its own working-files tree reload. Event-handler
+  // driven `.reload()`, never an effect.
+  function reloadAfterWorkingWrite(): void {
+    detailRes.reload();
+    primitivesRes.reload();
   }
 
   /** Map a route-local LibraryApiError to a friendly notice (detail is withheld
@@ -504,17 +514,17 @@
             <span>Targets</span>
           </div>
 
-          <div class="file-frame">
-            <div class="file-head">
-              <span><Icon name="folder" size={14} /> working copy</span>
-              <span class="mono">{detail.working.kind}</span>
-            </div>
-            {#if detail.working.kind === "md"}
-              <pre>{detail.working.frontmatter ? `---\n${detail.working.frontmatter}---\n` : ""}{detail.working.body}</pre>
-            {:else}
-              <pre>{detail.working.text || "(empty)"}</pre>
-            {/if}
-          </div>
+          <!-- The editor is keyed on the selected primitive so it REMOUNTS on
+               selection change — the no-useEffect state reset (buffer/baseline/
+               selection hydrate fresh at init, never via an effect). -->
+          {#key detail.kind + "/" + detail.name}
+            <WorkingFileEditor
+              kind={detail.kind}
+              name={detail.name}
+              working={detail.working}
+              onWrite={reloadAfterWorkingWrite}
+            />
+          {/key}
 
           <div class="versions">
             <h4>Versions</h4>
@@ -867,38 +877,8 @@
     color: var(--accent-from);
     border-bottom: 1px solid var(--accent-from);
   }
-  .file-frame {
-    overflow: hidden;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg);
-  }
-  .file-head {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 9px 11px;
-    border-bottom: 1px solid var(--border);
-    color: var(--text-subtle);
-    font-size: 11px;
-  }
-  .file-head span {
-    display: flex;
-    gap: 7px;
-    align-items: center;
-  }
-  pre {
-    margin: 0;
-    padding: 15px;
-    max-height: 420px;
-    overflow: auto;
-    color: var(--text-dim);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    line-height: 1.55;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
+  /* The working-copy view is now the WorkingFileEditor component (owns its own
+     .file-frame styles); the read-only <pre> + its file-head styles were removed. */
   .versions {
     margin-top: 14px;
   }

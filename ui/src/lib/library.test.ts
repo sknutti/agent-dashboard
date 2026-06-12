@@ -5,6 +5,7 @@ import {
   selectionKey,
   parseSelection,
   dirtyCue,
+  editorDirtyCue,
   gitSummary,
   driftByTarget,
   installStateFor,
@@ -83,6 +84,21 @@ describe("dirtyCue (colorblind-safe: never red/green-only)", () => {
     // tone is never a bare red/green
     expect(["amber", "cyan", "default"]).toContain(modified.tone);
     expect(["amber", "cyan", "default"]).toContain(pinned.tone);
+  });
+});
+
+describe("editorDirtyCue (distinct copy from dirtyCue; colorblind-safe)", () => {
+  test("unsaved vs saved carry a label + glyph, never a bare red/green tone", () => {
+    const unsaved = editorDirtyCue(true);
+    const saved = editorDirtyCue(false);
+    expect(unsaved.label).toBe("unsaved");
+    expect(saved.label).toBe("saved");
+    // distinct copy from the primitive-level dirtyCue (modified/pinned)
+    expect(unsaved.label).not.toBe(dirtyCue(true).label);
+    expect(unsaved.glyph.length).toBeGreaterThan(0);
+    expect(saved.glyph.length).toBeGreaterThan(0);
+    expect(["amber", "cyan", "default"]).toContain(unsaved.tone);
+    expect(["amber", "cyan", "default"]).toContain(saved.tone);
   });
 });
 
