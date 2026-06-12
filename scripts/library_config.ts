@@ -17,6 +17,8 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import {
   CONFIG_DIR,
+  DEFAULT_BACKUP_DIR,
+  DEFAULT_BOOTSTRAP_SESSION_PATH,
   DEFAULT_BRIDGE_PATH,
   DEFAULT_INSTALLS_PATH,
   DEFAULT_LIBRARY_HOME,
@@ -40,6 +42,19 @@ export interface LibraryConfig {
    * root via `CC_LIBRARY_HOME`.
    */
   home: string;
+  /**
+   * Dashboard-owned bootstrap session file (always set). The bridge persists a
+   * resumable checkpoint here during `bootstrap_execute`; the route layer
+   * injects it so an HTTP body can never redirect the write (D7). Defaults to
+   * `DATA_DIR/bootstrap-session.json`.
+   */
+  sessionPath: string;
+  /**
+   * Dashboard-owned directory for bootstrap source backups (always set). The
+   * bridge writes a `<timestamp>.tar.gz` here before any library write on a
+   * fresh run; route-injected (D7). Defaults to `DATA_DIR/backups`.
+   */
+  backupDir: string;
 }
 
 type Env = Record<string, string | undefined>;
@@ -69,8 +84,17 @@ export function loadLibraryConfig(
   const installsPath =
     str(env.CC_LIBRARY_INSTALLS_PATH) ?? str(cfg?.installs_path) ?? DEFAULT_INSTALLS_PATH;
   const home = str(env.CC_LIBRARY_HOME) ?? str(cfg?.home) ?? DEFAULT_LIBRARY_HOME;
+  // sessionPath/backupDir: same CC_LIBRARY_* > config > default precedence as
+  // installsPath. Both always set (the bootstrap engine must resolve them to
+  // *some* concrete path); a non-string config value falls through to default.
+  const sessionPath =
+    str(env.CC_LIBRARY_BOOTSTRAP_SESSION_PATH) ??
+    str(cfg?.bootstrap_session_path) ??
+    DEFAULT_BOOTSTRAP_SESSION_PATH;
+  const backupDir =
+    str(env.CC_LIBRARY_BACKUP_DIR) ?? str(cfg?.backup_dir) ?? DEFAULT_BACKUP_DIR;
 
-  return { libraryPath, bridgePath, installsPath, home };
+  return { libraryPath, bridgePath, installsPath, home, sessionPath, backupDir };
 }
 
 export interface BridgeHealth {

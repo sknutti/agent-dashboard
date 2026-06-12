@@ -18,6 +18,15 @@ import {
   uninstallCue,
   reimportResultCue,
   anyDrift,
+  lifecycleCommitCue,
+  renameInstallCaveat,
+  deleteResultCue,
+  importResultCue,
+  classificationCue,
+  bootstrapSkipReasonCue,
+  bootstrapCommitCue,
+  orphanInstalls,
+  orphanCue,
   KIND_ORDER,
 } from "./library";
 import type {
@@ -357,5 +366,163 @@ describe("anyDrift (explorer badge — does any target of a primitive drift)", (
   });
   test("false when the primitive has no records", () => {
     expect(anyDrift(reports, "command", "deploy")).toBe(false);
+  });
+});
+
+describe("lifecycleCommitCue (post create/rename/duplicate commit state; CVD-safe)", () => {
+  test("committed vs not-committed vs no-commit — only the failure warns, none green", () => {
+    const committed = lifecycleCommitCue(true, null);
+    const failed = lifecycleCommitCue(false, "Author identity unknown");
+    const noCommit = lifecycleCommitCue(false, null);
+    expect(failed.tone).toBe("amber");
+    expect(committed.tone).not.toBe("amber");
+    expect(noCommit.tone).not.toBe("amber");
+    for (const c of [committed, failed, noCommit]) {
+      expect(c.label.length).toBeGreaterThan(0);
+      expect(c.glyph.length).toBeGreaterThan(0);
+      expect(["amber", "cyan", "default"]).toContain(c.tone);
+    }
+  });
+});
+
+describe("renameInstallCaveat (the 'installed copies keep the old name' note)", () => {
+  test("null when nothing is installed (no caveat to show)", () => {
+    expect(renameInstallCaveat(0)).toBeNull();
+    expect(renameInstallCaveat(-1)).toBeNull();
+  });
+  test("singular vs plural phrasing carries the count", () => {
+    expect(renameInstallCaveat(1)).toContain("1 installed copy keeps");
+    expect(renameInstallCaveat(3)).toContain("3 installed copies keep");
+  });
+});
+
+describe("deleteResultCue (never reads as flat success on a bail; CVD-safe)", () => {
+  test("a bail (dir NOT removed) warns and says it was not deleted — never a success glyph", () => {
+    const bailed = deleteResultCue(false, null);
+    expect(bailed.tone).toBe("amber");
+    expect(bailed.label.toLowerCase()).toContain("not deleted");
+  });
+  test("removed-but-commit-failed warns; clean delete is plain success; all CVD-safe", () => {
+    const removedNoCommit = deleteResultCue(true, "no identity");
+    const removed = deleteResultCue(true, null);
+    expect(removedNoCommit.tone).toBe("amber");
+    expect(removed.tone).not.toBe("amber");
+    for (const c of [removedNoCommit, removed]) {
+      expect(c.label.length).toBeGreaterThan(0);
+      expect(c.glyph.length).toBeGreaterThan(0);
+      expect(["amber", "cyan", "default"]).toContain(c.tone);
+    }
+  });
+  test("the bail and the clean-delete cues are distinguishable by LABEL, not just color", () => {
+    expect(deleteResultCue(false, null).label).not.toBe(deleteResultCue(true, null).label);
+  });
+});
+
+describe("importResultCue (every variant visible + CVD-safe)", () => {
+  test("imported commit nuance: committed vs not-committed vs no-commit", () => {
+    const committed = importResultCue({ kind: "imported", primitive_kind: "skill", name: "x", committed: true, commit_error: null });
+    const failed = importResultCue({ kind: "imported", primitive_kind: "skill", name: "x", committed: false, commit_error: "e" });
+    const noCommit = importResultCue({ kind: "imported", primitive_kind: "skill", name: "x", committed: false, commit_error: null });
+    expect(failed.tone).toBe("amber");
+    expect(committed.tone).not.toBe("amber");
+    expect(noCommit.tone).not.toBe("amber");
+  });
+  test("every variant carries a non-empty label + glyph and a CVD-safe tone", () => {
+    const cues = [
+      importResultCue({ kind: "imported", primitive_kind: "skill", name: "x", committed: true, commit_error: null }),
+      importResultCue({ kind: "already_exists", primitive_kind: "command", name: "y" }),
+      importResultCue({ kind: "not_classifiable", reason: "outside a known root" }),
+    ];
+    for (const c of cues) {
+      expect(c.label.length).toBeGreaterThan(0);
+      expect(c.glyph.length).toBeGreaterThan(0);
+      expect(["amber", "cyan", "default"]).toContain(c.tone);
+    }
+  });
+  test("the three variants are distinguishable by label (not color)", () => {
+    const imported = importResultCue({ kind: "imported", primitive_kind: "skill", name: "x", committed: true, commit_error: null });
+    const exists = importResultCue({ kind: "already_exists", primitive_kind: "skill", name: "x" });
+    const nope = importResultCue({ kind: "not_classifiable", reason: "r" });
+    expect(new Set([imported.label, exists.label, nope.label]).size).toBe(3);
+  });
+});
+
+// ── bootstrap slice ─────────────────────────────────────────────────────────
+
+describe("classificationCue (review-step states; CVD-safe)", () => {
+  test("the four states are distinguishable by label + glyph, never bare red/green", () => {
+    const cues = [
+      classificationCue("new"),
+      classificationCue("drifted"),
+      classificationCue("already_imported"),
+      classificationCue("needs_review"),
+    ];
+    // distinct labels AND distinct glyphs — distinguishable with color stripped
+    expect(new Set(cues.map((c) => c.label)).size).toBe(4);
+    expect(new Set(cues.map((c) => c.glyph)).size).toBe(4);
+    for (const c of cues) expect(["amber", "cyan", "default"]).toContain(c.tone);
+  });
+});
+
+describe("bootstrapSkipReasonCue (distinct remedies; CVD-safe)", () => {
+  test("dirty-working vs install-missing differ by label (the fixes differ), not color", () => {
+    const dirty = bootstrapSkipReasonCue("WorkingCopyDirty");
+    const missing = bootstrapSkipReasonCue("InstallMissing");
+    expect(dirty.label).not.toBe(missing.label);
+    expect(dirty.glyph).not.toBe(missing.glyph);
+    expect(dirty.label).toMatch(/resolve|edits/i);
+    expect(missing.label).toMatch(/rescan|gone/i);
+    for (const c of [dirty, missing]) expect(["amber", "cyan", "default"]).toContain(c.tone);
+  });
+});
+
+describe("bootstrapCommitCue (post-execute commit state; CVD-safe)", () => {
+  test("committed / not-committed / no-commit are three distinct states, never bare red/green", () => {
+    const committed = bootstrapCommitCue(true, null);
+    const failed = bootstrapCommitCue(false, "Author identity unknown");
+    const noCommit = bootstrapCommitCue(null, null); // gated-off (nothing written)
+    expect(new Set([committed.label, failed.label, noCommit.label]).size).toBe(3);
+    expect(failed.tone).toBe("amber");
+    for (const c of [committed, failed, noCommit]) expect(["amber", "cyan", "default"]).toContain(c.tone);
+  });
+});
+
+describe("orphanInstalls (Reconcile derivation)", () => {
+  const drift = (kind: any, name: string, target: any): LibraryDriftReport => ({
+    kind,
+    name,
+    target,
+    status: { kind: "clean" },
+  });
+
+  test("an install record with a matching library primitive is NOT an orphan", () => {
+    const primitives = [P("skill", "diagnose")];
+    const reports = [drift("skill", "diagnose", "claude")];
+    expect(orphanInstalls(reports, primitives)).toEqual([]);
+  });
+
+  test("an install record with NO matching primitive is an orphan, with its targets folded", () => {
+    const primitives = [P("skill", "diagnose")];
+    const reports = [
+      drift("skill", "diagnose", "claude"), // live → dropped
+      drift("agent", "ghost", "claude"), // orphan
+      drift("agent", "ghost", "pi"), // same orphan, second target
+    ];
+    const orphans = orphanInstalls(reports, primitives);
+    expect(orphans).toHaveLength(1);
+    expect(orphans[0]).toEqual({ kind: "agent", name: "ghost", targets: ["claude", "pi"] });
+  });
+
+  test("no orphans when every record maps to a primitive", () => {
+    expect(orphanInstalls([], [P("skill", "a")])).toEqual([]);
+  });
+});
+
+describe("orphanCue (CVD-safe)", () => {
+  test("a label + glyph + non-red/green tone", () => {
+    const c = orphanCue();
+    expect(c.label.length).toBeGreaterThan(0);
+    expect(c.glyph.length).toBeGreaterThan(0);
+    expect(["amber", "cyan", "default"]).toContain(c.tone);
   });
 });
