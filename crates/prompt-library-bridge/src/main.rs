@@ -42,7 +42,10 @@ use serde_json::{json, Value};
 
 use prompt_library_core::{
     acknowledge_drift,
-    detail::{read_primitive_detail, read_primitive_version_view, revert_primitive_to_version},
+    detail::{
+        list_overlays, read_primitive_detail, read_primitive_for_target,
+        read_primitive_version_view, revert_primitive_to_version,
+    },
     install, listing::list_primitives, scan_drift_for_primitive, scan_record, uninstall,
     working_files, DriftReport, Error as CoreError, InstallPaths, InstallRequest, InstallsFile,
     KindInfoTable, LibraryLayout, PrimitiveKind, PrimitiveName, Target, UninstallRequest,
@@ -137,6 +140,16 @@ async fn dispatch(command: &str, args: &Value) -> Result<Value, LibraryError> {
         "set_current_version" => cmd_set_current_version(args).await,
         "read_primitive_version" => cmd_read_primitive_version(args),
         "revert_to_version" => cmd_revert_to_version(args),
+        // Target-overlays slice. All sync — std::fs only, like the working-file
+        // arms. Overlays write under gitignored `working/targets/<target>/`, so
+        // there is NO commit step (a commit would no-op). `write_overlay`/
+        // `remove_overlay` edit the PRIMARY overlay file only (the reference
+        // surface); `read_primitive_target` returns the merged primary +
+        // `has_overlay`; `list_overlays` enumerates every target's overlay files.
+        "read_primitive_target" => cmd_read_primitive_target(args),
+        "write_overlay" => cmd_write_overlay(args),
+        "remove_overlay" => cmd_remove_overlay(args),
+        "list_overlays" => cmd_list_overlays(args),
         other => Err(LibraryError::new(
             "unknown_command",
             "unknown bridge command",
@@ -701,6 +714,71 @@ fn cmd_revert_to_version(args: &Value) -> Result<Value, LibraryError> {
     revert_primitive_to_version(LibraryLayout::new(&root), kind, &name, &label)
         .map_err(map_core_error)?;
     Ok(json!({}))
+}
+
+// ---------------------------------------------------------------------------
+// Target-overlay commands (target-overlays slice)
+// ---------------------------------------------------------------------------
+
+/// Read the MERGED primary file for a `(primitive, target)` pair — base ∪ the
+/// target overlay (target shadows base per relative path) — plus `has_overlay`
+/// (true iff a `working/targets/<target>/<primary>` file exists). Read-only.
+/// REJECTS a target outside the primitive's `metadata.allowed_targets` in-core
+/// (`library_target_not_allowed`, 422) — the UI must drive its overlay tabs
+/// from `allowed_targets`, never the full `Target::ALL` enum, so it never asks
+/// for a disallowed target.
+fn cmd_read_primitive_target(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let kind = parse_kind(args)?;
+    let name = parse_name(args)?;
+    let target = parse_target(args)?;
+    let view = read_primitive_for_target(LibraryLayout::new(&root), kind, &name, target)
+        .map_err(map_core_error)?;
+    serde_json::to_value(view).map_err(serialize_err)
+}
+
+/// Write the PRIMARY overlay file for `(kind, name, target)` — core parse-
+/// validates the bytes for the kind BEFORE the atomic write, so malformed
+/// content (`library_parse_error`) never reaches disk. The UI sends the whole
+/// `---\nfm---\nbody` blob as `content`, exactly like `save_working`. Writes
+/// only `working/targets/<target>/<primary>` — never base, never a commit.
+fn cmd_write_overlay(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let kind = parse_kind(args)?;
+    let name = parse_name(args)?;
+    let target = parse_target(args)?;
+    let content = parse_required_str(args, "content")?;
+    WorkingCopy::new(LibraryLayout::new(&root))
+        .save_primary_target(kind, &name, target, content.as_bytes())
+        .map_err(map_core_error)?;
+    Ok(json!({}))
+}
+
+/// Remove the PRIMARY overlay file for `(kind, name, target)`. Idempotent (core
+/// no-ops on an absent file). After removal the target's merged view reverts to
+/// the base passthrough (`has_overlay: false`).
+fn cmd_remove_overlay(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let kind = parse_kind(args)?;
+    let name = parse_name(args)?;
+    let target = parse_target(args)?;
+    WorkingCopy::new(LibraryLayout::new(&root))
+        .remove_primary_target(kind, &name, target)
+        .map_err(map_core_error)?;
+    Ok(json!({}))
+}
+
+/// Enumerate every target overlay's files (one `{target, paths}` per target
+/// that carries ≥1 overlay file; empty targets omitted, paths sorted). Lists
+/// primary + any ref overlays that landed via publish/revert/import, but the
+/// write/remove affordances are primary-only (the reference surface).
+/// Read-only.
+fn cmd_list_overlays(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let kind = parse_kind(args)?;
+    let name = parse_name(args)?;
+    let lists = list_overlays(LibraryLayout::new(&root), kind, &name).map_err(map_core_error)?;
+    serde_json::to_value(lists).map_err(serialize_err)
 }
 
 // ---------------------------------------------------------------------------
@@ -2409,6 +2487,129 @@ mod tests {
         assert_eq!(
             cmd_publish(&ver_args(&root, "1.0")).await.unwrap_err().code,
             "library_invalid_version"
+        );
+    }
+
+    // ---- target overlays ----------------------------------------------------
+
+    /// A `diagnose` skill with a seeded base `SKILL.md` and `allowed_targets:
+    /// [Claude, Pi]` (Codex deliberately disallowed, to exercise the
+    /// TargetNotAllowed boundary). The base body is valid MD so the merged read
+    /// parses back.
+    fn overlay_fx() -> (TempDir, Utf8PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().canonicalize().unwrap()).unwrap();
+        init_library(&root, NOW).unwrap();
+        let n = PrimitiveName::try_new("diagnose").unwrap();
+        let layout = LibraryLayout::new(&root);
+        scaffold_skill(layout, &n, NOW).unwrap();
+        WorkingCopy::new(layout)
+            .save_base_file(PrimitiveKind::Skill, &n, Utf8Path::new("SKILL.md"), b"---\n---\nbase\n")
+            .unwrap();
+        update_primitive_metadata(
+            layout,
+            PrimitiveKind::Skill,
+            &n,
+            MetadataUpdate {
+                allowed_targets: vec![Target::Claude, Target::Pi],
+                display_name: None,
+                author: None,
+                discard_orphan_overlays: false,
+            },
+        )
+        .unwrap();
+        (tmp, root)
+    }
+
+    /// Overlay args for the `diagnose` skill at `target`.
+    fn ov_args(root: &Utf8PathBuf, target: &str) -> Value {
+        json!({ "path": root.as_str(), "kind": "skill", "name": "diagnose", "target": target })
+    }
+
+    #[test]
+    fn write_overlay_then_read_merges_and_lists() {
+        let (_tmp, root) = overlay_fx();
+        // No overlay yet: Pi reads the base passthrough.
+        let pi = cmd_read_primitive_target(&ov_args(&root, "pi")).unwrap();
+        assert_eq!(pi["has_overlay"], json!(false));
+        assert_eq!(pi["working"]["body"], json!("base\n"));
+        assert_eq!(cmd_list_overlays(&ov_args(&root, "claude")).unwrap(), json!([]));
+
+        // Write a Claude overlay (the merge is exercised end-to-end through the
+        // bridge → read_primitive_for_target → overlay_merge::merge).
+        let mut write = ov_args(&root, "claude");
+        write["content"] = json!("---\n---\nclaude-only\n");
+        assert_eq!(cmd_write_overlay(&write).unwrap(), json!({}));
+
+        // read_primitive_target(Claude) now reflects the overlay; Pi still base.
+        let claude = cmd_read_primitive_target(&ov_args(&root, "claude")).unwrap();
+        assert_eq!(claude["has_overlay"], json!(true));
+        assert_eq!(claude["working"]["body"], json!("claude-only\n"));
+        let pi = cmd_read_primitive_target(&ov_args(&root, "pi")).unwrap();
+        assert_eq!(pi["has_overlay"], json!(false));
+        assert_eq!(pi["working"]["body"], json!("base\n"));
+
+        // list_overlays surfaces only Claude, with the primary filename.
+        assert_eq!(
+            cmd_list_overlays(&ov_args(&root, "claude")).unwrap(),
+            json!([{ "target": "claude", "paths": ["SKILL.md"] }])
+        );
+    }
+
+    #[test]
+    fn read_primitive_target_rejects_disallowed_target() {
+        let (_tmp, root) = overlay_fx();
+        // Codex ∉ allowed_targets → in-core rejection, 422-mapped code.
+        assert_eq!(
+            cmd_read_primitive_target(&ov_args(&root, "codex")).unwrap_err().code,
+            "library_target_not_allowed"
+        );
+    }
+
+    #[test]
+    fn write_overlay_rejects_malformed_and_leaves_disk_unchanged() {
+        let (_tmp, root) = overlay_fx();
+        // Missing frontmatter fence → parse failure BEFORE the atomic write.
+        let mut write = ov_args(&root, "claude");
+        write["content"] = json!("no frontmatter fence here");
+        assert_eq!(cmd_write_overlay(&write).unwrap_err().code, "library_parse_error");
+        // The overlay file was never created — disk is untouched.
+        assert_eq!(cmd_list_overlays(&ov_args(&root, "claude")).unwrap(), json!([]));
+        assert_eq!(
+            cmd_read_primitive_target(&ov_args(&root, "claude")).unwrap()["has_overlay"],
+            json!(false)
+        );
+    }
+
+    #[test]
+    fn remove_overlay_reverts_to_base_and_is_idempotent() {
+        let (_tmp, root) = overlay_fx();
+        let mut write = ov_args(&root, "claude");
+        write["content"] = json!("---\n---\nclaude-only\n");
+        cmd_write_overlay(&write).unwrap();
+        assert_eq!(
+            cmd_read_primitive_target(&ov_args(&root, "claude")).unwrap()["has_overlay"],
+            json!(true)
+        );
+
+        // Remove → list drops Claude, read reverts to the base passthrough.
+        assert_eq!(cmd_remove_overlay(&ov_args(&root, "claude")).unwrap(), json!({}));
+        assert_eq!(cmd_list_overlays(&ov_args(&root, "claude")).unwrap(), json!([]));
+        let claude = cmd_read_primitive_target(&ov_args(&root, "claude")).unwrap();
+        assert_eq!(claude["has_overlay"], json!(false));
+        assert_eq!(claude["working"]["body"], json!("base\n"));
+
+        // Re-remove is a no-op success (core idempotency).
+        assert_eq!(cmd_remove_overlay(&ov_args(&root, "claude")).unwrap(), json!({}));
+    }
+
+    #[test]
+    fn overlay_commands_reject_bad_target_value() {
+        let (_tmp, root) = overlay_fx();
+        // A target value outside the closed enum is a wire-boundary error.
+        assert_eq!(
+            cmd_read_primitive_target(&ov_args(&root, "nonsense")).unwrap_err().code,
+            "library_invalid_target"
         );
     }
 }
