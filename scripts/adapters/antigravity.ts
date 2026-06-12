@@ -52,7 +52,7 @@ import { createReadStream, statSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { Database } from "bun:sqlite";
+import { Database, constants } from "bun:sqlite";
 import { Glob } from "bun";
 import type {
   AgentAdapter,
@@ -338,7 +338,18 @@ export class AntigravityAdapter implements AgentAdapter {
       // `immutable=1` URI: no locks taken, no -wal/-shm created, the file is treated
       // as read-only — the only mode that reliably reads another app's WAL DB without
       // mutating it. (A plain `{readonly:true}` open throws SQLITE_CANTOPEN on WAL.)
-      const db = new Database(`file:${encodeURI(path)}?immutable=1`);
+      //
+      // The URI form requires SQLite's URI-filename parsing (SQLITE_OPEN_URI) to be
+      // ON. That's the default on macOS's bundled SQLite but NOT on Linux's, where a
+      // bare `new Database("file:…?immutable=1")` throws "unable to open database
+      // file" (the `file:`/`?immutable=1` is taken literally) — so the whole token
+      // read silently yielded zero generations under Linux CI. Pass the flags
+      // explicitly (READONLY for access mode + URI to enable the query string) so
+      // immutable reads work cross-platform.
+      const db = new Database(
+        `file:${encodeURI(path)}?immutable=1`,
+        constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI,
+      );
       try {
         // cwd: first file:// URI anywhere in the trajectory metadata protobuf.
         try {
