@@ -8,10 +8,17 @@ import {
   buildTargetInfo,
   buildLibraryPrimitives,
   buildPrimitiveDetail,
+  buildInstall,
+  buildUninstall,
+  buildAcknowledgeDrift,
+  buildInstallsForPrimitive,
+  buildDriftBatch,
+  buildImportInstalls,
+  withWriteLock,
   statusForCode,
   registerLibraryRoutes,
 } from "./library_routes.ts";
-import type { runBridge, LibraryError } from "./library_bridge.ts";
+import type { runBridge, LibraryError, BridgeResult } from "./library_bridge.ts";
 import type { LibraryConfig } from "./library_config.ts";
 
 const FIX = join(import.meta.dir, "fixtures", "bridge");
@@ -150,6 +157,243 @@ describe("buildLibraryStatus (informational — never errors on a bad path)", ()
   });
 });
 
+// ---------------------------------------------------------------------------
+// Write routes (install-drift slice)
+// ---------------------------------------------------------------------------
+
+// A run stub that records every (bridgePath, command, args) it is called with,
+// so the args-derivation (config-resolved, NOT body-derived — D7) is asserted.
+function captureRun(result: BridgeResult<unknown>): {
+  run: typeof runBridge;
+  calls: { bridgePath: string; command: string; args: Record<string, unknown> }[];
+} {
+  const calls: { bridgePath: string; command: string; args: Record<string, unknown> }[] = [];
+  const run = (async (bridgePath: string, command: string, args: Record<string, unknown>) => {
+    calls.push({ bridgePath, command, args });
+    return result;
+  }) as unknown as typeof runBridge;
+  return { run, calls };
+}
+
+// Inline outcomes the committed fixtures don't cover (collision / drift).
+const COLLIDING_INSTALL = {
+  successes: [
+    { target: "claude", outcome: { kind: "colliding_content", version: "v1", conflicts: ["SKILL.md"] } },
+  ],
+  failures: [],
+};
+const DRIFTED_UNINSTALL = {
+  successes: [{ target: "claude", outcome: { kind: "drifted", conflicts: ["SKILL.md"] } }],
+  failures: [],
+};
+
+describe("statusForCode — write/migration codes", () => {
+  test("install/drift/migration precondition faults are 409", () => {
+    for (const c of [
+      "installs_unconfigured",
+      "installs_already_present",
+      "installs_destination_corrupt",
+      "drift_no_install_record",
+      "library_no_current_version",
+    ])
+      expect(statusForCode(c)).toBe(409);
+  });
+  test("unprocessable migration/install inputs are 422", () => {
+    for (const c of [
+      "installs_format_mismatch",
+      "installs_source_corrupt",
+      "library_target_not_allowed",
+      "library_target_not_allowed_for_kind",
+      "library_install_not_supported",
+    ])
+      expect(statusForCode(c)).toBe(422);
+  });
+});
+
+describe("buildInstall", () => {
+  test("a clean install returns 200 with the InstallSummary", async () => {
+    const r = await buildInstall(CONFIGURED, "skill", "diagnose", { targets: ["claude"], force: false }, okRun(data("install_summary")));
+    expect(r.status).toBe(200);
+    expect((r.body as any).successes[0].outcome.kind).toBe("installed");
+  });
+
+  test("a colliding_content outcome is a NORMAL 200 result (the dialog trigger), not an error", async () => {
+    const r = await buildInstall(CONFIGURED, "skill", "deploy-prod", { targets: ["claude"], force: false }, okRun(COLLIDING_INSTALL));
+    expect(r.status).toBe(200);
+    expect((r.body as any).successes[0].outcome.kind).toBe("colliding_content");
+  });
+
+  test("unconfigured library → 409 WITHOUT spawning the bridge (install needs the layout)", async () => {
+    const { run, calls } = captureRun({ ok: true, data: data("install_summary") });
+    const r = await buildInstall(UNCONFIGURED, "skill", "diagnose", { targets: ["claude"], force: false }, run);
+    expect(r.status).toBe(409);
+    expect((r.body as any).code).toBe("library_unconfigured");
+    expect(calls).toHaveLength(0);
+  });
+
+  test("D7 tripwire: install destination is CONFIG-resolved; a body's home/installs_path is ignored", async () => {
+    const { run, calls } = captureRun({ ok: true, data: data("install_summary") });
+    // A hostile body trying to redirect the write root.
+    const body = {
+      targets: ["claude"],
+      force: false,
+      home: "/etc",
+      installs_path: "/etc/installs.json",
+      installsPath: "/etc/installs.json",
+      path: "/etc",
+    } as any;
+    await buildInstall(CONFIGURED, "skill", "diagnose", body, run, "2026-06-11T00:00:00Z");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.args.home).toBe("/home/test"); // config, not "/etc"
+    expect(calls[0]!.args.installs_path).toBe("/data/installs.json"); // config, not "/etc/..."
+    expect(calls[0]!.args.path).toBe("/libs/x"); // config libraryPath, not body
+    expect(calls[0]!.args.installed_at).toBe("2026-06-11T00:00:00Z"); // server-supplied clock
+    expect(calls[0]!.args.kind).toBe("skill");
+    expect(calls[0]!.args.targets).toEqual(["claude"]);
+  });
+
+  test("the installed_at clock defaults to a valid RFC3339 timestamp", async () => {
+    const { run, calls } = captureRun({ ok: true, data: data("install_summary") });
+    await buildInstall(CONFIGURED, "skill", "diagnose", { targets: ["claude"], force: false }, run);
+    expect(calls[0]!.args.installed_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+  });
+
+  test("a pre-flight failure (e.g. no current version) maps to its status", async () => {
+    const r = await buildInstall(CONFIGURED, "skill", "diagnose", { targets: ["claude"], force: false }, errRun(libErr("library_no_current_version")));
+    expect(r.status).toBe(409);
+  });
+});
+
+describe("buildUninstall", () => {
+  test("a clean uninstall returns 200 with the UninstallSummary", async () => {
+    const r = await buildUninstall(CONFIGURED, "skill", "diagnose", { targets: ["claude"], force: false }, okRun(data("uninstall_summary")));
+    expect(r.status).toBe(200);
+    expect((r.body as any).successes[0].outcome.kind).toBe("removed");
+  });
+
+  test("a drifted outcome is a NORMAL 200 result (prompt-then-force), not an error", async () => {
+    const r = await buildUninstall(CONFIGURED, "skill", "diagnose", { targets: ["claude"], force: false }, okRun(DRIFTED_UNINSTALL));
+    expect(r.status).toBe(200);
+    expect((r.body as any).successes[0].outcome.kind).toBe("drifted");
+  });
+
+  test("uninstall does not require the library layout — works while unconfigured", async () => {
+    // It writes off installs.json + the install root only; no `path` needed.
+    const { run, calls } = captureRun({ ok: true, data: data("uninstall_summary") });
+    const r = await buildUninstall(UNCONFIGURED, "skill", "diagnose", { targets: ["claude"], force: false }, run);
+    expect(r.status).toBe(200);
+    expect(calls[0]!.args.installs_path).toBe("/data/installs.json");
+    expect(calls[0]!.args.home).toBe("/home/test");
+  });
+});
+
+describe("buildAcknowledgeDrift", () => {
+  test("success returns 200 with an empty body", async () => {
+    const r = await buildAcknowledgeDrift(CONFIGURED, "skill", "diagnose", { target: "claude" }, okRun({}));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({});
+  });
+
+  test("no install record → 409", async () => {
+    const r = await buildAcknowledgeDrift(CONFIGURED, "skill", "diagnose", { target: "claude" }, errRun(libErr("drift_no_install_record")));
+    expect(r.status).toBe(409);
+  });
+
+  test("the acknowledged (kind,name,target) reach the bridge from the route, not config", async () => {
+    const { run, calls } = captureRun({ ok: true, data: {} });
+    await buildAcknowledgeDrift(CONFIGURED, "agent", "reviewer", { target: "pi" }, run);
+    expect(calls[0]!.command).toBe("acknowledge_drift");
+    expect(calls[0]!.args).toMatchObject({ kind: "agent", name: "reviewer", target: "pi", installs_path: "/data/installs.json" });
+  });
+});
+
+describe("buildInstallsForPrimitive (read — no write lock)", () => {
+  test("returns 200 with the InstalledTarget projection", async () => {
+    const r = await buildInstallsForPrimitive(CONFIGURED, "skill", "diagnose", okRun(data("list_installs")));
+    expect(r.status).toBe(200);
+    expect((r.body as any)[0]).toMatchObject({ target: "claude", installed_version: "v1" });
+  });
+
+  test("an empty ledger returns 200 [] (first-launch parity)", async () => {
+    const r = await buildInstallsForPrimitive(CONFIGURED, "skill", "diagnose", okRun([]));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual([]);
+  });
+});
+
+describe("buildDriftBatch (read — no write lock)", () => {
+  test("returns 200 with the DriftReport[] that feeds badges + detail", async () => {
+    const r = await buildDriftBatch(CONFIGURED, okRun(data("scan_drift")));
+    expect(r.status).toBe(200);
+    expect((r.body as any)[0]).toMatchObject({ kind: "skill", name: "diagnose", target: "claude" });
+  });
+
+  test("a bridge fault surfaces as 502 (detail withheld)", async () => {
+    const r = await buildDriftBatch(CONFIGURED, errRun(libErr("bridge_not_found")));
+    expect(r.status).toBe(502);
+    expect(JSON.stringify(r.body)).not.toContain("/Users/");
+  });
+});
+
+describe("buildImportInstalls (migration)", () => {
+  test("success returns 200 { imported }", async () => {
+    const { run } = captureRun({ ok: true, data: { imported: 119 } });
+    const r = await buildImportInstalls(CONFIGURED, run);
+    expect(r.status).toBe(200);
+    expect((r.body as any).imported).toBe(119);
+  });
+
+  test("an already-present destination → 409", async () => {
+    const r = await buildImportInstalls(CONFIGURED, errRun(libErr("installs_already_present")));
+    expect(r.status).toBe(409);
+  });
+
+  test("a format-version mismatch → 422", async () => {
+    const r = await buildImportInstalls(CONFIGURED, errRun(libErr("installs_format_mismatch")));
+    expect(r.status).toBe(422);
+  });
+});
+
+describe("withWriteLock (D1 — serialize all ledger writers)", () => {
+  test("two overlapping writers run strictly one-at-a-time, never interleaved", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const order: string[] = [];
+    const work = (label: string) =>
+      withWriteLock(async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        order.push(`${label}:start`);
+        await new Promise((res) => setTimeout(res, 5));
+        order.push(`${label}:end`);
+        active -= 1;
+        return label;
+      });
+    // Dispatch concurrently — the lock must serialize them.
+    const [a, b] = await Promise.all([work("A"), work("B")]);
+    expect(a).toBe("A");
+    expect(b).toBe("B");
+    expect(maxActive).toBe(1); // never two writers in flight at once
+    // Each writer fully completes before the next starts (no interleave).
+    expect(order).toEqual(["A:start", "A:end", "B:start", "B:end"]);
+  });
+
+  test("a rejecting writer does not wedge the queue — the next writer still runs", async () => {
+    const ran: string[] = [];
+    const failing = withWriteLock(async () => {
+      ran.push("fail");
+      throw new Error("boom");
+    });
+    await expect(failing).rejects.toThrow("boom");
+    const after = await withWriteLock(async () => {
+      ran.push("after");
+      return "ok";
+    });
+    expect(after).toBe("ok");
+    expect(ran).toEqual(["fail", "after"]);
+  });
+});
+
 // Route-local isolation: library routes mounted on a Hono app must not affect a
 // sibling Observability route, even with no library configured.
 describe("registerLibraryRoutes — HTTP wiring + Observability isolation", () => {
@@ -169,5 +413,46 @@ describe("registerLibraryRoutes — HTTP wiring + Observability isolation", () =
 
     const primitives = await app.request("/api/library/primitives");
     expect(primitives.status).toBe(409); // library-local error, not a 500
+  });
+
+  test("a failing install is route-local: a sibling Observability route stays 200", async () => {
+    const app = new Hono();
+    app.get("/api/summary", (c) => c.json({ ok: true }));
+    // A config whose bridge is missing → every install fails — but only the
+    // library route should feel it.
+    registerLibraryRoutes(app, () => ({ ...CONFIGURED, bridgePath: "/no/such/bridge" }));
+
+    const install = await app.request("/api/library/primitives/skill/diagnose/install", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+      body: JSON.stringify({ targets: ["claude"], force: false }),
+    });
+    expect([409, 422, 502]).toContain(install.status); // a library-local failure status
+
+    const summary = await app.request("/api/summary");
+    expect(summary.status).toBe(200); // Observability untouched
+  });
+
+  test("the install/uninstall/ack/import write routes + installs/drift reads are wired", async () => {
+    const app = new Hono();
+    registerLibraryRoutes(app, () => CONFIGURED);
+    // We can't assert success without a bridge, but the routes must EXIST (not 404).
+    const post = (p: string) =>
+      app.request(p, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+        body: JSON.stringify({ targets: ["claude"], force: false, target: "claude" }),
+      });
+    expect((await app.request("/api/library/drift")).status).not.toBe(404);
+    expect((await app.request("/api/library/primitives/skill/diagnose/installs")).status).not.toBe(404);
+    expect((await post("/api/library/primitives/skill/diagnose/install")).status).not.toBe(404);
+    expect((await post("/api/library/primitives/skill/diagnose/acknowledge-drift")).status).not.toBe(404);
+    expect((await post("/api/library/import-installs")).status).not.toBe(404);
+    const del = await app.request("/api/library/primitives/skill/diagnose/install", {
+      method: "DELETE",
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+      body: JSON.stringify({ targets: ["claude"], force: false }),
+    });
+    expect(del.status).not.toBe(404);
   });
 });
