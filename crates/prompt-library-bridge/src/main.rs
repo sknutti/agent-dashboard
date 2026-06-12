@@ -19,9 +19,17 @@
 //!   serialize as `{ok:false,...}` and STILL exit 0; non-zero exit + stderr is
 //!   reserved for genuine panics/crashes, so "not found" stays distinguishable
 //!   from "the binary crashed."
-//! - **no network, no secrets on ANY path.** The crate does not depend on
-//!   prompt-library-secrets at all (a SecretStore is unconstructible), and no
-//!   command touches core's reqwest-backed url_import. Install is fs-only.
+//! - **secrets + network are reachable ONLY from the git-sync commands.**
+//!   Through Slice 7 + bootstrap this was "no network, no secrets on ANY path."
+//!   Slice 8 (git remote sync) breaks that invariant exactly once, on purpose
+//!   (ADR-noted): the PAT lives in the macOS Keychain, so the bridge now links
+//!   prompt-library-secrets. The break is contained — a `SecretStore` is
+//!   constructed ONLY by `configure_remote`/`set_pat`/`delete_pat`/
+//!   `get_remote_status` (and the Phase-2 push/pull family) via
+//!   `secret_store(args)`; every other command constructs none. Likewise only
+//!   push/pull egress to the network; no other command touches core's
+//!   reqwest-backed url_import. The raw PAT never reaches a log or a response
+//!   body — the only wire form is `redact_pat` (D6 tripwire).
 //! - **current_thread runtime only** — the fns touch std::fs; only the git
 //!   status calls are async. No multi-thread worker pool per one-shot call.
 //! - **writes are crash-safe at the file level.** core writes every target's
@@ -56,10 +64,14 @@ use prompt_library_core::{
     ReimportRequest, ReimportResult, RenamePrimitiveRequest, Target, UninstallRequest,
     VersionLabel, VersionMetadata, VersionStore, WorkingCopy, INSTALLS_FORMAT_VERSION,
 };
+use prompt_library_core::remote_url::{validate_remote_url, RemoteUrlError};
 use prompt_library_git::{
     git_ops::{current_branch, git_add_all, git_commit, git_diff_changed_files},
     runner::{GitRunner, RunnerError, TokioProcessRunner},
 };
+use prompt_library_secrets::{redact_pat, InMemoryStore, SecretError, SecretStore};
+#[cfg(target_os = "macos")]
+use prompt_library_secrets::KeychainStore;
 
 const PROTOCOL_VERSION: u32 = 1;
 
@@ -210,6 +222,21 @@ async fn dispatch(command: &str, args: &Value) -> Result<Value, LibraryError> {
         "bootstrap_execute" => cmd_bootstrap_execute(args).await,
         "read_bootstrap_session" => cmd_read_bootstrap_session(args),
         "clear_bootstrap_session" => cmd_clear_bootstrap_session(args),
+        // Git-remote-sync slice (Slice 8) — the ONE secrets + network break.
+        // Phase 1 (here) is the secrets break with NO network: `configure_remote`
+        // validates the URL only (the TS route persists it to config/library.yaml
+        // — the bridge owns no config file); `set_pat`/`delete_pat`/
+        // `get_remote_status` construct a `SecretStore` via `secret_store(args)`
+        // (real KeychainStore by default, InMemoryStore under `secret_store:
+        // "memory"` / `CC_LIBRARY_SECRET_STORE=memory` so `cargo test` is
+        // headless). These four are the ONLY arms that construct a secret store;
+        // the raw PAT never leaves the store except as `redact_pat` (D6). Sync —
+        // no network, no `.await`. The push/pull/conflict family (egress) lands
+        // in Phase 2.
+        "configure_remote" => cmd_configure_remote(args),
+        "set_pat" => cmd_set_pat(args, secret_store(args)?.as_ref()),
+        "delete_pat" => cmd_delete_pat(secret_store(args)?.as_ref()),
+        "get_remote_status" => cmd_get_remote_status(args, secret_store(args)?.as_ref()),
         other => Err(LibraryError::new(
             "unknown_command",
             "unknown bridge command",
@@ -1741,6 +1768,102 @@ fn is_numeric_offset(s: &str) -> bool {
         && b[3] == b':'
         && b[4].is_ascii_digit()
         && b[5].is_ascii_digit()
+}
+
+// ---------------------------------------------------------------------------
+// Git remote sync (Slice 8, Phase 1) — configure / PAT / status
+// ---------------------------------------------------------------------------
+
+/// Validate the remote URL and RETURN its normalized form. Persistence is the
+/// TS route's job (`config/library.yaml`), not the bridge's — the bridge owns no
+/// config file (it stays config-file-free the same way it stays clock-free).
+/// A deliberate divergence from the reference's `state.set_remote_url` (D1).
+/// No secrets, no network.
+fn cmd_configure_remote(args: &Value) -> Result<Value, LibraryError> {
+    let raw = args.get("url").and_then(Value::as_str).unwrap_or("");
+    let normalized = validate_remote_url(raw).map_err(map_remote_url_error)?;
+    Ok(json!({ "remote_url": normalized }))
+}
+
+/// Store the PAT in the injected `SecretStore`. Rejects an empty token
+/// (`empty_pat`); otherwise the token is opaque (never parsed, never logged).
+fn cmd_set_pat(args: &Value, store: &dyn SecretStore) -> Result<Value, LibraryError> {
+    let pat = args.get("pat").and_then(Value::as_str).unwrap_or("");
+    if pat.is_empty() {
+        return Err(LibraryError::new(
+            "empty_pat",
+            "personal access token must not be empty",
+            "request args.pat was missing or empty",
+        ));
+    }
+    store.set_pat(pat).map_err(map_secret_error)?;
+    Ok(json!({}))
+}
+
+/// Remove the stored PAT, if any. Idempotent (deleting an absent token is ok).
+fn cmd_delete_pat(store: &dyn SecretStore) -> Result<Value, LibraryError> {
+    store.delete_pat().map_err(map_secret_error)?;
+    Ok(json!({}))
+}
+
+/// Snapshot of the remote URL + REDACTED PAT for the settings UI. `remote_url`
+/// is a passthrough of the TS-injected arg (the bridge never persists/reads it);
+/// the PAT is read from the store and immediately redacted — `redact_pat` is the
+/// ONLY form that ever crosses the wire (D6). A null PAT reports null.
+fn cmd_get_remote_status(args: &Value, store: &dyn SecretStore) -> Result<Value, LibraryError> {
+    let remote_url = args.get("remote_url").cloned().unwrap_or(Value::Null);
+    let pat_redacted = store
+        .get_pat()
+        .map_err(map_secret_error)?
+        .as_deref()
+        .map(redact_pat);
+    Ok(json!({ "remote_url": remote_url, "pat_redacted": pat_redacted }))
+}
+
+/// Construct the PAT secret store for a git-sync command. Real `KeychainStore`
+/// by default (verified headless across one-shot processes in Phase 0); an
+/// `InMemoryStore` when `secret_store: "memory"` (arg) or
+/// `CC_LIBRARY_SECRET_STORE=memory` (env) is set, so `cargo test` and CI never
+/// block on the keychain consent prompt. This is the ONLY constructor of a
+/// `SecretStore` in the bridge — called only by the four arms above (and the
+/// Phase-2 push/pull family), keeping every other command path secrets-free.
+fn secret_store(args: &Value) -> Result<Box<dyn SecretStore>, LibraryError> {
+    let use_memory = args.get("secret_store").and_then(Value::as_str) == Some("memory")
+        || std::env::var("CC_LIBRARY_SECRET_STORE").as_deref() == Ok("memory");
+    if use_memory {
+        return Ok(Box::new(InMemoryStore::new()));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Ok(Box::new(KeychainStore::new()))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(LibraryError::new(
+            "secret_store_unavailable",
+            "no secret store available on this platform",
+            "KeychainStore is macOS-only; set secret_store=memory for tests",
+        ))
+    }
+}
+
+/// `RemoteUrlError` → the one route-mappable code (D7: `invalid_remote_url`→422).
+/// The specific reason (non-https, embedded creds, bad host, …) rides `detail`,
+/// which the route logs but never forwards (m4). The Display is URL-shaped, never
+/// secret-bearing (the PAT travels via askpass, never in the URL).
+fn map_remote_url_error(e: RemoteUrlError) -> LibraryError {
+    LibraryError::new("invalid_remote_url", "invalid remote URL", e.to_string())
+}
+
+/// `SecretError` → `secret_store_error` (D7: 502). The keychain message is an OS
+/// diagnostic (and PAT-free — `SecretError::Keychain` carries an OS status or a
+/// UTF-8 error, never the token bytes), but it still rides `detail` only.
+fn map_secret_error(e: SecretError) -> LibraryError {
+    LibraryError::new(
+        "secret_store_error",
+        "secret store operation failed",
+        e.to_string(),
+    )
 }
 
 /// Map every `core::Error` to a dashboard-stable code. `message` is a fixed
@@ -4250,5 +4373,162 @@ mod tests {
         // session_path is route-injected → absent is its own config fault.
         let read_err = cmd_read_bootstrap_session(&json!({})).unwrap_err();
         assert_eq!(read_err.code, "bootstrap_unconfigured");
+    }
+
+    // ---- git remote sync (Slice 8, Phase 1: configure/PAT/status) ----------
+    //
+    // Phase 1 is the secrets break with NO network: configure_remote (validate
+    // only — persistence is the TS route's job), set_pat/delete_pat, and
+    // get_remote_status. Command bodies take an injected `&dyn SecretStore` so a
+    // single `InMemoryStore` round-trips set→get→delete within one test, without
+    // a process-global the parallel test threads would race (D2). The real
+    // KeychainStore is never touched by `cargo test`.
+
+    /// A known FAKE PAT — never a real credential, never sent anywhere. Long
+    /// enough that `redact_pat` keeps the prefix + last 4 (its `< 8` branch).
+    const FIXTURE_PAT: &str = "ghp_TESTtoken0123456789abcdefghijklmnop";
+
+    #[test]
+    fn configure_remote_returns_normalized_url() {
+        // Uppercase host is lowercased; surrounding whitespace trimmed.
+        let data = cmd_configure_remote(&json!({ "url": "  https://GitHub.com/owner/Repo  " }))
+            .unwrap();
+        assert_eq!(data["remote_url"], json!("https://github.com/owner/Repo"));
+    }
+
+    #[test]
+    fn configure_remote_rejects_each_url_error_as_invalid_remote_url() {
+        // Every RemoteUrlError variant funnels to the one route-mappable code;
+        // the specific reason rides `detail` (server-side only, m4).
+        for bad in [
+            "",                                   // Empty
+            "http://github.com/o/r",              // NonHttps
+            "https://x-access-token@github.com/o/r", // EmbeddedCredentials
+            "https://github.com/o r",             // Whitespace
+            "https://gitlab.com/o/r",             // HostNotAllowed
+            "https://github.com",                 // MissingPath
+        ] {
+            let err = cmd_configure_remote(&json!({ "url": bad })).unwrap_err();
+            assert_eq!(err.code, "invalid_remote_url", "url={bad:?}");
+        }
+    }
+
+    #[test]
+    fn set_pat_rejects_empty() {
+        let store = InMemoryStore::new();
+        let err = cmd_set_pat(&json!({ "pat": "" }), &store).unwrap_err();
+        assert_eq!(err.code, "empty_pat");
+        // missing key behaves like empty
+        let err = cmd_set_pat(&json!({}), &store).unwrap_err();
+        assert_eq!(err.code, "empty_pat");
+        // and nothing was stored
+        assert_eq!(store.get_pat().unwrap(), None);
+    }
+
+    #[test]
+    fn set_then_get_status_round_trips_only_the_redacted_form() {
+        let store = InMemoryStore::new();
+        cmd_set_pat(&json!({ "pat": FIXTURE_PAT }), &store).unwrap();
+
+        let data = cmd_get_remote_status(
+            &json!({ "remote_url": "https://github.com/owner/repo" }),
+            &store,
+        )
+        .unwrap();
+
+        // remote_url is a passthrough of the TS-injected arg.
+        assert_eq!(data["remote_url"], json!("https://github.com/owner/repo"));
+        // the ONLY PAT form on the wire is the redacted one.
+        assert_eq!(data["pat_redacted"], json!(redact_pat(FIXTURE_PAT)));
+    }
+
+    #[test]
+    fn get_remote_status_never_serializes_the_raw_pat() {
+        // D6 tripwire: plant a known PAT, serialize the whole response, assert
+        // the raw token never appears anywhere in it.
+        let store = InMemoryStore::new();
+        cmd_set_pat(&json!({ "pat": FIXTURE_PAT }), &store).unwrap();
+        let data =
+            cmd_get_remote_status(&json!({ "remote_url": Value::Null }), &store).unwrap();
+        let serialized = serde_json::to_string(&data).unwrap();
+        assert!(
+            !serialized.contains(FIXTURE_PAT),
+            "raw PAT leaked into the response: {serialized}"
+        );
+        // remote_url null (not configured) round-trips as null.
+        assert_eq!(data["remote_url"], json!(null));
+        assert_eq!(data["pat_redacted"], json!(redact_pat(FIXTURE_PAT)));
+    }
+
+    #[test]
+    fn get_remote_status_reports_no_pat_as_null() {
+        let store = InMemoryStore::new();
+        let data = cmd_get_remote_status(
+            &json!({ "remote_url": "https://github.com/owner/repo" }),
+            &store,
+        )
+        .unwrap();
+        assert_eq!(data["pat_redacted"], json!(null));
+    }
+
+    #[test]
+    fn delete_pat_is_idempotent_and_clears_stored_token() {
+        let store = InMemoryStore::new();
+        // delete with nothing stored is ok (idempotent).
+        assert!(cmd_delete_pat(&store).is_ok());
+        // set, then delete, then status reports null.
+        cmd_set_pat(&json!({ "pat": FIXTURE_PAT }), &store).unwrap();
+        cmd_delete_pat(&store).unwrap();
+        let data =
+            cmd_get_remote_status(&json!({ "remote_url": Value::Null }), &store).unwrap();
+        assert_eq!(data["pat_redacted"], json!(null));
+    }
+
+    #[test]
+    fn secret_store_selects_memory_via_arg() {
+        // The `secret_store: "memory"` arg yields a store that set/get round-
+        // trips without ever touching the keychain (so `cargo test` is headless).
+        let store = secret_store(&json!({ "secret_store": "memory" })).unwrap();
+        store.set_pat(FIXTURE_PAT).unwrap();
+        assert_eq!(store.get_pat().unwrap().as_deref(), Some(FIXTURE_PAT));
+    }
+
+    #[test]
+    fn secret_store_selects_memory_via_env() {
+        // The env flag is the dev/test convenience; the route uses the arg.
+        // SAFETY: set+remove synchronously; no test exercises the keychain
+        // default, so a transient read by a parallel test is harmless.
+        std::env::set_var("CC_LIBRARY_SECRET_STORE", "memory");
+        let store = secret_store(&json!({}));
+        std::env::remove_var("CC_LIBRARY_SECRET_STORE");
+        assert!(store.is_ok());
+    }
+
+    #[tokio::test]
+    async fn dispatch_wires_the_git_sync_arms() {
+        // Arms are reachable through dispatch and select the memory store, so no
+        // keychain prompt in `cargo test`. Cross-process persistence is the
+        // keychain's job (verified in Phase 0), not InMemoryStore's, so this
+        // asserts WIRING, not round-trip.
+        let cfg = dispatch(
+            "configure_remote",
+            &json!({ "url": "https://github.com/owner/repo" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(cfg["remote_url"], json!("https://github.com/owner/repo"));
+
+        let empty = dispatch("set_pat", &json!({ "pat": "", "secret_store": "memory" }))
+            .await
+            .unwrap_err();
+        assert_eq!(empty.code, "empty_pat");
+
+        let status = dispatch(
+            "get_remote_status",
+            &json!({ "remote_url": "https://github.com/owner/repo", "secret_store": "memory" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status["pat_redacted"], json!(null));
     }
 }
