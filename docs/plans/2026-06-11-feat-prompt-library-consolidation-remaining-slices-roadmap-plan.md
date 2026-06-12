@@ -6,7 +6,7 @@
 - **Track doc:** [docs/library-consolidation-track.md](../library-consolidation-track.md) — "Full consolidation, staged."
 - **Glossary:** [CONTEXT.md](../../CONTEXT.md) — Library layer · Primitive · Kind · Target · Working copy · Version · Overlay · Install record · Drift · Reimport · Bootstrap
 - **Builds on (shipped):** [read-only slice](2026-06-11-feat-prompt-library-consolidation-readonly-slice-plan.md) (PR #4), [install/drift write-flow slice](2026-06-11-feat-prompt-library-install-drift-slice-plan.md) (PR #5), [working-copy/editor slice — Slice 3](2026-06-11-feat-prompt-library-working-copy-editor-slice-plan.md) (PR #6, `66905f6`), and [versioning/publishing slice — Slice 4](2026-06-12-feat-prompt-library-versioning-publishing-slice-plan.md) (`39933b8`). Every seam those created — the bridge dispatch + envelope, `library_bridge.ts`/`library_models.ts`/`library_config.ts`/`library_routes.ts`, the `resource()` UI pattern, the Variant B Library route, the working-copy editor buffer + version store — is **extended, not rebuilt**, by every slice below.
-- **Shipped-status (updated 2026-06-12):** Slices **3 (working copy/editor)**, **4 (versioning/publishing)**, **5 (target overlays)**, **6 (metadata editing)**, **7 (reimport-from-drift)**, and **9 (search)** are **DONE** — see the per-slice headers below. Slice 6's deepened plan is [2026-06-12-...-metadata-editing-slice-plan.md](2026-06-12-feat-prompt-library-metadata-editing-slice-plan.md); Slice 7's is [2026-06-12-...-reimport-from-drift-slice-plan.md](2026-06-12-feat-prompt-library-reimport-from-drift-slice-plan.md); Slice 9's is [2026-06-12-...-search-slice-plan.md](2026-06-12-feat-prompt-library-search-slice-plan.md). Remaining unbuilt: L, 8, 2, 10.
+- **Shipped-status (updated 2026-06-12):** Slices **3 (working copy/editor)**, **4 (versioning/publishing)**, **5 (target overlays)**, **6 (metadata editing)**, **7 (reimport-from-drift)**, **9 (search)**, and **L (primitive lifecycle)** are **DONE** — see the per-slice headers below. Slice 6's deepened plan is [2026-06-12-...-metadata-editing-slice-plan.md](2026-06-12-feat-prompt-library-metadata-editing-slice-plan.md); Slice 7's is [2026-06-12-...-reimport-from-drift-slice-plan.md](2026-06-12-feat-prompt-library-reimport-from-drift-slice-plan.md); Slice 9's is [2026-06-12-...-search-slice-plan.md](2026-06-12-feat-prompt-library-search-slice-plan.md); Slice L's is [2026-06-12-...-lifecycle-slice-plan.md](2026-06-12-feat-prompt-library-lifecycle-slice-plan.md). Remaining unbuilt: 8, 2, 10 (10a's typed-path import-from-path landed with L; `forget`'s UI awaits Slice 2's Reconcile view).
 - **Reference repo:** `~/side_projects/playground/prompt-library` — the standalone Tauri app is the reference implementation for every remaining feature; `src-tauri/src/commands.rs` holds the command bodies to port (minus `AppHandle`/`State`), and `crates/{core,git,secrets}` are already imported into this repo under `crates/`.
 
 ## Purpose of this document
@@ -59,8 +59,8 @@ This document sequences that work into **independently shippable vertical slices
    │         │                        ├──> [shipped] 5. Target ovl. │
    │         └──> [shipped] 6. Metadata editing                    │
    │                                  └──> 7. Reimport-from-drift   │
-   │   (independent, parallelizable: ) 9. Search                    │
-   │   (independent, parallelizable: ) L. Primitive lifecycle*      │
+   │   (independent, parallelizable: ) [shipped] 9. Search          │
+   │   (independent, parallelizable: ) [shipped] L. Primitive lifecycle* │
    └────────────────────────────────────────────────────────────────┘
    Legend: [shipped] = built + gated green (3/4 merged; 5 on its branch)
                                   │
@@ -139,7 +139,9 @@ This document sequences that work into **independently shippable vertical slices
 
 ---
 
-## Slice L: Primitive lifecycle (create / delete / rename / duplicate / import-from-path / forget)
+## Slice L: Primitive lifecycle (create / delete / rename / duplicate / import-from-path / forget) — ✅ SHIPPED (2026-06-12)
+
+> **Status:** Done on `feat/library-lifecycle`. Deepened plan: [2026-06-12-...-lifecycle-slice-plan.md](2026-06-12-feat-prompt-library-lifecycle-slice-plan.md). Three phases — bridge dispatch + the `PrimitiveAlreadyExists`→`library_primitive_exists` (409) mapping (`1513c03`), TS routes/models (`74989aa`), explorer + detail UI (`7af7c5a`). The commit-on-write dependency the roadmap flagged was **already met** by Slice 4 (no split needed). The write-lock split follows the shipped publish-vs-reimport invariant (lock IFF the command mutates `installs.json`): create/duplicate unlocked, delete/rename/import/forget locked. **`forget` is wired through the bridge/route/fetcher but NOT surfaced in the UI** — it has no natural home until Slice 2's Reconcile view. Import-from-path landed as the typed-path 10a web redesign (no native picker). The objective/risks below are retained as the planning frame.
 
 - **Objective:** Create a new Primitive (scaffold), delete, rename, duplicate, import from a local folder, and "forget" — the structural CRUD over the Library that the explorer's "+"/context actions drive.
 - **Sequencing note:** foundationally independent of the editor, but **every op the reference commits to git**, and delete/rename interact with versions **and** installs (deleting a Primitive that is installed; renaming one with install records). So: the **non-committing, install-aware half** can land early in parallel with Slices 3-6, but the **git-commit half must follow Slice 4** (which settles the commit-on-write posture). Treat this as one slice with an explicit "commit story per Slice 4" dependency, or split it.
@@ -252,4 +254,4 @@ This is **not one slice** — it is a set of cross-cutting redesigns that **land
 
 ## Next step (updated 2026-06-12)
 
-Slices 3, 4, 5, 6, 7, and 9 have shipped; the authoring substrate (editor + version store + per-target overlays + metadata editing), the install round-trip (reimport closes it), and search are live. The remaining authoring work is **Slice L (lifecycle)** — the larger structural-CRUD slice (its git-commit half consumes Slice 4's commit-on-write posture, now also exercised by Slice 7's reimport-commit). **Slice 2 (bootstrap)** waits on L + 7 (its reimport dependency is met). Hold **Slice 8 (git remote sync)** for last among features and give it the heaviest deepening (dedicated security agent) — it is the sole network + secrets break in the whole consolidation.
+Slices 3, 4, 5, 6, 7, 9, and **L** have shipped; the authoring substrate (editor + version store + per-target overlays + metadata editing + structural CRUD), the install round-trip (reimport closes it), and search are live. With lifecycle done, **both of Slice 2 (bootstrap)'s dependencies are now met** (lifecycle *creates* primitives; Slice 7's reimport *reimports* found installs) — bootstrap is the next buildable feature slice, and it would also give `forget` its natural home (the Reconcile view, where the lifecycle bridge/route/fetcher already wait, unwired). Hold **Slice 8 (git remote sync)** for last among features and give it the heaviest deepening (dedicated security agent) — it is the sole network + secrets break in the whole consolidation.

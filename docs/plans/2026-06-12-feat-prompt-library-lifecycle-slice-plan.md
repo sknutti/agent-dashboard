@@ -1,5 +1,21 @@
 # Prompt Library Consolidation — Slice L: Primitive Lifecycle — Implementation Plan
 
+> **Status (2026-06-12): ✅ SHIPPED on `feat/library-lifecycle`** in three phases —
+> Phase 1 bridge dispatch + the `PrimitiveAlreadyExists`→`library_primitive_exists` (409)
+> mapping (`1513c03`), Phase 2 TS routes + models (`74989aa`), Phase 3 explorer + detail UI
+> (`7af7c5a`). All open questions resolved: import takes `withWriteLock` (Q1, yes);
+> **forget is NOT surfaced in the UI** — it has no natural home until the bootstrap
+> Reconcile view (Slice 2), so its bridge/route/fetcher ship ready but unwired (Q2);
+> create's primary-filename preview was kept minimal — no kind-info call (Q3); commit
+> messages are inline `format!`, ported verbatim from the reference (Q4). The
+> write-lock split deviates from the plan's "every mutating verb locked" to follow the
+> shipped publish-vs-reimport invariant (lock IFF the command mutates installs.json):
+> **create/duplicate unlocked** (publish posture), **delete/rename/import/forget locked**.
+> Gates green: `cargo test --workspace` (664), `bun test scripts` (361), Library vitest
+> (163), `svelte-check` 0, `tsc` clean, `cargo clippy -p prompt-library-bridge` clean
+> (2 workspace-wide clippy warnings remain in `core/src/find.rs` + `core/tests/folder_import.rs`
+> — both pre-date this branch, not lifecycle code).
+
 - **Date:** 2026-06-12
 - **Type:** feat
 - **Roadmap:** [docs/plans/2026-06-11-feat-prompt-library-consolidation-remaining-slices-roadmap-plan.md](2026-06-11-feat-prompt-library-consolidation-remaining-slices-roadmap-plan.md) (Slice L, line 142)
