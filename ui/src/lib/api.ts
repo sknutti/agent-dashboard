@@ -746,3 +746,36 @@ export const removeOverlay = (kind: string, name: string, target: LibraryTarget)
 /** List every target's overlay surface (one entry per target carrying ≥1 file). */
 export const listOverlays = (kind: string, name: string) =>
   getJson<LibraryOverlayList[]>(`${primPath(kind, name)}/overlays`);
+
+// ── Prompt Library metadata-editing fetcher (metadata-editing slice) ────────
+// Edit the three editable fields (allowed_targets / display_name / author) and
+// COMMIT — unlike overlays, metadata.yaml is git-tracked, so the result carries
+// the same non-fatal {committed, commit_error} contract as publish (Slice 4).
+// Dropping a target that still has overlay files → LibraryApiError(
+// "library_target_removed_with_overlays") (409); the UI confirms and re-issues
+// with discard_orphan_overlays:true. A kind-illegal target →
+// LibraryApiError("library_target_not_allowed_for_kind") — but the form's
+// checkboxes are constrained to the kind matrix, so that's defense-in-depth.
+
+/** The editable subset sent to update_metadata. `display_name`/`author` send
+ *  null to clear (the bridge collapses ""/null → drop the field). */
+export interface LibraryMetadataUpdate {
+  allowed_targets: LibraryTarget[];
+  display_name: string | null;
+  author: string | null;
+  discard_orphan_overlays?: boolean;
+}
+
+/** The outcome of an update_metadata: the freshly-written metadata + the
+ *  advisory git commit result (same non-fatal contract as LibraryPublishResult). */
+export interface LibraryMetadataUpdateResult {
+  metadata: LibraryPrimitiveMetadata;
+  committed: boolean;
+  commit_error: string | null;
+}
+
+/** Replace a primitive's editable metadata, then commit. Dropping a target with
+ *  overlay files → LibraryApiError("library_target_removed_with_overlays")
+ *  unless `discard_orphan_overlays` is set. */
+export const updateMetadata = (kind: string, name: string, body: LibraryMetadataUpdate) =>
+  sendJson<LibraryMetadataUpdateResult>(`${primPath(kind, name)}/metadata`, "PUT", body);

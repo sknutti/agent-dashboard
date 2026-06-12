@@ -9,6 +9,7 @@
   import EmptyState from "../lib/components/ui/EmptyState.svelte";
   import WorkingFileEditor from "../lib/components/WorkingFileEditor.svelte";
   import TargetOverlayPane from "../lib/components/TargetOverlayPane.svelte";
+  import MetadataForm from "../lib/components/MetadataForm.svelte";
   import { resource } from "../lib/resource.svelte";
   import {
     getLibraryStatus,
@@ -203,6 +204,17 @@
   function reloadAfterWorkingWrite(): void {
     detailRes.reload();
     primitivesRes.reload();
+  }
+
+  // After a metadata save: reload the detail (re-drives the overlay tab strip +
+  // the rail from the new allowed_targets — the Slice 5 forward coupling) and the
+  // primitive list (the author column may have changed). The drift read too: a
+  // narrowed allowed_targets can orphan an install. Event-handler driven, no effect.
+  function onMetadataSaved(): void {
+    detailRes.reload();
+    primitivesRes.reload();
+    driftDetailRes.reload();
+    driftBatchRes.reload();
   }
 
   // Decision 3 — an overlay edit changes what a FUTURE install deploys; it does
@@ -679,6 +691,24 @@
             </div>
             <Badge tone={headCue.tone}>{headCue.glyph} {headCue.label}</Badge>
           </header>
+
+          <!-- Editable metadata (display_name / author / allowed_targets) — keyed
+               on the primitive so it REMOUNTS on selection change (no-useEffect
+               buffer reset). Target checkboxes are constrained to the kind's
+               matrix (Decision 4). Editing allowed_targets re-drives the overlay
+               tab strip below after the post-save detail reload. -->
+          <section class="metadata-section">
+            <h4>Metadata</h4>
+            {#key detail.kind + "/" + detail.name}
+              <MetadataForm
+                kind={detail.kind}
+                name={detail.name}
+                metadata={detail.metadata}
+                kindAllowedTargets={kindInfo.data?.[detail.kind]?.allowed_targets ?? []}
+                onSaved={onMetadataSaved}
+              />
+            {/key}
+          </section>
 
           <div class="doc-tabs">
             <span class="active">Working copy</span>
@@ -1442,7 +1472,13 @@
     display: grid;
     gap: 8px;
   }
+  .metadata-section {
+    margin-top: 14px;
+    display: grid;
+    gap: 8px;
+  }
   .targets-section h4,
+  .metadata-section h4,
   .overlays-section h4 {
     margin: 0 0 2px;
     color: var(--text-subtle);

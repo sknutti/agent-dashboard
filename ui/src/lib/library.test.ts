@@ -7,6 +7,7 @@ import {
   dirtyCue,
   editorDirtyCue,
   publishStateCue,
+  metadataSaveCue,
   currentVersionCue,
   overlayCue,
   gitSummary,
@@ -125,6 +126,27 @@ describe("publishStateCue (non-fatal commit contract; colorblind-safe)", () => {
     }
     // "no commit" (non-git / nothing staged) is NOT styled as a failure.
     expect(noCommit.label).toBe("published");
+  });
+});
+
+describe("metadataSaveCue (post-save commit state; colorblind-safe)", () => {
+  test("three distinct states distinguishable by label + glyph, never bare red/green", () => {
+    const committed = metadataSaveCue(true, null);
+    const failed = metadataSaveCue(false, "Author identity unknown");
+    const noCommit = metadataSaveCue(false, null);
+    const labels = [committed.label, failed.label, noCommit.label];
+    expect(new Set(labels).size).toBe(3);
+    // The commit-failed state is the only amber (attention) one — it is NOT a
+    // hard error; the edit landed, only the advisory git commit failed.
+    expect(failed.tone).toBe("amber");
+    expect(committed.tone).not.toBe("amber");
+    expect(noCommit.tone).not.toBe("amber");
+    for (const c of [committed, failed, noCommit]) {
+      expect(c.glyph.length).toBeGreaterThan(0);
+      expect(["amber", "cyan", "default"]).toContain(c.tone);
+    }
+    // A non-git library (no commit, no error) is a plain success, not a warning.
+    expect(noCommit.label).toBe("saved");
   });
 });
 
