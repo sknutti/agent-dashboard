@@ -1,5 +1,7 @@
 # Prompt Library Consolidation — Slice 7: Reimport-from-drift — Implementation Plan
 
+> **Status:** ✅ SHIPPED (2026-06-12) on `feat/library-reimport-from-drift`. Landed as 3 phases — Phase 1 bridge `reimport_install` (async, commits on `Reimported` only; 8 tests), Phase 2 `POST …/reimport` route + `ReimportResult` model (takes `withWriteLock`, unlike publish; 32 tests), Phase 3 the three-action drift row + dirty/broken-source flows (11 tests). Gate green: cargo 645 · scripts 307 · UI 137. **Two decisions settled in-flight worth noting: (1)** reimport COMMITS on the `Reimported` outcome — a deliberate DIVERGENCE from the reference (which never commits reimport), justified by the dashboard's Slice-4 commit-on-write posture (an uncommitted version tree would otherwise be swept into a later publish's commit under the wrong message). **(2)** `MaterializeShape` stays in the 502 catch-all (Open Q1 default). The plan below is retained as the historical record.
+
 - **Date:** 2026-06-12
 - **Type:** feat
 - **Roadmap:** [2026-06-11-feat-prompt-library-consolidation-remaining-slices-roadmap-plan.md](2026-06-11-feat-prompt-library-consolidation-remaining-slices-roadmap-plan.md) (Slice 7 section, lines 153-161). This deepens that slice; the roadmap's invariants (write-safety inheritance, colorblind cues, route-local failure, secrets-free) apply unchanged.
