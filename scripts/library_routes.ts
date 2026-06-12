@@ -321,6 +321,25 @@ export async function buildDriftBatch(config: LibraryConfig, run: Run = runBridg
   return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
 }
 
+/** Read: per-primitive drift (fresh + scoped) — the AUTHORITATIVE source for the
+ *  detail pane's rows and post-write/post-ack reload (D8). The batch above is for
+ *  explorer badges only; reloading the whole batch after a single-target write is
+ *  heavy and racy. No write lock. */
+export async function buildScanDrift(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  const r = await run(
+    config.bridgePath,
+    "scan_drift",
+    { home: config.home, installs_path: config.installsPath, kind, name },
+    { validate: parseDriftReports },
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
 /** Write: the one-click standalone→dashboard migration. */
 export async function buildImportInstalls(
   config: LibraryConfig,
@@ -366,6 +385,9 @@ export function registerLibraryRoutes(
   );
   app.get("/api/library/primitives/:kind/:name/installs", async (c) =>
     json(c, await buildInstallsForPrimitive(loadConfig(), c.req.param("kind"), c.req.param("name"))),
+  );
+  app.get("/api/library/primitives/:kind/:name/drift", async (c) =>
+    json(c, await buildScanDrift(loadConfig(), c.req.param("kind"), c.req.param("name"))),
   );
   // Writes — POST install / DELETE uninstall / POST acknowledge-drift / POST
   // import. Each inherits server.ts's loopback Host + Origin guard; the write

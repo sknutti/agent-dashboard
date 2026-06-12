@@ -13,6 +13,7 @@ import {
   buildAcknowledgeDrift,
   buildInstallsForPrimitive,
   buildDriftBatch,
+  buildScanDrift,
   buildImportInstalls,
   withWriteLock,
   statusForCode,
@@ -335,6 +336,16 @@ describe("buildDriftBatch (read — no write lock)", () => {
   });
 });
 
+describe("buildScanDrift (per-primitive — detail authority, D8)", () => {
+  test("returns 200 with the scoped DriftReport[] and passes kind/name to the bridge", async () => {
+    const { run, calls } = captureRun({ ok: true, data: data("scan_drift") });
+    const r = await buildScanDrift(CONFIGURED, "skill", "diagnose", run);
+    expect(r.status).toBe(200);
+    expect(calls[0]!.command).toBe("scan_drift");
+    expect(calls[0]!.args).toMatchObject({ kind: "skill", name: "diagnose", installs_path: "/data/installs.json" });
+  });
+});
+
 describe("buildImportInstalls (migration)", () => {
   test("success returns 200 { imported }", async () => {
     const { run } = captureRun({ ok: true, data: { imported: 119 } });
@@ -380,11 +391,16 @@ describe("withWriteLock (D1 — serialize all ledger writers)", () => {
 
   test("a rejecting writer does not wedge the queue — the next writer still runs", async () => {
     const ran: string[] = [];
-    const failing = withWriteLock(async () => {
-      ran.push("fail");
-      throw new Error("boom");
-    });
-    await expect(failing).rejects.toThrow("boom");
+    let threw = false;
+    try {
+      await withWriteLock(async () => {
+        ran.push("fail");
+        throw new Error("boom");
+      });
+    } catch (e) {
+      threw = (e as Error).message === "boom";
+    }
+    expect(threw).toBe(true);
     const after = await withWriteLock(async () => {
       ran.push("after");
       return "ok";
@@ -444,6 +460,7 @@ describe("registerLibraryRoutes — HTTP wiring + Observability isolation", () =
         body: JSON.stringify({ targets: ["claude"], force: false, target: "claude" }),
       });
     expect((await app.request("/api/library/drift")).status).not.toBe(404);
+    expect((await app.request("/api/library/primitives/skill/diagnose/drift")).status).not.toBe(404);
     expect((await app.request("/api/library/primitives/skill/diagnose/installs")).status).not.toBe(404);
     expect((await post("/api/library/primitives/skill/diagnose/install")).status).not.toBe(404);
     expect((await post("/api/library/primitives/skill/diagnose/acknowledge-drift")).status).not.toBe(404);
