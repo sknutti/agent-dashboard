@@ -104,6 +104,29 @@ export function publishStateCue(committed: boolean, commitError: string | null):
   return { label: "published", tone: "default", glyph: "✓" };
 }
 
+/** Post-metadata-save commit state. The metadata atomic-write ALWAYS succeeded
+ *  by the time this renders — `metadata.yaml` is git-tracked, so the write
+ *  commits (Slice 4's posture), and this cue describes ONLY the advisory git
+ *  step. A commit failure (no git identity) is NOT an error — the edit landed —
+ *  so it reads as an amber warning ("saved · not committed", git's message
+ *  shown alongside), distinct from a 4xx error toast. Colorblind-safe (label +
+ *  glyph, never bare red/green — Scott is red/green CVD). */
+export function metadataSaveCue(committed: boolean, commitError: string | null): Cue {
+  if (committed) return { label: "saved · committed", tone: "default", glyph: "✓" };
+  if (commitError) return { label: "saved · not committed", tone: "amber", glyph: "●" };
+  return { label: "saved", tone: "default", glyph: "✓" };
+}
+
+/** Distinguish a per-target OVERLAY (a target-specific delta that shadows the
+ *  base primary at install time) from a plain base passthrough. Colorblind-safe:
+ *  label + glyph + a CVD-safe cyan for the overlay, never a bare red/green. The
+ *  label makes "this is a delta, not the full base file" unmistakable. */
+export function overlayCue(hasOverlay: boolean): Cue {
+  return hasOverlay
+    ? { label: "overlay", tone: "cyan", glyph: "◆" }
+    : { label: "base (no overlay)", tone: "default", glyph: "○" };
+}
+
 /** Distinguish the current pinned version from a past one in the inspector —
  *  by label + glyph + a CVD-safe cyan (never a bare red/green); "current" is the
  *  pointer a future install reads. */

@@ -697,3 +697,85 @@ export const readPrimitiveVersion = (kind: string, name: string, label: string) 
   getJson<LibraryPrimitiveVersionView>(
     `${primPath(kind, name)}/versions/${encodeURIComponent(label)}`,
   );
+
+// ── Prompt Library target-overlay fetchers (target-overlays slice) ──────────
+// Reads (read merged view / list) use getJson; writes use sendJson so a route-
+// local error (library_target_not_allowed / library_parse_error) rides
+// LibraryApiError to an inline message, never the shell. The target rides a path
+// segment (a closed enum value — no "/"). write/remove act on the PRIMARY overlay
+// only (the reference surface); they never commit (working/targets/ is gitignored).
+
+/** The merged primary for a (primitive, target) pair + whether an overlay file
+ *  shadows the base. `has_overlay:false` ⇒ the view IS the base (read-only +
+ *  "Add overlay"); `true` ⇒ the overlay exists and the tab is editable. */
+export interface LibraryTargetView {
+  working: WorkingContent;
+  has_overlay: boolean;
+}
+
+/** One target's overlay surface — the relative paths under working/targets/. */
+export interface LibraryOverlayList {
+  target: LibraryTarget;
+  paths: string[];
+}
+
+/** Read the merged primary for a target. A target outside allowed_targets →
+ *  LibraryApiError("library_target_not_allowed"). */
+export const readPrimitiveTarget = (kind: string, name: string, target: LibraryTarget) =>
+  getJson<LibraryTargetView>(
+    `${primPath(kind, name)}/targets/${encodeURIComponent(target)}`,
+  );
+
+/** Write the PRIMARY overlay for a target (parse-validated in-core before the
+ *  atomic write; malformed → library_parse_error, disk unchanged). */
+export const writeOverlay = (kind: string, name: string, target: LibraryTarget, content: string) =>
+  sendJson<Record<string, never>>(
+    `${primPath(kind, name)}/targets/${encodeURIComponent(target)}/overlay`,
+    "PUT",
+    { content },
+  );
+
+/** Remove the PRIMARY overlay for a target (idempotent; the merged view reverts
+ *  to the base passthrough). */
+export const removeOverlay = (kind: string, name: string, target: LibraryTarget) =>
+  sendJson<Record<string, never>>(
+    `${primPath(kind, name)}/targets/${encodeURIComponent(target)}/overlay`,
+    "DELETE",
+  );
+
+/** List every target's overlay surface (one entry per target carrying ≥1 file). */
+export const listOverlays = (kind: string, name: string) =>
+  getJson<LibraryOverlayList[]>(`${primPath(kind, name)}/overlays`);
+
+// ── Prompt Library metadata-editing fetcher (metadata-editing slice) ────────
+// Edit the three editable fields (allowed_targets / display_name / author) and
+// COMMIT — unlike overlays, metadata.yaml is git-tracked, so the result carries
+// the same non-fatal {committed, commit_error} contract as publish (Slice 4).
+// Dropping a target that still has overlay files → LibraryApiError(
+// "library_target_removed_with_overlays") (409); the UI confirms and re-issues
+// with discard_orphan_overlays:true. A kind-illegal target →
+// LibraryApiError("library_target_not_allowed_for_kind") — but the form's
+// checkboxes are constrained to the kind matrix, so that's defense-in-depth.
+
+/** The editable subset sent to update_metadata. `display_name`/`author` send
+ *  null to clear (the bridge collapses ""/null → drop the field). */
+export interface LibraryMetadataUpdate {
+  allowed_targets: LibraryTarget[];
+  display_name: string | null;
+  author: string | null;
+  discard_orphan_overlays?: boolean;
+}
+
+/** The outcome of an update_metadata: the freshly-written metadata + the
+ *  advisory git commit result (same non-fatal contract as LibraryPublishResult). */
+export interface LibraryMetadataUpdateResult {
+  metadata: LibraryPrimitiveMetadata;
+  committed: boolean;
+  commit_error: string | null;
+}
+
+/** Replace a primitive's editable metadata, then commit. Dropping a target with
+ *  overlay files → LibraryApiError("library_target_removed_with_overlays")
+ *  unless `discard_orphan_overlays` is set. */
+export const updateMetadata = (kind: string, name: string, body: LibraryMetadataUpdate) =>
+  sendJson<LibraryMetadataUpdateResult>(`${primPath(kind, name)}/metadata`, "PUT", body);

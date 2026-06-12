@@ -26,6 +26,11 @@ import {
   buildSetCurrentVersion,
   buildReadPrimitiveVersion,
   buildRevertToVersion,
+  buildReadPrimitiveTarget,
+  buildWriteOverlay,
+  buildRemoveOverlay,
+  buildListOverlays,
+  buildUpdateMetadata,
   withWriteLock,
   statusForCode,
   registerLibraryRoutes,
@@ -738,6 +743,240 @@ describe("buildRevertToVersion", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Target overlays (target-overlays slice)
+//
+// Reads (read-merged-view / list) skip the lock; writes (write/remove overlay)
+// take WRITE_TIMEOUT but no ledger mutex. The load-bearing checks: the target
+// rides a `:target` segment to the bridge as `target`, the root stays config-
+// resolved (a body can't redirect it), a disallowed target maps 422, and a
+// malformed overlay maps library_parse_error → 502 (consistent with the Slice 3
+// primary save — disk untouched in-core).
+// ---------------------------------------------------------------------------
+
+const TARGET_VIEW_OVERLAY = { working: { kind: "md", frontmatter: "", body: "claude-only\n" }, has_overlay: true };
+const TARGET_VIEW_BASE = { working: { kind: "md", frontmatter: "", body: "base\n" }, has_overlay: false };
+
+describe("buildReadPrimitiveTarget (read — no write lock)", () => {
+  test("success → 200 with the merged view (overlay present)", async () => {
+    const r = await buildReadPrimitiveTarget(CONFIGURED, "skill", "diagnose", "claude", okRun(TARGET_VIEW_OVERLAY));
+    expect(r.status).toBe(200);
+    expect((r.body as any).has_overlay).toBe(true);
+    expect((r.body as any).working.body).toBe("claude-only\n");
+  });
+  test("a base passthrough → 200 has_overlay:false", async () => {
+    const r = await buildReadPrimitiveTarget(CONFIGURED, "skill", "diagnose", "pi", okRun(TARGET_VIEW_BASE));
+    expect(r.status).toBe(200);
+    expect((r.body as any).has_overlay).toBe(false);
+  });
+  test("a disallowed target → 422 library_target_not_allowed (detail withheld)", async () => {
+    const r = await buildReadPrimitiveTarget(CONFIGURED, "skill", "diagnose", "codex", errRun(libErr("library_target_not_allowed")));
+    expect(r.status).toBe(422);
+    expect((r.body as any).code).toBe("library_target_not_allowed");
+    expect(JSON.stringify(r.body)).not.toContain("/Users/"); // m4: detail withheld
+  });
+  test("a bad :target value → 422 library_invalid_target", async () => {
+    const r = await buildReadPrimitiveTarget(CONFIGURED, "skill", "diagnose", "nonsense", errRun(libErr("library_invalid_target")));
+    expect(r.status).toBe(422);
+  });
+  test("the target reaches the bridge as `target`; root stays config", async () => {
+    const { run, calls } = captureRun({ ok: true, data: TARGET_VIEW_BASE });
+    await buildReadPrimitiveTarget(CONFIGURED, "skill", "diagnose", "claude", run);
+    expect(calls[0]!.command).toBe("read_primitive_target");
+    expect(calls[0]!.args).toMatchObject({ path: "/libs/x", kind: "skill", name: "diagnose", target: "claude" });
+  });
+  test("unconfigured → 409 WITHOUT spawning (needs the layout)", async () => {
+    const { run, calls } = captureRun({ ok: true, data: TARGET_VIEW_BASE });
+    const r = await buildReadPrimitiveTarget(UNCONFIGURED, "skill", "diagnose", "claude", run);
+    expect(r.status).toBe(409);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("buildWriteOverlay (primary overlay save)", () => {
+  test("success → 200 {}", async () => {
+    const r = await buildWriteOverlay(CONFIGURED, "skill", "diagnose", "claude", { content: "---\n---\nx\n" }, okRun({}));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({});
+  });
+  test("a malformed overlay → library_parse_error → 502 (in-core: disk untouched)", async () => {
+    const r = await buildWriteOverlay(CONFIGURED, "skill", "diagnose", "claude", { content: "no fences" }, errRun(libErr("library_parse_error")));
+    expect(r.status).toBe(502);
+    expect((r.body as any).code).toBe("library_parse_error");
+  });
+  test("a disallowed target → 422 library_target_not_allowed", async () => {
+    const r = await buildWriteOverlay(CONFIGURED, "skill", "diagnose", "codex", { content: "---\n---\nx\n" }, errRun(libErr("library_target_not_allowed")));
+    expect(r.status).toBe(422);
+  });
+  test("content + target + config root reach the bridge; a body path cannot redirect the root", async () => {
+    const { run, calls } = captureRun({ ok: true, data: {} });
+    await buildWriteOverlay(CONFIGURED, "skill", "diagnose", "claude", { content: "x", path: "/etc/evil" } as any, run);
+    expect(calls[0]!.command).toBe("write_overlay");
+    expect(calls[0]!.args).toMatchObject({ path: "/libs/x", kind: "skill", name: "diagnose", target: "claude", content: "x" });
+  });
+  test("unconfigured → 409 WITHOUT spawning", async () => {
+    const { run, calls } = captureRun({ ok: true, data: {} });
+    const r = await buildWriteOverlay(UNCONFIGURED, "skill", "diagnose", "claude", { content: "x" }, run);
+    expect(r.status).toBe(409);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("buildRemoveOverlay (idempotent in-core)", () => {
+  test("success → 200 {} (the merged view reverts to base)", async () => {
+    const r = await buildRemoveOverlay(CONFIGURED, "skill", "diagnose", "claude", okRun({}));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({});
+  });
+  test("forwards target; root stays config", async () => {
+    const { run, calls } = captureRun({ ok: true, data: {} });
+    await buildRemoveOverlay(CONFIGURED, "skill", "diagnose", "claude", run);
+    expect(calls[0]!.command).toBe("remove_overlay");
+    expect(calls[0]!.args).toMatchObject({ path: "/libs/x", kind: "skill", name: "diagnose", target: "claude" });
+  });
+  test("unconfigured → 409 WITHOUT spawning", async () => {
+    const { run, calls } = captureRun({ ok: true, data: {} });
+    const r = await buildRemoveOverlay(UNCONFIGURED, "skill", "diagnose", "claude", run);
+    expect(r.status).toBe(409);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("buildListOverlays (read — no write lock)", () => {
+  test("success → 200 with the per-target overlay surface", async () => {
+    const r = await buildListOverlays(CONFIGURED, "skill", "diagnose", okRun([{ target: "claude", paths: ["SKILL.md"] }]));
+    expect(r.status).toBe(200);
+    expect((r.body as any)[0]).toMatchObject({ target: "claude", paths: ["SKILL.md"] });
+  });
+  test("the empty surface → 200 []", async () => {
+    const r = await buildListOverlays(CONFIGURED, "skill", "diagnose", okRun([]));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual([]);
+  });
+  test("unconfigured → 409 WITHOUT spawning", async () => {
+    const { run, calls } = captureRun({ ok: true, data: [] });
+    const r = await buildListOverlays(UNCONFIGURED, "skill", "diagnose", run);
+    expect(r.status).toBe(409);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+const META_OK = {
+  metadata: {
+    allowed_targets: ["claude", "pi"],
+    created_at: "2026-04-30T12:00:00Z",
+    display_name: "Diag",
+    author: "Alice",
+  },
+  committed: true,
+  commit_error: null,
+};
+const META_COMMIT_FAILED = {
+  metadata: { allowed_targets: ["claude"], created_at: "2026-04-30T12:00:00Z" },
+  committed: false,
+  commit_error: "Author identity unknown\n\n*** Please tell me who you are.",
+};
+
+describe("statusForCode — metadata-editing codes", () => {
+  test("dropping a target with overlays is a 409 (re-issue-with-flag conflict)", () => {
+    expect(statusForCode("library_target_removed_with_overlays")).toBe(409);
+  });
+  test("a kind-illegal target stays 422 (already mapped)", () => {
+    expect(statusForCode("library_target_not_allowed_for_kind")).toBe(422);
+  });
+});
+
+describe("buildUpdateMetadata", () => {
+  test("success → 200 with the MetadataUpdateResult (metadata + commit state)", async () => {
+    const r = await buildUpdateMetadata(
+      CONFIGURED,
+      "skill",
+      "diagnose",
+      { allowed_targets: ["claude", "pi"], display_name: "Diag", author: "Alice" },
+      okRun(META_OK),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual(META_OK);
+  });
+  test("a commit failure is NON-fatal — 200 carrying committed:false + the message (Slice 4 posture)", async () => {
+    const r = await buildUpdateMetadata(
+      CONFIGURED,
+      "skill",
+      "diagnose",
+      { allowed_targets: ["claude"] },
+      okRun(META_COMMIT_FAILED),
+    );
+    expect(r.status).toBe(200);
+    expect((r.body as any).committed).toBe(false);
+    expect((r.body as any).commit_error).toContain("identity unknown");
+    expect((r.body as any).metadata.allowed_targets).toEqual(["claude"]);
+  });
+  test("dropping a target with overlays → 409 library_target_removed_with_overlays", async () => {
+    const r = await buildUpdateMetadata(
+      CONFIGURED,
+      "skill",
+      "diagnose",
+      { allowed_targets: ["pi"] },
+      errRun(libErr("library_target_removed_with_overlays")),
+    );
+    expect(r.status).toBe(409);
+    expect((r.body as any).code).toBe("library_target_removed_with_overlays");
+    expect(JSON.stringify(r.body)).not.toContain("/Users/"); // m4: detail withheld
+  });
+  test("a kind-illegal target → 422 library_target_not_allowed_for_kind", async () => {
+    const r = await buildUpdateMetadata(
+      CONFIGURED,
+      "agent",
+      "router",
+      { allowed_targets: ["codex"] },
+      errRun(libErr("library_target_not_allowed_for_kind")),
+    );
+    expect(r.status).toBe(422);
+  });
+  test("forwards the editable subset + config root; a body path cannot redirect the root", async () => {
+    const { run, calls } = captureRun({ ok: true, data: META_OK });
+    await buildUpdateMetadata(
+      CONFIGURED,
+      "skill",
+      "diagnose",
+      { allowed_targets: ["claude", "pi"], display_name: "Diag", author: "Alice", discard_orphan_overlays: true, path: "/etc/evil" } as any,
+      run,
+    );
+    expect(calls[0]!.command).toBe("update_metadata");
+    expect(calls[0]!.args).toMatchObject({
+      path: "/libs/x", // config root, NOT the body's /etc/evil
+      kind: "skill",
+      name: "diagnose",
+      allowed_targets: ["claude", "pi"],
+      display_name: "Diag",
+      author: "Alice",
+      discard_orphan_overlays: true,
+    });
+  });
+  test("absent display_name/author → null (not undefined) on the wire; discard defaults false", async () => {
+    const { run, calls } = captureRun({ ok: true, data: META_OK });
+    await buildUpdateMetadata(CONFIGURED, "skill", "diagnose", { allowed_targets: ["claude"] }, run);
+    expect(calls[0]!.args).toMatchObject({
+      display_name: null,
+      author: null,
+      discard_orphan_overlays: false,
+    });
+  });
+  test("an empty-string display_name/author is preserved verbatim on the wire (the bridge collapses it to null)", async () => {
+    const { run, calls } = captureRun({ ok: true, data: META_OK });
+    await buildUpdateMetadata(CONFIGURED, "skill", "diagnose", { allowed_targets: ["claude"], display_name: "", author: "" }, run);
+    // "" is a string, so it rides as "" — the bridge's parse_optional_nonempty
+    // turns ""/null alike into None. The route only nulls non-string values.
+    expect(calls[0]!.args).toMatchObject({ display_name: "", author: "" });
+  });
+  test("unconfigured → 409 WITHOUT spawning", async () => {
+    const { run, calls } = captureRun({ ok: true, data: META_OK });
+    const r = await buildUpdateMetadata(UNCONFIGURED, "skill", "diagnose", { allowed_targets: ["claude"] }, run);
+    expect(r.status).toBe(409);
+    expect(calls).toHaveLength(0);
+  });
+});
+
 // Route-local isolation: library routes mounted on a Hono app must not affect a
 // sibling Observability route, even with no library configured.
 describe("registerLibraryRoutes — HTTP wiring + Observability isolation", () => {
@@ -867,6 +1106,55 @@ describe("registerLibraryRoutes — HTTP wiring + Observability isolation", () =
       body: JSON.stringify({ version_label: "v1" }),
     });
     expect([409, 422, 502]).toContain(publish.status); // a library-local failure status
+
+    const summary = await app.request("/api/summary");
+    expect(summary.status).toBe(200); // Observability untouched
+  });
+
+  test("the target-overlay routes are wired (read merged view / write / remove / list)", async () => {
+    const app = new Hono();
+    registerLibraryRoutes(app, () => CONFIGURED);
+    const send = (p: string, method: string) =>
+      app.request(p, {
+        method,
+        headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+        body: JSON.stringify({ content: "---\n---\nx\n" }),
+      });
+    // Reads.
+    expect((await app.request("/api/library/primitives/skill/diagnose/targets/claude")).status).not.toBe(404);
+    expect((await app.request("/api/library/primitives/skill/diagnose/overlays")).status).not.toBe(404);
+    // Writes (PUT / DELETE …/overlay).
+    expect((await send("/api/library/primitives/skill/diagnose/targets/claude/overlay", "PUT")).status).not.toBe(404);
+    expect((await send("/api/library/primitives/skill/diagnose/targets/claude/overlay", "DELETE")).status).not.toBe(404);
+  });
+
+  test("a failing overlay write is route-local: a sibling Observability route stays 200", async () => {
+    const app = new Hono();
+    app.get("/api/summary", (c) => c.json({ ok: true }));
+    registerLibraryRoutes(app, () => ({ ...CONFIGURED, bridgePath: "/no/such/bridge" }));
+
+    const write = await app.request("/api/library/primitives/skill/diagnose/targets/claude/overlay", {
+      method: "PUT",
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+      body: JSON.stringify({ content: "---\n---\nx\n" }),
+    });
+    expect([409, 422, 502]).toContain(write.status); // a library-local failure status
+
+    const summary = await app.request("/api/summary");
+    expect(summary.status).toBe(200); // Observability untouched
+  });
+
+  test("a failing metadata edit is route-local: a sibling Observability route stays 200", async () => {
+    const app = new Hono();
+    app.get("/api/summary", (c) => c.json({ ok: true }));
+    registerLibraryRoutes(app, () => ({ ...CONFIGURED, bridgePath: "/no/such/bridge" }));
+
+    const edit = await app.request("/api/library/primitives/skill/diagnose/metadata", {
+      method: "PUT",
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+      body: JSON.stringify({ allowed_targets: ["claude"], display_name: "Diag", author: null }),
+    });
+    expect([409, 422, 502]).toContain(edit.status); // a library-local failure status
 
     const summary = await app.request("/api/summary");
     expect(summary.status).toBe(200); // Observability untouched

@@ -27,6 +27,9 @@ import {
   parseWorkingFileBytes,
   parsePrimitiveVersionView,
   parsePublishResult,
+  parseTargetView,
+  parseOverlayLists,
+  parseMetadataUpdateResult,
   type LibraryStatus,
 } from "./library_models.ts";
 import { importInstalls } from "./library_migration.ts";
@@ -89,6 +92,11 @@ export function statusForCode(code: string): HttpStatus {
     case "working_file_exists": // create over an existing ref file — use Save
     case "working_file_refuse_primary": // rename/delete the primary file (refused in-core)
     case "library_version_exists": // re-publish an existing label — immutable; use a new label
+    // Metadata edit dropped a target that still has overlay files. Like the
+    // install `colliding_content`/`force` two-phase-confirm: recoverable by
+    // re-issuing with `discard_orphan_overlays: true`, so it's a 409 conflict
+    // the user resolves by confirming, NOT a 422 bad-input dead-end.
+    case "library_target_removed_with_overlays":
       return 409;
     // Bad client input (the :kind / :name segment, or a non-UTF-8 path).
     case "library_invalid_name":
@@ -633,6 +641,162 @@ export async function buildRevertToVersion(
 }
 
 // ---------------------------------------------------------------------------
+// Target-overlay handlers (target-overlays slice)
+//
+// The library ROOT is always `config.libraryPath` (never the body); the target
+// rides a `:target` path segment (a closed enum value — no `/`, so it's a safe
+// segment, unlike the working-file ref path that needed `?path=`). A bad
+// `:target` value → library_invalid_target (422) in-core. Reads
+// (`read_primitive_target` / `list_overlays`) skip the write lock and take the
+// default read timeout. Writes (`write_overlay` / `remove_overlay`) get
+// WRITE_TIMEOUT + SIGKILL but NO ledger mutex (Decision 2): overlays write only
+// `working/targets/<target>/<primary>` — gitignored, single-file-atomic in-core,
+// never installs.json and never a git commit. A malformed overlay blob returns
+// library_parse_error (the in-core parse-validate fires BEFORE the atomic write,
+// so disk is unchanged) — 502 today, exactly as the Slice 3 primary save
+// (`save_working`) treats the same code; the editor surfaces it inline, and we
+// don't fork a shared code's status.
+// ---------------------------------------------------------------------------
+
+interface OverlayWriteBody {
+  content?: unknown;
+}
+
+/** Read: the merged primary for a (primitive, target) pair + has_overlay. A
+ *  target outside the primitive's allowed_targets → library_target_not_allowed
+ *  (422); a bad :target value → library_invalid_target (422). No lock. */
+export async function buildReadPrimitiveTarget(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  target: string,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "read_primitive_target",
+    { path: config.libraryPath, kind, name, target },
+    { validate: parseTargetView },
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** Write: save the PRIMARY overlay file for a target (parse-validated in-core
+ *  before the atomic write; malformed → library_parse_error, disk unchanged).
+ *  Writes only working/targets/<target>/<primary> — no commit, no ledger. */
+export async function buildWriteOverlay(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  target: string,
+  body: OverlayWriteBody,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "write_overlay",
+    { path: config.libraryPath, kind, name, target, content: body.content },
+    { timeoutMs: WRITE_TIMEOUT_MS },
+  );
+  return r.ok ? { status: 200, body: {} } : errorResult(r.error);
+}
+
+/** Write: remove the PRIMARY overlay file for a target (idempotent in-core; the
+ *  merged view reverts to the base passthrough). No commit, no ledger. */
+export async function buildRemoveOverlay(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  target: string,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "remove_overlay",
+    { path: config.libraryPath, kind, name, target },
+    { timeoutMs: WRITE_TIMEOUT_MS },
+  );
+  return r.ok ? { status: 200, body: {} } : errorResult(r.error);
+}
+
+/** Read: every target's overlay surface (one {target, paths} per target that
+ *  carries ≥1 overlay file). No lock, default read timeout. */
+export async function buildListOverlays(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "list_overlays",
+    { path: config.libraryPath, kind, name },
+    { validate: parseOverlayLists },
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+// ---------------------------------------------------------------------------
+// Metadata-editing handler (metadata-editing slice)
+//
+// The library ROOT is always `config.libraryPath` (never the body); the body
+// supplies the editable subset (`allowed_targets` / `display_name` / `author` +
+// the optional `discard_orphan_overlays` confirm). Like publish/set-current it
+// returns a commit-bearing result at HTTP 200 even on a commit failure: unlike
+// the overlay writes, `metadata.yaml` is git-TRACKED, so the write COMMITS
+// (Slice 4's posture) — `committed`/`commit_error` ride back as a cue, never an
+// error toast. WRITE_TIMEOUT + SIGKILL but NO ledger mutex (no installs.json
+// touch; git's index.lock serializes commits, exactly like publish). Dropping a
+// target that still has overlay files → library_target_removed_with_overlays
+// (409): the UI confirms and re-issues with `discard_orphan_overlays: true`. The
+// error PAYLOAD (the dropped paths) stays server-side (m4 / never-forward-
+// detail); the UI names the affected paths from its already-loaded list_overlays
+// data, so the confirm copy needs no payload forwarding (O1, resolved: derive
+// client-side).
+// ---------------------------------------------------------------------------
+
+interface MetadataWriteBody {
+  allowed_targets?: unknown;
+  display_name?: unknown;
+  author?: unknown;
+  discard_orphan_overlays?: unknown;
+}
+
+/** Write: replace a primitive's editable metadata fields, then commit. Dropping
+ *  a target with overlay files → library_target_removed_with_overlays (409),
+ *  resolved by re-issuing with `discard_orphan_overlays: true`. A kind-illegal
+ *  target → library_target_not_allowed_for_kind (422). Returns the freshly-
+ *  written metadata + the advisory commit result at 200 even on a commit fail. */
+export async function buildUpdateMetadata(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  body: MetadataWriteBody,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "update_metadata",
+    {
+      path: config.libraryPath,
+      kind,
+      name,
+      allowed_targets: body.allowed_targets,
+      display_name: typeof body.display_name === "string" ? body.display_name : null,
+      author: typeof body.author === "string" ? body.author : null,
+      discard_orphan_overlays: body.discard_orphan_overlays === true,
+    },
+    { validate: parseMetadataUpdateResult, timeoutMs: WRITE_TIMEOUT_MS },
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -759,5 +923,60 @@ export function registerLibraryRoutes(
   );
   app.post("/api/library/primitives/:kind/:name/revert", async (c) =>
     json(c, await buildRevertToVersion(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
+  );
+  // Target-overlay reads + writes. The merged-view read carries the target as a
+  // `:target` path segment (a closed enum value, no `/`); the overlays-list read
+  // is per-primitive. Both skip the write lock. The writes (`PUT`/`DELETE
+  // …/overlay`) get WRITE_TIMEOUT + SIGKILL but no ledger mutex (Decision 2 —
+  // they touch only gitignored working/targets/, never installs.json, never a
+  // commit). Each inherits server.ts's loopback Host + Origin guard. Mounted
+  // AFTER the `/working-files*` and `/versions*` routes; `/targets` and
+  // `/overlays` are distinct path prefixes — no collision.
+  app.get("/api/library/primitives/:kind/:name/targets/:target", async (c) =>
+    json(
+      c,
+      await buildReadPrimitiveTarget(
+        loadConfig(),
+        c.req.param("kind"),
+        c.req.param("name"),
+        c.req.param("target"),
+      ),
+    ),
+  );
+  app.put("/api/library/primitives/:kind/:name/targets/:target/overlay", async (c) =>
+    json(
+      c,
+      await buildWriteOverlay(
+        loadConfig(),
+        c.req.param("kind"),
+        c.req.param("name"),
+        c.req.param("target"),
+        await readJson(c),
+      ),
+    ),
+  );
+  app.delete("/api/library/primitives/:kind/:name/targets/:target/overlay", async (c) =>
+    json(
+      c,
+      await buildRemoveOverlay(
+        loadConfig(),
+        c.req.param("kind"),
+        c.req.param("name"),
+        c.req.param("target"),
+      ),
+    ),
+  );
+  app.get("/api/library/primitives/:kind/:name/overlays", async (c) =>
+    json(c, await buildListOverlays(loadConfig(), c.req.param("kind"), c.req.param("name"))),
+  );
+  // Metadata edit (write; commits — metadata.yaml is git-tracked, unlike the
+  // gitignored overlays above). WRITE_TIMEOUT + SIGKILL, no ledger mutex.
+  // Returns a MetadataUpdateResult ({metadata, committed, commit_error}) at 200
+  // even on a commit failure (Slice 4's posture). Dropping a target with overlay
+  // files → 409; the UI confirms and re-PUTs with discard_orphan_overlays. The
+  // `/metadata` segment is distinct from /working-files, /versions, /targets,
+  // /overlays — no collision. Inherits server.ts's loopback Host + Origin guard.
+  app.put("/api/library/primitives/:kind/:name/metadata", async (c) =>
+    json(c, await buildUpdateMetadata(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
   );
 }

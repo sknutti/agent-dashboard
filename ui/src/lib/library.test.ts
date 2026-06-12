@@ -7,7 +7,9 @@ import {
   dirtyCue,
   editorDirtyCue,
   publishStateCue,
+  metadataSaveCue,
   currentVersionCue,
+  overlayCue,
   gitSummary,
   driftByTarget,
   installStateFor,
@@ -127,6 +129,27 @@ describe("publishStateCue (non-fatal commit contract; colorblind-safe)", () => {
   });
 });
 
+describe("metadataSaveCue (post-save commit state; colorblind-safe)", () => {
+  test("three distinct states distinguishable by label + glyph, never bare red/green", () => {
+    const committed = metadataSaveCue(true, null);
+    const failed = metadataSaveCue(false, "Author identity unknown");
+    const noCommit = metadataSaveCue(false, null);
+    const labels = [committed.label, failed.label, noCommit.label];
+    expect(new Set(labels).size).toBe(3);
+    // The commit-failed state is the only amber (attention) one — it is NOT a
+    // hard error; the edit landed, only the advisory git commit failed.
+    expect(failed.tone).toBe("amber");
+    expect(committed.tone).not.toBe("amber");
+    expect(noCommit.tone).not.toBe("amber");
+    for (const c of [committed, failed, noCommit]) {
+      expect(c.glyph.length).toBeGreaterThan(0);
+      expect(["amber", "cyan", "default"]).toContain(c.tone);
+    }
+    // A non-git library (no commit, no error) is a plain success, not a warning.
+    expect(noCommit.label).toBe("saved");
+  });
+});
+
 describe("currentVersionCue (current vs past; colorblind-safe)", () => {
   test("current vs past differ by label + glyph; current is cyan, never green", () => {
     const cur = currentVersionCue("v2", "v2");
@@ -138,6 +161,24 @@ describe("currentVersionCue (current vs past; colorblind-safe)", () => {
     expect(cur.tone).toBe("cyan"); // CVD-safe accent, not green
     // A null current (no pin) reads everything as past.
     expect(currentVersionCue("v1", null).label).toBe("past version");
+  });
+});
+
+describe("overlayCue (delta vs. base passthrough; colorblind-safe)", () => {
+  test("overlay vs base differ by label + glyph; overlay is cyan, never green", () => {
+    const overlay = overlayCue(true);
+    const base = overlayCue(false);
+    expect(overlay.label).toBe("overlay");
+    expect(base.label).toBe("base (no overlay)");
+    // The label makes "delta, not the full base file" explicit, not color-coded.
+    expect(overlay.label).not.toBe(base.label);
+    // Distinguishable WITHOUT color: distinct, non-empty glyphs.
+    expect(overlay.glyph).not.toBe(base.glyph);
+    expect(overlay.glyph.length).toBeGreaterThan(0);
+    expect(base.glyph.length).toBeGreaterThan(0);
+    // CVD-safe accent, never a bare red/green.
+    expect(overlay.tone).toBe("cyan");
+    expect(["amber", "cyan", "default"]).toContain(base.tone);
   });
 });
 

@@ -8,6 +8,8 @@
   import Icon from "../lib/components/ui/Icon.svelte";
   import EmptyState from "../lib/components/ui/EmptyState.svelte";
   import WorkingFileEditor from "../lib/components/WorkingFileEditor.svelte";
+  import TargetOverlayPane from "../lib/components/TargetOverlayPane.svelte";
+  import MetadataForm from "../lib/components/MetadataForm.svelte";
   import { resource } from "../lib/resource.svelte";
   import {
     getLibraryStatus,
@@ -204,6 +206,33 @@
     primitivesRes.reload();
   }
 
+  // After a metadata save: reload the detail (re-drives the overlay tab strip +
+  // the rail from the new allowed_targets — the Slice 5 forward coupling) and the
+  // primitive list (the author column may have changed). The drift read too: a
+  // narrowed allowed_targets can orphan an install. Event-handler driven, no effect.
+  function onMetadataSaved(): void {
+    detailRes.reload();
+    primitivesRes.reload();
+    driftDetailRes.reload();
+    driftBatchRes.reload();
+  }
+
+  // Decision 3 — an overlay edit changes what a FUTURE install deploys; it does
+  // NOT re-install, so an already-installed target reads as drifted on the next
+  // scan. We don't re-implement drift (the existing scan detects it); we just
+  // EXPLAIN it: track which targets had an overlay edited this session and, if
+  // such a target carries an install record, show an inline reinstall note next
+  // to its install row. Reset when the selection changes (the set is keyed to the
+  // open primitive). Event-handler driven (no effect): set on the pane's callback.
+  let overlayEditedTargets = $state<Set<LibraryTarget>>(new Set());
+  function onOverlayWrite(target: LibraryTarget): void {
+    overlayEditedTargets = new Set(overlayEditedTargets).add(target);
+    // The on-disk install now differs from the edited merged source — refresh the
+    // drift read so the row's state cue catches up alongside the explanation.
+    driftDetailRes.reload();
+    driftBatchRes.reload();
+  }
+
   /** Map a route-local LibraryApiError to a friendly notice (detail is withheld
    *  server-side; we only ever see code + safe message). */
   function noticeFor(e: unknown, fallback: string): string {
@@ -261,6 +290,7 @@
     publishNotes = "";
     publishResult = null;
     versionNotice = null;
+    overlayEditedTargets = new Set(); // the reinstall note is scoped to the open primitive
   }
 
   /** Publish the SAVED working copy as a new immutable version. Refuses while the
@@ -662,6 +692,24 @@
             <Badge tone={headCue.tone}>{headCue.glyph} {headCue.label}</Badge>
           </header>
 
+          <!-- Editable metadata (display_name / author / allowed_targets) — keyed
+               on the primitive so it REMOUNTS on selection change (no-useEffect
+               buffer reset). Target checkboxes are constrained to the kind's
+               matrix (Decision 4). Editing allowed_targets re-drives the overlay
+               tab strip below after the post-save detail reload. -->
+          <section class="metadata-section">
+            <h4>Metadata</h4>
+            {#key detail.kind + "/" + detail.name}
+              <MetadataForm
+                kind={detail.kind}
+                name={detail.name}
+                metadata={detail.metadata}
+                kindAllowedTargets={kindInfo.data?.[detail.kind]?.allowed_targets ?? []}
+                onSaved={onMetadataSaved}
+              />
+            {/key}
+          </section>
+
           <div class="doc-tabs">
             <span class="active">Working copy</span>
             <span>Versions</span>
@@ -680,6 +728,28 @@
               onWrite={reloadAfterWorkingWrite}
             />
           {/key}
+
+          <!-- Per-target overlays: edit the target-specific primary delta that
+               shadows the base primary at install. Tabs are driven by
+               allowed_targets (a disallowed target 422s in-core). Keyed on the
+               primitive so it remounts on selection change (no-useEffect reset). -->
+          {#if detail.metadata.allowed_targets.length}
+            <section class="overlays-section">
+              <h4>Target overlays</h4>
+              <p class="muted-line">
+                Craft a target-specific version of the primary file. An overlay shadows the base primary
+                for just that target at install — leave a target without one to install the base.
+              </p>
+              {#key detail.kind + "/" + detail.name}
+                <TargetOverlayPane
+                  kind={detail.kind}
+                  name={detail.name}
+                  allowedTargets={detail.metadata.allowed_targets}
+                  {onOverlayWrite}
+                />
+              {/key}
+            </section>
+          {/if}
 
           <div class="versions">
             <div class="versions-head">
@@ -802,6 +872,7 @@
                 {#each targetRows as row (row.target)}
                   {@const cue = stateCue(row.state)}
                   {@const busy = isPending(detail.kind, detail.name, row.target)}
+                  {@const overlayStale = overlayEditedTargets.has(row.target) && row.installed !== null}
                   <div class="target-row" data-target={row.target}>
                     <span class="target-name mono">{row.target}</span>
                     <Badge tone={cue.tone}>{cue.glyph} {cue.label}</Badge>
@@ -817,6 +888,15 @@
                         <button type="button" class="act danger" disabled={busy} onclick={() => doUninstall(detail.kind, detail.name, row.target)}>Uninstall</button>
                       {/if}
                     </div>
+                    {#if overlayStale}
+                      <!-- Decision 3: an overlay edit doesn't re-install; explain the
+                           resulting drift + point at the existing Update/reinstall action. -->
+                      <p class="overlay-stale-note" role="status">
+                        <Icon name="alert" size={12} />
+                        The <span class="mono">{row.target}</span> overlay changed — this won’t reach the installed
+                        copy until you <strong>Update</strong> it, and it’ll read as drifted until then.
+                      </p>
+                    {/if}
                   </div>
                 {/each}
               </div>
@@ -1386,18 +1466,29 @@
   .route-notice.warn {
     border-left-color: var(--amber);
   }
-  .targets-section {
+  .targets-section,
+  .overlays-section {
     margin-top: 16px;
     display: grid;
     gap: 8px;
   }
-  .targets-section h4 {
+  .metadata-section {
+    margin-top: 14px;
+    display: grid;
+    gap: 8px;
+  }
+  .targets-section h4,
+  .metadata-section h4,
+  .overlays-section h4 {
     margin: 0 0 2px;
     color: var(--text-subtle);
     font-family: var(--font-mono);
     font-size: 10.5px;
     font-weight: 500;
     text-transform: uppercase;
+  }
+  .overlays-section .muted-line {
+    margin: 0 0 4px;
   }
   .target-rows {
     display: grid;
@@ -1426,6 +1517,22 @@
     display: flex;
     gap: 6px;
     justify-content: flex-end;
+  }
+  /* Decision 3 — the post-overlay-edit reinstall note spans the whole row.
+     Amber tone + an alert glyph + the explanatory text carry the meaning; never
+     bare red/green (Scott is red/green colorblind). */
+  .overlay-stale-note {
+    grid-column: 1 / -1;
+    margin: 2px 0 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--amber, #d08b1d) 12%, transparent);
+    color: var(--text);
+    font-size: 11.5px;
+    line-height: 1.4;
   }
   .act {
     padding: 4px 11px;

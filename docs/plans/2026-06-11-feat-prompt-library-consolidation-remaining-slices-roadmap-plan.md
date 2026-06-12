@@ -5,7 +5,8 @@
 - **ADR:** [docs/adr/0007-prompt-library-rust-command-bridge.md](../adr/0007-prompt-library-rust-command-bridge.md) (consolidation track) + [docs/adr/0008-dashboard-replaces-standalone-app-install-state-ownership.md](../adr/0008-dashboard-replaces-standalone-app-install-state-ownership.md) (install-state ownership). This is a **roadmap**, not a single-slice plan: each slice below earns its own deepened plan doc before implementation.
 - **Track doc:** [docs/library-consolidation-track.md](../library-consolidation-track.md) — "Full consolidation, staged."
 - **Glossary:** [CONTEXT.md](../../CONTEXT.md) — Library layer · Primitive · Kind · Target · Working copy · Version · Overlay · Install record · Drift · Reimport · Bootstrap
-- **Builds on (shipped):** [read-only slice](2026-06-11-feat-prompt-library-consolidation-readonly-slice-plan.md) (PR #4) and [install/drift write-flow slice](2026-06-11-feat-prompt-library-install-drift-slice-plan.md) (PR #5). Every seam those created — the bridge dispatch + envelope, `library_bridge.ts`/`library_models.ts`/`library_config.ts`/`library_routes.ts`, the `resource()` UI pattern, the Variant B Library route — is **extended, not rebuilt**, by every slice below.
+- **Builds on (shipped):** [read-only slice](2026-06-11-feat-prompt-library-consolidation-readonly-slice-plan.md) (PR #4), [install/drift write-flow slice](2026-06-11-feat-prompt-library-install-drift-slice-plan.md) (PR #5), [working-copy/editor slice — Slice 3](2026-06-11-feat-prompt-library-working-copy-editor-slice-plan.md) (PR #6, `66905f6`), and [versioning/publishing slice — Slice 4](2026-06-12-feat-prompt-library-versioning-publishing-slice-plan.md) (`39933b8`). Every seam those created — the bridge dispatch + envelope, `library_bridge.ts`/`library_models.ts`/`library_config.ts`/`library_routes.ts`, the `resource()` UI pattern, the Variant B Library route, the working-copy editor buffer + version store — is **extended, not rebuilt**, by every slice below.
+- **Shipped-status (updated 2026-06-12):** Slices **3 (working copy/editor)**, **4 (versioning/publishing)**, **5 (target overlays)**, and **6 (metadata editing)** are **DONE** — see the per-slice headers below. Slice 6's deepened plan is [2026-06-12-...-metadata-editing-slice-plan.md](2026-06-12-feat-prompt-library-metadata-editing-slice-plan.md). Remaining unbuilt: 7, 9, L, 8, 2, 10.
 - **Reference repo:** `~/side_projects/playground/prompt-library` — the standalone Tauri app is the reference implementation for every remaining feature; `src-tauri/src/commands.rs` holds the command bodies to port (minus `AppHandle`/`State`), and `crates/{core,git,secrets}` are already imported into this repo under `crates/`.
 
 ## Purpose of this document
@@ -53,14 +54,15 @@ This document sequences that work into **independently shippable vertical slices
    ┌──────────────────────────────┴───────────────────────────────┐
    │ AUTHORING (network-free, secrets-free — same invariants as #5)│
    │                                                                │
-   3. Working copy / editor ──> 4. Versioning / publishing         │
+   [shipped] 3. Working copy/editor ──> [shipped] 4. Versioning/pub │
    │         │                        │                            │
-   │         │                        ├──> 5. Target overlays       │
-   │         └──> 6. Metadata editing │                            │
+   │         │                        ├──> [shipped] 5. Target ovl. │
+   │         └──> [shipped] 6. Metadata editing                    │
    │                                  └──> 7. Reimport-from-drift   │
    │   (independent, parallelizable: ) 9. Search                    │
    │   (independent, parallelizable: ) L. Primitive lifecycle*      │
    └────────────────────────────────────────────────────────────────┘
+   Legend: [shipped] = built + gated green (3/4 merged; 5 on its branch)
                                   │
    ┌──────────────────────────────┴───────────────────────────────┐
    │ NETWORK + SECRETS (breaks the secrets-free invariant, once)   │
@@ -77,7 +79,9 @@ This document sequences that work into **independently shippable vertical slices
 
 ---
 
-## Slice 3: Working copy / editor
+## Slice 3: Working copy / editor — ✅ SHIPPED (PR #6, `66905f6`)
+
+> **Status:** Done and merged. Deepened plan: [2026-06-11-...-working-copy-editor-slice-plan.md](2026-06-11-feat-prompt-library-working-copy-editor-slice-plan.md). Landed as Phases 1–4 (`4d80ea9`→`a202d6b`) + post-review fixes (`7fcbee7` save-race/createFile lock, `bf9ab09` case-insensitive primary-filename security guard). Seams now live: 7 bridge dispatch arms (`main.rs`), `WorkingFileEntry`/`WorkingFileBytes` models + parsers, `/api/library` working-file routes, `WorkingFileEditor.svelte`. The objective and detail below are retained as the historical record.
 
 - **Objective:** Make the Library route's central pane an **editor**, not a viewer. Read, create, save, rename, and delete working-copy files for the selected Primitive, through the Rust core.
 - **Why first among authoring:** Every other authoring slice (versioning, overlays, metadata, lifecycle) edits or snapshots the working copy. The editor is the substrate; nothing downstream is testable end-to-end without it. It is also entirely **network-free + secrets-free**, so it ships under the exact invariants the install slice already proved.
@@ -92,7 +96,9 @@ This document sequences that work into **independently shippable vertical slices
 
 ---
 
-## Slice 4: Versioning / publishing
+## Slice 4: Versioning / publishing — ✅ SHIPPED (`39933b8`)
+
+> **Status:** Done and merged. Deepened plan: [2026-06-12-...-versioning-publishing-slice-plan.md](2026-06-12-feat-prompt-library-versioning-publishing-slice-plan.md). The publish-atomicity decision (snapshot-then-commit, not atomic across the commit step) and the commit-on-write posture were settled here — **this is the decision Slice L's git-commit half consumes.** The objective and decisions below are retained as the historical record.
 
 - **Objective:** Cut a new **Version** from the working copy (snapshot), set the current version, read a historical version, and **publish** (snapshot + set-current + git commit). This is the first slice whose single user action is a **multi-step, multi-file Rust write**.
 - **Depends on:** Slice 3 (publish snapshots the working copy the editor produces).
@@ -107,7 +113,9 @@ This document sequences that work into **independently shippable vertical slices
 
 ---
 
-## Slice 5: Target overlays
+## Slice 5: Target overlays — ✅ SHIPPED
+
+> **Status:** Done. Deepened plan: [2026-06-12-...-target-overlays-slice-plan.md](2026-06-12-feat-prompt-library-target-overlays-slice-plan.md) (all acceptance criteria checked). Landed as 3 phases on `feat/library-target-overlays`: bridge commands (4 sync dispatch arms, zero new error arms — `TargetNotAllowed`→422 already mapped), `/api/library/targets/:target` + `/overlays` routes (writes get WRITE_TIMEOUT + SIGKILL, no ledger mutex — gitignored `working/targets/`, no commit), and `TargetOverlayPane.svelte` (per-`allowed_targets` tab strip, `overlayCue` cyan ◆ vs default ○, Decision-3 reinstall/drift note). Scoped to **primary-file overlays only** (the reference has no per-ref overlay command). The objective and risks below are retained as the planning frame.
 
 - **Objective:** Read, write, list, and remove **per-target overlay** bytes — the Target-specific deltas merged over the base working copy at install time.
 - **Depends on:** Slice 3 (overlays layer over working-copy files); ideally lands after Slice 4 (overlays are conceptually a version-adjacent authoring concern), but is **independently shippable** once the editor exists.
@@ -118,7 +126,9 @@ This document sequences that work into **independently shippable vertical slices
 
 ---
 
-## Slice 6: Metadata editing
+## Slice 6: Metadata editing — ✅ SHIPPED (2026-06-12)
+
+> **Status:** Done. Deepened plan: [2026-06-12-...-metadata-editing-slice-plan.md](2026-06-12-feat-prompt-library-metadata-editing-slice-plan.md) (all acceptance criteria checked). Landed as 3 phases on `feat/library-target-overlays`: bridge `update_metadata` (async — it COMMITS, unlike Slice 5's overlays, since `metadata.yaml` is git-tracked; one new `map_core_error` arm `TargetRemovedWithOverlays`→409, `TargetNotAllowedForKind`→422 already mapped), `PUT /api/library/primitives/:kind/:name/metadata` (WRITE_TIMEOUT + SIGKILL, no ledger mutex, commit-non-fatal `{metadata, committed, commit_error}` like publish), and `MetadataForm.svelte` (kind-constrained target checkboxes, two-phase orphan-overlay confirm naming paths from the already-loaded `listOverlays`, post-save detail reload that re-drives the Slice 5 overlay tabs). The objective and risks below are retained as the planning frame.
 
 - **Objective:** Edit a Primitive's metadata (description, allowed targets, author, kind-specific fields) through `update_primitive_metadata`, with the same validation the reference enforces.
 - **Depends on:** Slice 3 (metadata lives alongside the working copy; the detail resource is the read seam from the read-only slice).
@@ -236,8 +246,6 @@ This is **not one slice** — it is a set of cross-cutting redesigns that **land
 - Reference crates (already imported as `crates/{core,git,secrets}`): `core/src/{working_files,version_store,overlay_merge,metadata,scaffold,rename,import_path,find,reimport,bootstrap,bootstrap_scan,bootstrap_session}.rs`; `git/src/{git_ops,conflict,push_gate,secret_scan,askpass}.rs`; `secrets/src/keychain.rs`
 - Dashboard seams (extend, don't rewrite): `crates/prompt-library-bridge/src/main.rs` (dispatch `:103-117`, `Cargo.toml:12-14` secrets-free invariant), `scripts/library_{bridge,models,config,migration,routes}.ts`, `scripts/paths.ts`, `scripts/server.ts:63-101`, `ui/src/lib/{api.ts,library.ts}`, `ui/src/routes/Library.svelte`
 
-## Next step
+## Next step (updated 2026-06-12)
 
-The roadmap is the map; each slice still earns a deepened plan before code. **Recommended ordering:** start the next deepened plan with **Slice 3 (working copy / editor)** — it unblocks the whole authoring chain, is fully network-free + secrets-free (so it ships under the proven install-slice invariants), and is the substrate every other authoring slice builds on. Interleave **Slice 9 (search)** as an independent low-risk slice whenever a palate-cleanser is wanted. Hold **Slice 8 (git remote sync)** for last among features and give it the heaviest deepening (dedicated security agent) — it is the sole network + secrets break in the whole consolidation.
-
-Recommended: `/workflows:plan` Slice 3, or `/workflows:deepen-plan docs/plans/2026-06-11-feat-prompt-library-consolidation-remaining-slices-roadmap-plan.md` if you want this roadmap's slice boundaries or the open architectural questions pinned further before cutting the first per-slice plan.
+Slices 3, 4, 5, and 6 have shipped; the authoring substrate (editor + version store + per-target overlays + metadata editing) is live. The parallelizable authoring slices remaining are **7 (reimport)**, **9 (search)**, and **L (lifecycle)** — interleave **Slice 9 (search)** as the low-risk palate-cleanser whenever wanted. **Slice 7 (reimport-from-drift)** is the natural next: it depends on Slice 4 (reimport *is* a version snapshot) and the shipped drift slice, and closes the install round-trip by pulling on-disk drift back into the Library as a new version; its UI deliverable is the three-distinguishable-actions copy (Acknowledge / Reinstall / Reimport) on a `Modified` drift row. Hold **Slice 8 (git remote sync)** for last among features and give it the heaviest deepening (dedicated security agent) — it is the sole network + secrets break in the whole consolidation.
