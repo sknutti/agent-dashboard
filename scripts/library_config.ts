@@ -15,13 +15,30 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { CONFIG_DIR, DEFAULT_BRIDGE_PATH } from "./paths.ts";
+import {
+  CONFIG_DIR,
+  DEFAULT_BRIDGE_PATH,
+  DEFAULT_INSTALLS_PATH,
+  DEFAULT_LIBRARY_HOME,
+} from "./paths.ts";
 
 export interface LibraryConfig {
   /** The chosen Library directory, or null when unconfigured. */
   libraryPath: string | null;
   /** Resolved path to the prompt-library-bridge binary (always set). */
   bridgePath: string;
+  /**
+   * Dashboard-owned install ledger path (always set). The bridge writes install
+   * records here; the route layer injects it so an HTTP body can never redirect
+   * a write (D7). Defaults to `DATA_DIR/installs.json`.
+   */
+  installsPath: string;
+  /**
+   * Install destination root (always set) — the home under which `~/.claude`,
+   * `~/.pi`, `~/.codex` are written. Defaults to the user home; tests pin a temp
+   * root via `CC_LIBRARY_HOME`.
+   */
+  home: string;
 }
 
 type Env = Record<string, string | undefined>;
@@ -45,8 +62,14 @@ export function loadLibraryConfig(
   const libraryPath = str(env.CC_LIBRARY_PATH) ?? str(cfg?.library_path) ?? null;
   const bridgePath =
     str(env.CC_LIBRARY_BRIDGE_PATH) ?? str(cfg?.bridge_path) ?? DEFAULT_BRIDGE_PATH;
+  // installsPath/home: same CC_LIBRARY_* > config > default precedence. Both are
+  // always set (never null) — the install destination must resolve to *some*
+  // concrete path; a non-string config value falls through to the safe default.
+  const installsPath =
+    str(env.CC_LIBRARY_INSTALLS_PATH) ?? str(cfg?.installs_path) ?? DEFAULT_INSTALLS_PATH;
+  const home = str(env.CC_LIBRARY_HOME) ?? str(cfg?.home) ?? DEFAULT_LIBRARY_HOME;
 
-  return { libraryPath, bridgePath };
+  return { libraryPath, bridgePath, installsPath, home };
 }
 
 export interface BridgeHealth {

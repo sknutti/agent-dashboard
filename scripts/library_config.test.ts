@@ -2,8 +2,8 @@ import { expect, test, describe } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadLibraryConfig, checkLibraryBridge } from "./library_config.ts";
-import { DEFAULT_BRIDGE_PATH } from "./paths.ts";
+import { loadLibraryConfig, checkLibraryBridge, type LibraryConfig } from "./library_config.ts";
+import { DEFAULT_BRIDGE_PATH, DEFAULT_INSTALLS_PATH, DEFAULT_LIBRARY_HOME } from "./paths.ts";
 
 // An empty env so call-time env-override resolution is deterministic (the host
 // shell must not leak CC_LIBRARY_* into the assertions).
@@ -26,6 +26,8 @@ describe("loadLibraryConfig", () => {
       expect(loadLibraryConfig(dir, NO_ENV)).toEqual({
         libraryPath: null,
         bridgePath: DEFAULT_BRIDGE_PATH,
+        installsPath: DEFAULT_INSTALLS_PATH,
+        home: DEFAULT_LIBRARY_HOME,
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -48,6 +50,8 @@ describe("loadLibraryConfig", () => {
       expect(loadLibraryConfig(dir, NO_ENV)).toEqual({
         libraryPath: "/libs/prompts",
         bridgePath: "/opt/bridge",
+        installsPath: DEFAULT_INSTALLS_PATH,
+        home: DEFAULT_LIBRARY_HOME,
       });
     });
   });
@@ -72,6 +76,8 @@ describe("loadLibraryConfig", () => {
       expect(loadLibraryConfig(dir, NO_ENV)).toEqual({
         libraryPath: null,
         bridgePath: DEFAULT_BRIDGE_PATH,
+        installsPath: DEFAULT_INSTALLS_PATH,
+        home: DEFAULT_LIBRARY_HOME,
       });
     });
   });
@@ -91,25 +97,89 @@ describe("loadLibraryConfig", () => {
   });
 });
 
+describe("loadLibraryConfig — install destination (installsPath + home)", () => {
+  test("a missing file yields the default installs path + user home", () => {
+    const dir = mkdtempSync(join(tmpdir(), "library-empty-"));
+    try {
+      const c = loadLibraryConfig(dir, NO_ENV);
+      expect(c.installsPath).toBe(DEFAULT_INSTALLS_PATH);
+      expect(c.home).toBe(DEFAULT_LIBRARY_HOME);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the default installs path is DATA_DIR/installs.json", () => {
+    expect(DEFAULT_INSTALLS_PATH).toMatch(/\/installs\.json$/);
+  });
+
+  test("reads installs_path and home from the file", () => {
+    withYaml(`installs_path: /data/installs.json\nhome: /home/ada\n`, (dir) => {
+      const c = loadLibraryConfig(dir, NO_ENV);
+      expect(c.installsPath).toBe("/data/installs.json");
+      expect(c.home).toBe("/home/ada");
+    });
+  });
+
+  test("env CC_LIBRARY_INSTALLS_PATH overrides the file's installs_path", () => {
+    withYaml(`installs_path: /from/file.json\n`, (dir) => {
+      const env = { CC_LIBRARY_INSTALLS_PATH: "/from/env.json" };
+      expect(loadLibraryConfig(dir, env).installsPath).toBe("/from/env.json");
+    });
+  });
+
+  test("env CC_LIBRARY_HOME overrides the file's home (temp install root for tests)", () => {
+    withYaml(`home: /from/file\n`, (dir) => {
+      const env = { CC_LIBRARY_HOME: "/from/env" };
+      expect(loadLibraryConfig(dir, env).home).toBe("/from/env");
+    });
+  });
+
+  test("a non-string installs_path / home fall back to defaults, never a coerced value", () => {
+    withYaml(`installs_path:\n  - not\n  - a\n  - string\nhome: 12345\n`, (dir) => {
+      const c = loadLibraryConfig(dir, NO_ENV);
+      expect(c.installsPath).toBe(DEFAULT_INSTALLS_PATH);
+      expect(c.home).toBe(DEFAULT_LIBRARY_HOME);
+    });
+  });
+
+  test("a malformed file never throws — installs destination collapses to safe defaults", () => {
+    withYaml(`installs_path: [unterminated\n: : :`, (dir) => {
+      const c = loadLibraryConfig(dir, NO_ENV);
+      expect(c.installsPath).toBe(DEFAULT_INSTALLS_PATH);
+      expect(c.home).toBe(DEFAULT_LIBRARY_HOME);
+    });
+  });
+});
+
 describe("checkLibraryBridge (doctor)", () => {
   const present = () => true;
   const absent = () => false;
 
+  // checkLibraryBridge only reads libraryPath/bridgePath; fill the install
+  // destination with placeholders so the literal satisfies LibraryConfig.
+  const cfg = (libraryPath: string | null, bridgePath: string): LibraryConfig => ({
+    libraryPath,
+    bridgePath,
+    installsPath: "/data/installs.json",
+    home: "/home/test",
+  });
+
   test("configured library + missing bridge binary warns with a cargo build hint", () => {
-    const r = checkLibraryBridge({ libraryPath: "/libs/x", bridgePath: "/repo/target/debug/prompt-library-bridge" }, absent);
+    const r = checkLibraryBridge(cfg("/libs/x", "/repo/target/debug/prompt-library-bridge"), absent);
     expect(r.status).toBe("warn");
     expect(r.detail).toContain("cargo build");
   });
 
   test("configured library + built bridge is ok", () => {
-    const r = checkLibraryBridge({ libraryPath: "/libs/x", bridgePath: "/repo/target/debug/prompt-library-bridge" }, present);
+    const r = checkLibraryBridge(cfg("/libs/x", "/repo/target/debug/prompt-library-bridge"), present);
     expect(r.status).toBe("ok");
     expect(r.detail).toContain("/repo/target/debug/prompt-library-bridge");
   });
 
   test("an unconfigured library is ok (the feature is optional), never a warning", () => {
     // bridge presence is irrelevant when no library is configured
-    const r = checkLibraryBridge({ libraryPath: null, bridgePath: "/whatever" }, absent);
+    const r = checkLibraryBridge(cfg(null, "/whatever"), absent);
     expect(r.status).toBe("ok");
     expect(r.detail).toMatch(/not configured/i);
   });

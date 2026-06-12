@@ -17,8 +17,18 @@ import type { LibraryConfig } from "./library_config.ts";
 const FIX = join(import.meta.dir, "fixtures", "bridge");
 const data = (name: string) => JSON.parse(readFileSync(join(FIX, `${name}.json`), "utf8")).data;
 
-const CONFIGURED: LibraryConfig = { libraryPath: "/libs/x", bridgePath: "/bin/bridge" };
-const UNCONFIGURED: LibraryConfig = { libraryPath: null, bridgePath: "/bin/bridge" };
+const CONFIGURED: LibraryConfig = {
+  libraryPath: "/libs/x",
+  bridgePath: "/bin/bridge",
+  installsPath: "/data/installs.json",
+  home: "/home/test",
+};
+const UNCONFIGURED: LibraryConfig = {
+  libraryPath: null,
+  bridgePath: "/bin/bridge",
+  installsPath: "/data/installs.json",
+  home: "/home/test",
+};
 
 // Stubs standing in for runBridge — the route logic is tested with NO subprocess.
 const okRun = (d: unknown): typeof runBridge => (async () => ({ ok: true, data: d })) as any;

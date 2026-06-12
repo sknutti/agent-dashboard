@@ -74,6 +74,85 @@ export interface LibraryStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Install / uninstall / drift wire models (install-drift slice)
+//
+// Mirror the core serde structs exactly (installer.rs / drift.rs). Every
+// per-target outcome is a tagged union on `kind` (core's
+// `#[serde(tag="kind", rename_all="snake_case")]`). `CollidingContent` /
+// `Drifted` are NOT failures — they are normal results the UI uses to prompt,
+// then re-issues with `force:true`. `conflicts`/`missing` are install-relative
+// path strings (cross the boundary as strings, not Utf8PathBuf).
+// ---------------------------------------------------------------------------
+
+/** What happened for one install target. Tagged on `kind`. */
+export type TargetOutcome =
+  | { kind: "installed"; version: string }
+  | { kind: "no_op_identical"; version: string }
+  | { kind: "colliding_content"; version: string; conflicts: string[] };
+
+export interface TargetResult {
+  target: TargetName;
+  outcome: TargetOutcome;
+}
+
+/** A pre-flight abort for one target (never an overwrite). Tagged on `kind`. */
+export type InstallFailureKind =
+  | { kind: "occupied_by_unexpected_kind"; path: string; expected: string; actual: string }
+  | { kind: "io"; path: string; message: string }
+  | { kind: "other"; message: string };
+
+export interface TargetFailure {
+  target: TargetName;
+  reason: InstallFailureKind;
+}
+
+export interface InstallSummary {
+  successes: TargetResult[];
+  failures: TargetFailure[];
+}
+
+/** What happened when removing one target's install. Tagged on `kind`. */
+export type UninstallOutcome =
+  | { kind: "removed" }
+  | { kind: "not_installed" }
+  | { kind: "drifted"; conflicts: string[] };
+
+export interface TargetUninstallResult {
+  target: TargetName;
+  outcome: UninstallOutcome;
+}
+
+export interface UninstallSummary {
+  successes: TargetUninstallResult[];
+  failures: TargetFailure[];
+}
+
+/** Drift status for one `(kind, name, target)` install. Tagged on `kind`. */
+export type DriftStatus =
+  | { kind: "clean" }
+  | { kind: "modified"; conflicts: string[] }
+  | { kind: "missing"; missing: string[] };
+
+export interface DriftReport {
+  kind: Kind;
+  name: string;
+  target: TargetName;
+  status: DriftStatus;
+}
+
+/** Compact per-target install projection (hashes/mtimes stay in core). */
+export interface InstalledTarget {
+  target: TargetName;
+  installed_version: string;
+  installed_at: string;
+}
+
+/** Result of the one-time standalone→dashboard installs.json migration. */
+export interface ImportResult {
+  imported: number;
+}
+
+// ---------------------------------------------------------------------------
 // Runtime validators
 // ---------------------------------------------------------------------------
 
@@ -220,4 +299,160 @@ export function parseLibraryStatus(v: unknown): LibraryStatus {
     dirty: asNullableBool(v.dirty, "LibraryStatus.dirty"),
     unpushed: asNullableBool(v.unpushed, "LibraryStatus.unpushed"),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Install / uninstall / drift validators
+//
+// The discriminant (`kind`) is the load-bearing check: a core serde rename must
+// throw a typed BridgeShapeError here, not surface as `undefined` in the
+// conflict dialog. `target` is validated as a string and cast (the closed
+// Target enum is already enforced on the Rust side; mirrors parseTargetInfo).
+// ---------------------------------------------------------------------------
+
+function asNumber(v: unknown, what: string): number {
+  if (typeof v !== "number" || Number.isNaN(v)) fail(what);
+  return v;
+}
+
+function asTarget(v: unknown, what: string): TargetName {
+  return asString(v, what) as TargetName;
+}
+
+function parseTargetOutcome(v: unknown): TargetOutcome {
+  if (!isObject(v)) fail("TargetOutcome");
+  switch (v.kind) {
+    case "installed":
+      return { kind: "installed", version: asString(v.version, "TargetOutcome.version") };
+    case "no_op_identical":
+      return { kind: "no_op_identical", version: asString(v.version, "TargetOutcome.version") };
+    case "colliding_content":
+      return {
+        kind: "colliding_content",
+        version: asString(v.version, "TargetOutcome.version"),
+        conflicts: asStringArray(v.conflicts, "TargetOutcome.conflicts"),
+      };
+    default:
+      return fail("TargetOutcome (unknown kind)");
+  }
+}
+
+function parseInstallFailureKind(v: unknown): InstallFailureKind {
+  if (!isObject(v)) fail("InstallFailureKind");
+  switch (v.kind) {
+    case "occupied_by_unexpected_kind":
+      return {
+        kind: "occupied_by_unexpected_kind",
+        path: asString(v.path, "InstallFailureKind.path"),
+        expected: asString(v.expected, "InstallFailureKind.expected"),
+        actual: asString(v.actual, "InstallFailureKind.actual"),
+      };
+    case "io":
+      return {
+        kind: "io",
+        path: asString(v.path, "InstallFailureKind.path"),
+        message: asString(v.message, "InstallFailureKind.message"),
+      };
+    case "other":
+      return { kind: "other", message: asString(v.message, "InstallFailureKind.message") };
+    default:
+      return fail("InstallFailureKind (unknown kind)");
+  }
+}
+
+function parseTargetFailure(v: unknown): TargetFailure {
+  if (!isObject(v)) fail("TargetFailure");
+  return {
+    target: asTarget(v.target, "TargetFailure.target"),
+    reason: parseInstallFailureKind(v.reason),
+  };
+}
+
+export function parseInstallSummary(v: unknown): InstallSummary {
+  if (!isObject(v) || !Array.isArray(v.successes) || !Array.isArray(v.failures))
+    fail("InstallSummary");
+  return {
+    successes: v.successes.map((s) => {
+      if (!isObject(s)) fail("TargetResult");
+      return { target: asTarget(s.target, "TargetResult.target"), outcome: parseTargetOutcome(s.outcome) };
+    }),
+    failures: v.failures.map(parseTargetFailure),
+  };
+}
+
+function parseUninstallOutcome(v: unknown): UninstallOutcome {
+  if (!isObject(v)) fail("UninstallOutcome");
+  switch (v.kind) {
+    case "removed":
+      return { kind: "removed" };
+    case "not_installed":
+      return { kind: "not_installed" };
+    case "drifted":
+      return { kind: "drifted", conflicts: asStringArray(v.conflicts, "UninstallOutcome.conflicts") };
+    default:
+      return fail("UninstallOutcome (unknown kind)");
+  }
+}
+
+export function parseUninstallSummary(v: unknown): UninstallSummary {
+  if (!isObject(v) || !Array.isArray(v.successes) || !Array.isArray(v.failures))
+    fail("UninstallSummary");
+  return {
+    successes: v.successes.map((s) => {
+      if (!isObject(s)) fail("TargetUninstallResult");
+      return {
+        target: asTarget(s.target, "TargetUninstallResult.target"),
+        outcome: parseUninstallOutcome(s.outcome),
+      };
+    }),
+    failures: v.failures.map(parseTargetFailure),
+  };
+}
+
+function parseDriftStatus(v: unknown): DriftStatus {
+  if (!isObject(v)) fail("DriftStatus");
+  switch (v.kind) {
+    case "clean":
+      return { kind: "clean" };
+    case "modified":
+      return { kind: "modified", conflicts: asStringArray(v.conflicts, "DriftStatus.conflicts") };
+    case "missing":
+      return { kind: "missing", missing: asStringArray(v.missing, "DriftStatus.missing") };
+    default:
+      return fail("DriftStatus (unknown kind)");
+  }
+}
+
+function parseDriftReport(v: unknown): DriftReport {
+  if (!isObject(v) || !isKind(v.kind)) fail("DriftReport");
+  return {
+    kind: v.kind,
+    name: asString(v.name, "DriftReport.name"),
+    target: asTarget(v.target, "DriftReport.target"),
+    status: parseDriftStatus(v.status),
+  };
+}
+
+export function parseDriftReports(v: unknown): DriftReport[] {
+  if (!Array.isArray(v)) fail("DriftReport[]");
+  return v.map(parseDriftReport);
+}
+
+function parseInstalledTarget(v: unknown): InstalledTarget {
+  if (!isObject(v)) fail("InstalledTarget");
+  return {
+    target: asTarget(v.target, "InstalledTarget.target"),
+    installed_version: asString(v.installed_version, "InstalledTarget.installed_version"),
+    installed_at: asString(v.installed_at, "InstalledTarget.installed_at"),
+  };
+}
+
+export function parseInstalledTargets(v: unknown): InstalledTarget[] {
+  if (!Array.isArray(v)) fail("InstalledTarget[]");
+  return v.map(parseInstalledTarget);
+}
+
+export function parseImportResult(v: unknown): ImportResult {
+  if (!isObject(v)) fail("ImportResult");
+  return { imported: asNumber(v.imported, "ImportResult.imported") };
 }
