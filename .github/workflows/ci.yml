@@ -22,3 +22,16 @@ jobs:
         run: cd ui && (bun install --frozen-lockfile || bun install)
       - name: Typecheck + test + svelte-check
         run: bun run check
+
+  # Separate job: the Rust bridge is deliberately OFF the fast `check` job (cold
+  # cargo builds add minutes), but it must still compile + pass its tests — a
+  # broken or out-of-date bridge otherwise ships green and surfaces only as a
+  # runtime `unknown_command`. Builds the exact binary the dashboard invokes.
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the prompt-library bridge
+        run: cargo build -p prompt-library-bridge
+      - name: Test the Rust workspace
+        run: cargo test --workspace

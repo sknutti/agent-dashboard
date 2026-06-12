@@ -165,16 +165,65 @@ describe("checkLibraryBridge (doctor)", () => {
     home: "/home/test",
   });
 
-  test("configured library + missing bridge binary warns with a cargo build hint", () => {
+  // Injectable mtime providers (ms). The defaults hit the real fs; tests pin
+  // them so staleness is deterministic without touching disk.
+  const binAt = (ms: number | null) => () => ms;
+  const srcAt = (ms: number | null) => () => ms;
+
+  test("configured library + missing bridge binary warns with a build hint", () => {
     const r = checkLibraryBridge(cfg("/libs/x", "/repo/target/debug/prompt-library-bridge"), absent);
     expect(r.status).toBe("warn");
-    expect(r.detail).toContain("cargo build");
+    expect(r.detail).toContain("build:bridge");
   });
 
-  test("configured library + built bridge is ok", () => {
-    const r = checkLibraryBridge(cfg("/libs/x", "/repo/target/debug/prompt-library-bridge"), present);
+  test("configured library + a bridge newer than its sources is ok", () => {
+    const r = checkLibraryBridge(
+      cfg("/libs/x", "/repo/target/debug/prompt-library-bridge"),
+      present,
+      binAt(200),
+      srcAt(100),
+    );
     expect(r.status).toBe("ok");
     expect(r.detail).toContain("/repo/target/debug/prompt-library-bridge");
+  });
+
+  test("a bridge OLDER than its crate sources warns as stale (the unknown_command trap)", () => {
+    const r = checkLibraryBridge(
+      cfg("/libs/x", "/repo/target/debug/prompt-library-bridge"),
+      present,
+      binAt(100),
+      srcAt(200),
+    );
+    expect(r.status).toBe("warn");
+    expect(r.detail).toMatch(/stale/i);
+    expect(r.detail).toContain("build:bridge");
+  });
+
+  test("an equal mtime is NOT stale (no off-by-one false alarm)", () => {
+    const r = checkLibraryBridge(
+      cfg("/libs/x", "/repo/target/debug/prompt-library-bridge"),
+      present,
+      binAt(200),
+      srcAt(200),
+    );
+    expect(r.status).toBe("ok");
+  });
+
+  test("staleness fails OPEN when either mtime is unknown (no false 'stale' warning)", () => {
+    const unknownBin = checkLibraryBridge(
+      cfg("/libs/x", "/repo/target/debug/prompt-library-bridge"),
+      present,
+      binAt(null),
+      srcAt(200),
+    );
+    expect(unknownBin.status).toBe("ok");
+    const unknownSrc = checkLibraryBridge(
+      cfg("/libs/x", "/repo/target/debug/prompt-library-bridge"),
+      present,
+      binAt(200),
+      srcAt(null),
+    );
+    expect(unknownSrc.status).toBe("ok");
   });
 
   test("an unconfigured library is ok (the feature is optional), never a warning", () => {

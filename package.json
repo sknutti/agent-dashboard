@@ -13,6 +13,9 @@
     "doctor": "bun run scripts/doctor.ts",
     "sync": "bun run scripts/sync_agents.ts --once",
     "setup:otel": "bun run scripts/setup_otel.ts",
+    "setup": "bun install && bun run build",
+    "build": "bun run build:bridge && bun run build:ui",
+    "build:bridge": "cargo build -p prompt-library-bridge",
     "build:ui": "cd ui && bun install && bun run build",
     "dev:ui": "cd ui && bun run dev"
   },

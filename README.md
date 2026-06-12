@@ -13,6 +13,26 @@ outbound telemetry.
 > [`ADR-0007`](docs/adr/0007-prompt-library-rust-command-bridge.md), with the
 > actionable stages in [`docs/library-consolidation-track.md`](docs/library-consolidation-track.md).
 
+## Quickstart
+
+**Prerequisites:** [Bun](https://bun.sh) (backend + UI) and a [Rust toolchain](https://rustup.rs)
+(`cargo` — builds the Prompt Library bridge binary). Rust is only needed for the optional
+**Library** route; the Observability dashboard runs without it.
+
+```bash
+bun run setup     # install deps, build the Rust bridge, build the UI (one shot)
+bun start         # serve the dashboard on http://127.0.0.1:8765
+```
+
+`bun run setup` is `bun install && bun run build`, where **`bun run build`** compiles every runtime
+artifact: the Rust **bridge** (`build:bridge` → `cargo build -p prompt-library-bridge`, into
+`target/debug/`) and the **UI** (`build:ui` → `ui/dist`).
+
+> **After pulling changes that touch `crates/`** (the Rust bridge), rebuild it with
+> **`bun run build:bridge`** — otherwise the running server invokes a stale binary and Library
+> actions fail with `unknown_command`. `bun start` and `bun run doctor` now warn when the bridge is
+> missing or older than its sources, pointing you at the rebuild.
+
 ## Where the data comes from
 
 All four agents store local JSONL session logs (verified against real files);

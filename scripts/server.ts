@@ -15,6 +15,7 @@ import { getDb } from "./db.ts";
 import { ingestLogs, ingestMetrics, ingestTraces, type IngestResult } from "./otel.ts";
 import { registerApiRoutes } from "./routes.ts";
 import { PORT, UI_DIST, tzName } from "./paths.ts";
+import { loadLibraryConfig, checkLibraryBridge } from "./library_config.ts";
 
 const STARTED_AT = Date.now();
 
@@ -206,6 +207,16 @@ const server = Bun.serve({
 });
 
 console.log(`Command Centre listening on http://127.0.0.1:${server.port}`);
+
+// Surface a missing/stale prompt-library bridge at boot (the optional Library
+// feature spawns this binary per request). A stale bridge — older than its crate
+// sources after a pull/edit added new commands — otherwise only shows up as a
+// cryptic `unknown_command` mid-action. Warning only; the rest of the dashboard
+// (Observability) needs no bridge and is unaffected.
+const bridgeHealth = checkLibraryBridge(loadLibraryConfig());
+if (bridgeHealth.status === "warn") {
+  console.warn(`⚠ library bridge: ${bridgeHealth.detail}`);
+}
 
 function shutdown() {
   shuttingDown = true; // stop the exit handler from respawning the worker

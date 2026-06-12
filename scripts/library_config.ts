@@ -12,7 +12,7 @@
 // `null` — never a half-parsed or coerced path that could turn the read routes
 // into a filesystem-read oracle over an arbitrary directory.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import {
@@ -20,6 +20,7 @@ import {
   DEFAULT_BRIDGE_PATH,
   DEFAULT_INSTALLS_PATH,
   DEFAULT_LIBRARY_HOME,
+  PROJECT_ROOT,
 } from "./paths.ts";
 
 export interface LibraryConfig {
@@ -77,17 +78,57 @@ export interface BridgeHealth {
   detail: string;
 }
 
+/** mtime (ms) of a path, or null if it can't be stat'd. */
+function mtimeMs(path: string): number | null {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/** Newest mtime (ms) of any file under `dir`, pruning build output (`target`)
+ *  and dot-dirs. Returns null if the tree can't be read — staleness then fails
+ *  OPEN (no false "stale" warning when we can't tell). Bounded: the crate
+ *  sources are a few hundred files, walked once per doctor/startup check. */
+function newestMtimeUnder(dir: string): number | null {
+  let newest: number | null = null;
+  const walk = (d: string): void => {
+    let entries;
+    try {
+      entries = readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.name === "target" || e.name.startsWith(".")) continue;
+      const full = join(d, e.name);
+      if (e.isDirectory()) {
+        walk(full);
+      } else {
+        const m = mtimeMs(full);
+        if (m !== null && (newest === null || m > newest)) newest = m;
+      }
+    }
+  };
+  walk(dir);
+  return newest;
+}
+
 /**
  * Doctor check for the prompt-library bridge. The bridge defaults to
- * `target/debug/prompt-library-bridge`, which only exists after `cargo build`
- * — so a configured library with no built bridge yields the cryptic
- * `bridge_not_found` at runtime. Surface that as a warning here (the library is
- * an optional feature, so it never fails the run). `fileExists` is injected for
- * tests.
+ * `target/debug/prompt-library-bridge`, which only exists (and only stays
+ * current) after `cargo build` — so a configured library with no bridge, OR a
+ * bridge older than its crate sources, yields a cryptic runtime error
+ * (`bridge_not_found`, or an `unknown_command` after new commands are added).
+ * Surface BOTH as warnings here (the library is an optional feature, so it never
+ * fails the run). `fileExists` + the mtime providers are injected for tests.
  */
 export function checkLibraryBridge(
   config: LibraryConfig,
   fileExists: (p: string) => boolean = existsSync,
+  bridgeMtimeMs: (p: string) => number | null = mtimeMs,
+  newestSourceMtimeMs: () => number | null = () => newestMtimeUnder(join(PROJECT_ROOT, "crates")),
 ): BridgeHealth {
   if (!config.libraryPath) {
     return { status: "ok", detail: "not configured (optional)" };
@@ -95,7 +136,18 @@ export function checkLibraryBridge(
   if (!fileExists(config.bridgePath)) {
     return {
       status: "warn",
-      detail: `library configured but bridge not built at ${config.bridgePath} — run \`cargo build\``,
+      detail: `library configured but bridge not built at ${config.bridgePath} — run \`bun run build:bridge\``,
+    };
+  }
+  // Staleness: a bridge older than its crate sources is the exact trap behind a
+  // runtime `unknown_command` after a pull/edit added new bridge commands. Only
+  // warn when BOTH mtimes are known — otherwise fail open (no false alarm).
+  const binMs = bridgeMtimeMs(config.bridgePath);
+  const srcMs = newestSourceMtimeMs();
+  if (binMs !== null && srcMs !== null && srcMs > binMs) {
+    return {
+      status: "warn",
+      detail: `bridge is stale (crate sources changed since the last build) — run \`bun run build:bridge\``,
     };
   }
   return { status: "ok", detail: `bridge built · ${config.bridgePath}` };
