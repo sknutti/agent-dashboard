@@ -135,7 +135,7 @@ pub fn rename_working_file(
     new_rel: &Utf8Path,
 ) -> Result<(), Error> {
     validate_path_shape(old_rel)?;
-    if old_rel.as_str() == kind.primary_filename(name) {
+    if is_primary_filename(old_rel, kind, name) {
         return Err(Error::RefuseRenamePrimary {
             path: old_rel.as_str().into(),
         });
@@ -177,7 +177,7 @@ pub fn delete_working_file(
     rel: &Utf8Path,
 ) -> Result<(), Error> {
     validate_path_shape(rel)?;
-    if rel.as_str() == kind.primary_filename(name) {
+    if is_primary_filename(rel, kind, name) {
         return Err(Error::RefuseDeletePrimary {
             path: rel.as_str().into(),
         });
@@ -332,10 +332,23 @@ pub fn validate_ref_path(
     name: &PrimitiveName,
 ) -> Result<(), Error> {
     validate_path_shape(rel)?;
-    if rel.as_str() == kind.primary_filename(name) {
+    if is_primary_filename(rel, kind, name) {
         return Err(Error::InvalidWorkingPath(rel.as_str().into()));
     }
     Ok(())
+}
+
+/// True if `rel` names the kind's primary file. Compared case-INSENSITIVELY: on
+/// a case-insensitive filesystem (macOS APFS default, Windows) `skill.md` and
+/// `SKILL.md` resolve to the same inode, so an exact-case guard would let a
+/// ref-file command (`create`/`save`/`rename`/`delete`) clobber the primary —
+/// bypassing the parse-validation `save_primary_base` enforces, landing
+/// unparseable bytes on `SKILL.md`. Primary filenames are ASCII (`SKILL.md`,
+/// `agent.md`, `<name>.md`/`.toml`, and `PrimitiveName` is `[A-Za-z0-9._-]`), so
+/// ASCII case-folding fully covers them.
+fn is_primary_filename(rel: &Utf8Path, kind: PrimitiveKind, name: &PrimitiveName) -> bool {
+    rel.as_str()
+        .eq_ignore_ascii_case(&kind.primary_filename(name))
 }
 
 const MAX_COMPONENTS: usize = 8;
@@ -467,6 +480,55 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, Error::InvalidWorkingPath(_)));
+    }
+
+    #[test]
+    fn rejects_case_variant_of_primary_filename() {
+        // On a case-insensitive filesystem `skill.md` and `SKILL.md` are the same
+        // file — the primary guard must reject the case variant too, or a ref
+        // command could clobber the primary (bypassing parse validation).
+        let n = name("diagnose");
+        for raw in ["skill.md", "Skill.md", "SKILL.MD"] {
+            let err = validate_ref_path(Utf8Path::new(raw), PrimitiveKind::Skill, &n)
+                .unwrap_err();
+            assert!(
+                matches!(err, Error::InvalidWorkingPath(_)),
+                "expected reject for case variant `{raw}`",
+            );
+        }
+        // Command's primary is templated from the name (`install.md` here); a
+        // case variant of THAT must also be refused.
+        let cmd = name("install");
+        let err = validate_ref_path(Utf8Path::new("INSTALL.md"), PrimitiveKind::Command, &cmd)
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidWorkingPath(_)));
+    }
+
+    #[test]
+    fn rename_and_delete_refuse_case_variant_of_primary() {
+        let (_tmp, root, n) = setup();
+        let layout = LibraryLayout::new(&root);
+        WorkingCopy::new(layout)
+            .save_base_file(PrimitiveKind::Skill, &n, Utf8Path::new("SKILL.md"), b"---\n---\nb\n")
+            .unwrap();
+        // rename with a case variant as the source → still refuses the primary.
+        let err = rename_working_file(
+            layout,
+            PrimitiveKind::Skill,
+            &n,
+            Utf8Path::new("skill.md"),
+            Utf8Path::new("renamed.md"),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::RefuseRenamePrimary { .. }));
+        // delete with a case variant → refuses, and the real primary survives.
+        let err = delete_working_file(layout, PrimitiveKind::Skill, &n, Utf8Path::new("skill.md"))
+            .unwrap_err();
+        assert!(matches!(err, Error::RefuseDeletePrimary { .. }));
+        assert!(layout
+            .working_base(PrimitiveKind::Skill, &n)
+            .join("SKILL.md")
+            .exists());
     }
 
     #[test]
