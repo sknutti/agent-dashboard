@@ -183,6 +183,57 @@ Stack: Bun + Hono + bun:sqlite (WAL) + Svelte 5 SPA (ADR-0001). Built in phases
 - Branch `feat/prompt-library-readonly-slice`; ADR-0008 records replace-not-coexist + install-state
   ownership for the future write-flow slice. Drift/`/api/library/drift` + write flows are next.
 
+## Library consolidation — Slice 4: Versioning / publishing ✅ Done (2026-06-12)
+- Plan `docs/plans/2026-06-12-feat-prompt-library-versioning-publishing-slice-plan.md`. Ports the 4
+  reference versioning commands; core (`version_store.rs`/`detail.rs`) was already done — this slice is
+  bridge wiring + TS routes/models + UI. The dashboard's FIRST commit-on-write (settles the posture
+  Slice L/lifecycle waits on). Gates: cargo 624, scripts 243, ui-vitest 106, svelte-check/tsc/clippy 0.
+- **Bridge** (`main.rs`): `cmd_publish`/`cmd_set_current_version` (async, snapshot-then-commit),
+  `cmd_read_primitive_version`/`cmd_revert_to_version` (sync, no commit). `commit_change()` returns
+  `(committed, commit_error)` NOT an error — `.git` absent → (false,null); nothing staged → (false,null);
+  identity/hook fail → (false, git-stderr). `map_core_error` gained `VersionExists`→`library_version_exists`
+  (409) + `VersionNotFound`→`library_version_not_found` (404). **DEVIATION from plan, deliberate:** TS layer
+  supplies `created_at` (shape-checked by `looks_like_rfc3339`, like install's `installed_at`) — bridge stays
+  clock-/date-crate-free; plan said bridge owns the clock. Decisions: publish NOT atomic across snapshot+commit
+  but recoverable (kill-mid-publish test via pre-commit hook); revert does NOT commit (working/ gitignored);
+  no ledger `withWriteLock` (versioning never touches installs.json — git's index.lock serializes).
+- **TS**: `PrimitiveVersionView`/`PublishResult` models+parsers; `buildPublish`/`buildSetCurrentVersion`
+  (POST, WRITE_TIMEOUT, no mutex, return PublishResult at 200 even on commit-fail)/`buildReadPrimitiveVersion`
+  (GET `…/versions/:label`)/`buildRevertToVersion` (POST `…/revert`). Routes: `POST …/versions`,
+  `GET …/versions/:label`, `POST …/current-version`, `POST …/revert`.
+- **UI** (`Library.svelte`): publish form (label `^v\d` hint + notes), clickable version chips → inspector
+  (frozen content + created_at/notes) with Set-as-current vs Restore-working-copy (distinct labels, two-phase
+  confirm on restore). Cues `publishStateCue` (committed/not-committed/published — amber only on commit-fail)
+  + `currentVersionCue` (cyan ◆, CVD-safe). **Editor coupling (no useEffect):** `WorkingFileEditor` exports
+  pull-based `hasUnsavedEdits()` (publish refuses stale buffer) + `applyWorking(w)` (revert reseeds buffer);
+  parent binds via `bind:this`. Revert re-fetches detail directly then `applyWorking(fresh.working)` so the
+  reseed is deterministic (resource.reload() is fire-and-forget, returns void). NOT browser-QA'd yet (no
+  `claude` restart in-session) — Scott should run `bun start` + a real publish to confirm end-to-end.
+
+## Library consolidation — Slice 9: Search ✅ Done (2026-06-12)
+- Plan `docs/plans/2026-06-12-feat-prompt-library-search-slice-plan.md`. The roadmap's "palate-cleanser":
+  core (`crates/core/src/find.rs`, 10 tests) was already done — pure wiring across 4 seams, no core work.
+  Gates: cargo 648, scripts 204, ui-vitest 44 (Library), svelte-check 0.
+- **Bridge** (`main.rs`): `cmd_find_in_library` — SYNC, READ-only (std::fs only, no `.await`, no commit,
+  no mutex, no secrets). Reuses `require_library` + `map_core_error` (only failure is `Io`→`library_unreadable`,
+  already mapped — ZERO new error arms). Empty query short-circuits in-core to `[]`. Optional `case_sensitive`
+  arg (defaults false) is wired now so a future UI toggle needs no bridge change.
+- **TS**: `SearchResult` model+`parseSearchResults`; `buildSearch` (GET, **no write lock, no WRITE_TIMEOUT** —
+  uses the 10s read timeout). Route `GET /api/library/search?q=` registered with the reads (distinct `/search`
+  prefix, no `:kind/:name` collision); absent `q`→`""`→`[]` 200, never errors. `library_unconfigured` is **409**
+  not 502 (plan misstated it). m4 honored: bridge error detail never reaches the client body.
+- **UI** (`Library.svelte`): content-search box DISTINCT from the existing `query` name-filter (`filterPrimitives`).
+  **Debounce w/o useEffect:** `onSearchInput` sets `searchTerm` immediately + schedules a 250ms `setTimeout`
+  (cleared each keystroke) that sets `debouncedTerm`; `resource()` keys on `debouncedTerm` (trimmed needle
+  encoded in the key, read back in the fetcher — never read reactive state inside `run()`). Results = flat
+  line-list (name + `kindTone` badge + `Lnn` + mono `line_text`), click → `selectPrimitive(selectionKey(...))`.
+  Error uses the route-wide EmptyState `error` mode (amber glyph + Retry; title is overridden to "Couldn't load
+  data" — assert the Retry button, not the title). NOT browser-QA'd in-session (no `claude` restart).
+- **A1 (search cost) DISCHARGED:** benched the debug bridge against the real 117-primitive library
+  (`/Users/sknutti/my-prompt-library`) with a high-frequency needle — full spawn→walk→serialize is **~50–80ms**,
+  vs the 10s read timeout (>100× headroom). No index needed at this scale; primary-file-only reads + MAX_HITS=500
+  + 250ms client debounce bound the cost. Roadmap open-question #4 closed.
+
 ## Load-bearing facts (don't re-derive)
 - **Cost model (ADR-0002):** tokens = exact cross-agent unit; rack-rate `cost_estimated_usd`
   = uniform cross-agent money axis (always `estimated`); native `cost_usd` = exact Claude/Pi.
