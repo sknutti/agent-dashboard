@@ -1,0 +1,15 @@
+{
+  "data": {
+    "failures": [],
+    "successes": [
+      {
+        "outcome": {
+          "kind": "removed"
+        },
+        "target": "claude"
+      }
+    ]
+  },
+  "ok": true,
+  "v": 1
+}

@@ -2,6 +2,7 @@
 // Everything is env-overridable so install.sh can relocate the data dir
 // (default ~/.command-centre) while dev runs straight out of the repo.
 
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -32,6 +33,24 @@ export const DEFAULT_BRIDGE_PATH = join(
   "debug",
   "prompt-library-bridge",
 );
+
+/**
+ * Default location of the dashboard-owned install ledger (`installs.json`). The
+ * dashboard is the SOLE installer (ADR-0008), so this lives under `DATA_DIR`,
+ * never in the standalone app's Application Support dir. Env-free here (mirrors
+ * `DEFAULT_BRIDGE_PATH`); `loadLibraryConfig()` layers the optional
+ * `config/library.yaml` `installs_path` and the `CC_LIBRARY_INSTALLS_PATH` env
+ * override on top at call time so config-vs-env precedence stays testable.
+ */
+export const DEFAULT_INSTALLS_PATH = join(DATA_DIR, "installs.json");
+
+/**
+ * Default install destination root — the user's home, under which the bridge
+ * writes `~/.claude/...`, `~/.pi/...`, `~/.codex/...`. Env-free default; tests
+ * inject a temp root via `CC_LIBRARY_HOME` (resolved in `loadLibraryConfig()`)
+ * so no test ever writes the real home.
+ */
+export const DEFAULT_LIBRARY_HOME = homedir();
 
 /** IANA-ish timezone name for local-time bucketing and health display. */
 export function tzName(): string {

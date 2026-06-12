@@ -1,0 +1,16 @@
+{
+  "data": {
+    "failures": [],
+    "successes": [
+      {
+        "outcome": {
+          "kind": "installed",
+          "version": "v1"
+        },
+        "target": "claude"
+      }
+    ]
+  },
+  "ok": true,
+  "v": 1
+}

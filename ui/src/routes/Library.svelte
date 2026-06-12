@@ -14,6 +14,18 @@
     getLibraryTargetInfo,
     getLibraryPrimitives,
     getLibraryPrimitiveDetail,
+    getInstallsForPrimitive,
+    getDrift,
+    getDriftBatch,
+    installPrimitive,
+    uninstallPrimitive,
+    acknowledgeDrift,
+    importInstalls,
+    LibraryApiError,
+    type LibraryKind,
+    type LibraryTarget,
+    type LibraryInstallSummary,
+    type LibraryUninstallSummary,
   } from "../lib/api";
   import {
     filterPrimitives,
@@ -22,6 +34,12 @@
     parseSelection,
     dirtyCue,
     gitSummary,
+    driftByTarget,
+    installStateFor,
+    stateCue,
+    outcomeCue,
+    uninstallCue,
+    anyDrift,
     KIND_LABELS,
   } from "../lib/library";
 
@@ -86,6 +104,249 @@
     if (kind === "codex_agent") return "amber";
     return "default"; // command — avoid green (CVD)
   }
+
+  // ── install / drift (write-flow slice, ADR-0008) ──────────────────────────
+  // Batch drift feeds the explorer badges and rides the 30s poll (dataEpoch).
+  const driftBatchRes = resource(
+    () => gate("library:drift"),
+    (k) => (k === "library:idle" ? Promise.resolve([]) : getDriftBatch()),
+  );
+  const driftBatch = $derived(driftBatchRes.data ?? []);
+
+  // Per-selection installs + per-primitive drift (D8: the per-primitive scan is
+  // AUTHORITATIVE for the detail rows; the batch above is for explorer badges).
+  const installsRes = resource(
+    () => selected ?? "library:none",
+    (k) => {
+      const sel = parseSelection(k);
+      return sel ? getInstallsForPrimitive(sel.kind, sel.name) : Promise.resolve([]);
+    },
+  );
+  const driftDetailRes = resource(
+    () => selected ?? "library:none",
+    (k) => {
+      const sel = parseSelection(k);
+      return sel ? getDrift(sel.kind, sel.name) : Promise.resolve([]);
+    },
+  );
+  const installs = $derived(installsRes.data ?? []);
+  const driftDetail = $derived(driftDetailRes.data ?? []);
+  const driftMap = $derived(
+    detail ? driftByTarget(driftDetail, detail.kind, detail.name) : new Map(),
+  );
+  // One row per allowed target, folding install record + drift into a state.
+  const targetRows = $derived(
+    detail
+      ? detail.metadata.allowed_targets.map((t) => ({
+          target: t,
+          state: installStateFor(t, installs, driftMap),
+          installed: installs.find((i) => i.target === t) ?? null,
+        }))
+      : [],
+  );
+
+  // D2 — pending-write lock keyed (kind/name/target): disable a row's actions
+  // while a write to it is in flight, and refuse a duplicate dispatch. Cleared in
+  // `finally` so a rejected write never strands a row disabled.
+  let pending = $state<Set<string>>(new Set());
+  const writeKey = (kind: string, name: string, target: string) => `${kind}/${name}/${target}`;
+  function isPending(kind: string, name: string, target: string): boolean {
+    return pending.has(writeKey(kind, name, target));
+  }
+  function setPending(key: string, on: boolean): void {
+    const next = new Set(pending);
+    on ? next.add(key) : next.delete(key);
+    pending = next;
+  }
+
+  // D2 — captured-intent snapshot. The dialog stores {action,kind,name,target,
+  // conflicts} at open time; confirm re-issues the write reading ONLY the
+  // snapshot (never the live selection), so a selection change or a 30s re-paint
+  // across the confirm await can't redirect `force:true` at the wrong primitive.
+  // A singleton ($state<…|null>) so dialogs can't stack/clobber.
+  interface ConflictIntent {
+    action: "install" | "uninstall";
+    kind: LibraryKind;
+    name: string;
+    target: LibraryTarget;
+    conflicts: string[];
+  }
+  let dialog = $state<ConflictIntent | null>(null);
+
+  // Route-local notices (never the shell): per-target action feedback + a list of
+  // pre-flight failures (D5 — rendered, never silently dropped).
+  let notice = $state<{ tone: "default" | "amber" | "cyan"; text: string } | null>(null);
+  let failures = $state<{ target: string; text: string }[]>([]);
+  let importing = $state(false);
+  let importNotice = $state<{ tone: "default" | "amber"; text: string } | null>(null);
+
+  function reloadInstallState(): void {
+    installsRes.reload();
+    driftDetailRes.reload();
+    driftBatchRes.reload(); // refresh explorer badges too
+  }
+
+  /** Map a route-local LibraryApiError to a friendly notice (detail is withheld
+   *  server-side; we only ever see code + safe message). */
+  function noticeFor(e: unknown, fallback: string): string {
+    return e instanceof LibraryApiError ? e.message : fallback;
+  }
+
+  async function doInstall(
+    kind: LibraryKind,
+    name: string,
+    target: LibraryTarget,
+    force = false,
+  ): Promise<void> {
+    const key = writeKey(kind, name, target);
+    if (pending.has(key)) return; // refuse a duplicate dispatch
+    setPending(key, true);
+    try {
+      const summary = await installPrimitive(kind, name, { targets: [target], force });
+      applyInstallSummary(kind, name, target, summary, force);
+    } catch (e) {
+      notice = { tone: "amber", text: noticeFor(e, "install failed") };
+    } finally {
+      setPending(key, false);
+      reloadInstallState();
+    }
+  }
+
+  function applyInstallSummary(
+    kind: LibraryKind,
+    name: string,
+    target: LibraryTarget,
+    summary: LibraryInstallSummary,
+    forced: boolean,
+  ): void {
+    // D5 — render pre-flight failures for this target (occupied/io/other). These
+    // are NOT overwrite-able: never offer the confirm dialog on them.
+    const failure = summary.failures.find((f) => f.target === target);
+    if (failure) {
+      const r = failure.reason;
+      const text =
+        r.kind === "occupied_by_unexpected_kind"
+          ? `${target}: a ${r.actual} occupies the install path (expected ${r.expected}) — resolve on disk`
+          : r.kind === "io"
+            ? `${target}: ${r.message}`
+            : `${target}: ${r.message}`;
+      failures = [{ target, text }];
+      return;
+    }
+    failures = [];
+    const result = summary.successes.find((s) => s.target === target);
+    if (!result) return;
+    const outcome = result.outcome;
+    // colliding_content + not yet forced → open the two-phase confirm dialog
+    // (D5: scoped to THIS target only). Otherwise show the outcome cue.
+    if (outcome.kind === "colliding_content" && !forced) {
+      dialog = { action: "install", kind, name, target, conflicts: outcome.conflicts };
+      return;
+    }
+    const cue = outcomeCue(outcome);
+    notice = { tone: cue.tone, text: `${target}: ${cue.label}` };
+  }
+
+  async function doUninstall(
+    kind: LibraryKind,
+    name: string,
+    target: LibraryTarget,
+    force = false,
+  ): Promise<void> {
+    const key = writeKey(kind, name, target);
+    if (pending.has(key)) return;
+    setPending(key, true);
+    try {
+      const summary = await uninstallPrimitive(kind, name, { targets: [target], force });
+      applyUninstallSummary(kind, name, target, summary, force);
+    } catch (e) {
+      notice = { tone: "amber", text: noticeFor(e, "uninstall failed") };
+    } finally {
+      setPending(key, false);
+      reloadInstallState();
+    }
+  }
+
+  function applyUninstallSummary(
+    kind: LibraryKind,
+    name: string,
+    target: LibraryTarget,
+    summary: LibraryUninstallSummary,
+    forced: boolean,
+  ): void {
+    const failure = summary.failures.find((f) => f.target === target);
+    if (failure) {
+      failures = [{ target, text: `${target}: ${failure.reason.kind}` }];
+      return;
+    }
+    failures = [];
+    const result = summary.successes.find((s) => s.target === target);
+    if (!result) return;
+    const outcome = result.outcome;
+    if (outcome.kind === "drifted" && !forced) {
+      dialog = { action: "uninstall", kind, name, target, conflicts: outcome.conflicts };
+      return;
+    }
+    const cue = uninstallCue(outcome);
+    notice = { tone: cue.tone, text: `${target}: ${cue.label}` };
+  }
+
+  // Confirm reads ONLY the snapshot (D2) — never the live selection.
+  async function confirmConflict(): Promise<void> {
+    const intent = dialog;
+    if (!intent) return;
+    dialog = null;
+    if (intent.action === "install") {
+      await doInstall(intent.kind, intent.name, intent.target, true);
+    } else {
+      await doUninstall(intent.kind, intent.name, intent.target, true);
+    }
+  }
+  function cancelConflict(): void {
+    dialog = null;
+  }
+
+  async function doAcknowledge(
+    kind: LibraryKind,
+    name: string,
+    target: LibraryTarget,
+  ): Promise<void> {
+    const key = writeKey(kind, name, target);
+    if (pending.has(key)) return;
+    setPending(key, true);
+    try {
+      await acknowledgeDrift(kind, name, target);
+      notice = { tone: "default", text: `${target}: adopted current contents as truth` };
+    } catch (e) {
+      notice = { tone: "amber", text: noticeFor(e, "acknowledge failed") };
+    } finally {
+      setPending(key, false);
+      reloadInstallState();
+    }
+  }
+
+  async function doImport(): Promise<void> {
+    if (importing) return;
+    importing = true;
+    importNotice = null;
+    try {
+      const r = await importInstalls();
+      importNotice = { tone: "default", text: `Imported ${r.imported} install record(s).` };
+      reloadInstallState();
+    } catch (e) {
+      const text =
+        e instanceof LibraryApiError
+          ? e.code === "installs_already_present"
+            ? "Already imported — the dashboard ledger is in use."
+            : e.code === "installs_format_mismatch"
+              ? "Source format differs from this build — upgrade the dashboard."
+              : e.message
+          : "Import failed.";
+      importNotice = { tone: "amber", text };
+    } finally {
+      importing = false;
+    }
+  }
 </script>
 
 <div class="library">
@@ -135,7 +396,22 @@
       <span class="mono">prompt library</span>
       <span>{primitives.length} primitives</span>
       <span>{gitSummary(status.data)}</span>
+      <button
+        type="button"
+        class="import-btn"
+        onclick={doImport}
+        disabled={importing}
+        title="Copy the standalone app’s install records into the dashboard (one-time, idempotent)"
+      >
+        <Icon name="database" size={13} />
+        {importing ? "Importing…" : "Import existing installs"}
+      </button>
     </div>
+    {#if importNotice}
+      <div class="route-notice" class:warn={importNotice.tone === "amber"} role="status">
+        {importNotice.text}
+      </div>
+    {/if}
 
     <section class="explorer-detail">
       <!-- Left: grouped explorer -->
@@ -177,6 +453,7 @@
                     {#each group.items as p (p.kind + "/" + p.name)}
                       {@const key = selectionKey(p.kind, p.name)}
                       {@const cue = dirtyCue(p.dirty)}
+                      {@const drifted = anyDrift(driftBatch, p.kind, p.name)}
                       <button
                         type="button"
                         class="item"
@@ -184,7 +461,9 @@
                         onclick={() => (selected = key)}
                       >
                         <span class="item-name">{p.name}</span>
-                        {#if p.dirty}
+                        {#if drifted}
+                          <small class="cue drift" title="an installed target has drifted">● drift</small>
+                        {:else if p.dirty}
                           <small class="cue" title={cue.label}>{cue.glyph} {cue.label}</small>
                         {/if}
                       </button>
@@ -249,6 +528,51 @@
               <p class="muted-line">No published versions yet — working copy only.</p>
             {/if}
           </div>
+
+          <!-- Per-target install rows: compose allowed_targets × installs × drift.
+               Install/Update with force:false; a colliding/drifted response opens
+               the two-phase confirm. -->
+          <div class="targets-section">
+            <h4>Install targets</h4>
+            {#if !detail.metadata.allowed_targets.length}
+              <p class="muted-line">No allowed targets set for this primitive.</p>
+            {:else if !detail.current_version}
+              <p class="muted-line">No published version to install — snapshot a version first.</p>
+            {:else}
+              <div class="target-rows">
+                {#each targetRows as row (row.target)}
+                  {@const cue = stateCue(row.state)}
+                  {@const busy = isPending(detail.kind, detail.name, row.target)}
+                  <div class="target-row" data-target={row.target}>
+                    <span class="target-name mono">{row.target}</span>
+                    <Badge tone={cue.tone}>{cue.glyph} {cue.label}</Badge>
+                    <span class="target-ver">{row.installed ? `v${row.installed.installed_version}` : ""}</span>
+                    <div class="row-actions">
+                      {#if row.state === "not_installed"}
+                        <button type="button" class="act" disabled={busy} onclick={() => doInstall(detail.kind, detail.name, row.target)}>Install</button>
+                      {:else}
+                        <button type="button" class="act" disabled={busy} onclick={() => doInstall(detail.kind, detail.name, row.target)}>Update</button>
+                        {#if row.state === "modified"}
+                          <button type="button" class="act" disabled={busy} onclick={() => doAcknowledge(detail.kind, detail.name, row.target)}>Acknowledge</button>
+                        {/if}
+                        <button type="button" class="act danger" disabled={busy} onclick={() => doUninstall(detail.kind, detail.name, row.target)}>Uninstall</button>
+                      {/if}
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+            {#if notice}
+              <div class="route-notice" class:warn={notice.tone === "amber"} role="status">{notice.text}</div>
+            {/if}
+            {#if failures.length}
+              <ul class="failure-list">
+                {#each failures as f (f.target)}
+                  <li>{f.text}</li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
         {:else}
           <EmptyState icon="file-text" title="Select a primitive" message="Choose a primitive from the explorer to view its working copy." />
         {/if}
@@ -292,6 +616,37 @@
         {/if}
       </aside>
     </section>
+  {/if}
+
+  <!-- Two-phase confirm. Renders the CAPTURED snapshot (name/target/conflicts),
+       so what the user sees is exactly what `force:true` will overwrite (D2). -->
+  {#if dialog}
+    <div class="dialog-scrim" role="dialog" aria-modal="true" aria-labelledby="conflict-title">
+      <div class="dialog">
+        <h3 id="conflict-title">
+          {dialog.action === "install" ? "Overwrite drifted files?" : "Remove drifted install?"}
+        </h3>
+        <p>
+          {dialog.action === "install" ? "Installing" : "Uninstalling"}
+          <strong>{dialog.name}</strong> → <strong class="mono">{dialog.target}</strong>
+          {dialog.action === "install"
+            ? "would overwrite on-disk files that differ from this primitive:"
+            : "would delete on-disk files that differ from the recorded install:"}
+        </p>
+        <ul class="conflict-list">
+          {#each dialog.conflicts as path (path)}
+            <li class="mono">{path}</li>
+          {/each}
+        </ul>
+        <p class="dialog-warn">This replaces the current on-disk contents. There is no backup.</p>
+        <div class="dialog-actions">
+          <button type="button" class="act" onclick={cancelConflict}>Cancel</button>
+          <button type="button" class="act danger" onclick={confirmConflict}>
+            {dialog.action === "install" ? "Overwrite" : "Remove anyway"}
+          </button>
+        </div>
+      </div>
+    </div>
   {/if}
 </div>
 
@@ -607,6 +962,162 @@
     margin: 12px 0 0;
     color: var(--text-subtle);
     font-size: 11px;
+  }
+  /* drift dot in the explorer — cyan/amber, never green (CVD) */
+  .cue.drift {
+    color: var(--amber);
+  }
+  .import-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 11px;
+  }
+  .import-btn:hover:not(:disabled) {
+    border-color: var(--border-glow);
+  }
+  .import-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  /* state-strip's last-child border rule would clip the button — opt out */
+  .state-strip .import-btn {
+    border-right: 1px solid var(--border);
+  }
+  .route-notice {
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--cyan, var(--accent-from));
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+    color: var(--text);
+    font-size: 12px;
+  }
+  .route-notice.warn {
+    border-left-color: var(--amber);
+  }
+  .targets-section {
+    margin-top: 16px;
+    display: grid;
+    gap: 8px;
+  }
+  .targets-section h4 {
+    margin: 0 0 2px;
+    color: var(--text-subtle);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    text-transform: uppercase;
+  }
+  .target-rows {
+    display: grid;
+    gap: 6px;
+  }
+  .target-row {
+    display: grid;
+    grid-template-columns: 64px auto 1fr auto;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--surface) 80%, transparent);
+  }
+  .target-name {
+    font-size: 12px;
+    color: var(--text);
+  }
+  .target-ver {
+    color: var(--text-subtle);
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+  .row-actions {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+  }
+  .act {
+    padding: 4px 11px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 11.5px;
+  }
+  .act:hover:not(:disabled) {
+    border-color: var(--border-glow);
+  }
+  .act:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  /* "danger" is amber-bordered, NOT red (Scott is red/green colorblind). */
+  .act.danger {
+    border-color: color-mix(in srgb, var(--amber) 55%, var(--border));
+    color: var(--amber);
+  }
+  .failure-list {
+    margin: 4px 0 0;
+    padding-left: 18px;
+    color: var(--amber);
+    font-size: 11.5px;
+  }
+  .dialog-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: color-mix(in srgb, var(--bg) 70%, transparent);
+  }
+  .dialog {
+    width: min(460px, 100%);
+    padding: 18px;
+    border: 1px solid var(--border-glow, var(--border));
+    border-radius: 10px;
+    background: var(--surface);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  }
+  .dialog h3 {
+    margin: 0 0 10px;
+    font-size: 15px;
+    font-weight: 650;
+  }
+  .dialog p {
+    margin: 0 0 10px;
+    color: var(--text-dim);
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+  .conflict-list {
+    margin: 0 0 10px;
+    padding: 8px 10px 8px 26px;
+    max-height: 160px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--bg);
+    color: var(--text-dim);
+    font-size: 11.5px;
+  }
+  .dialog-warn {
+    color: var(--amber);
+    font-size: 12px;
+  }
+  .dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 4px;
   }
   @media (max-width: 1120px) {
     .explorer-detail {

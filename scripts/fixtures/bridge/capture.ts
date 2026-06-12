@@ -65,4 +65,35 @@ await capture("library_status_valid", { v: 1, command: "library_status", args: {
 const notLib = mkdtempSync(join(tmpdir(), "not-a-lib-"));
 await capture("error_marker_missing", { v: 1, command: "list_primitives", args: { path: notLib } }, notLib);
 
+// --- write-side fixtures (install / uninstall / scan_drift / list_installs) ---
+// A SEPARATE lib seeded with `publish` so `diagnose` is installable, plus a temp
+// install home + a temp installs ledger. None of these envelopes' `data` carries
+// an absolute path (conflicts are install-relative; version/timestamp are
+// pinned), so — unlike the error fixture — they need no path normalization and
+// are byte-stable as captured. The read fixtures above come from a publish-free
+// seed, so adding a published version here never perturbs them.
+const wlib = join(mkdtempSync(join(tmpdir(), "lib-installable-")), "lib");
+console.log(`seeding installable library at ${wlib}…`);
+sh(["cargo", "run", "-q", "-p", "prompt-library-bridge", "--example", "seed_fixture_library", "--", wlib, "publish"]);
+const whome = mkdtempSync(join(tmpdir(), "install-home-"));
+const wInstalls = join(mkdtempSync(join(tmpdir(), "install-data-")), "installs.json");
+const NOW = "2026-04-30T12:00:00Z";
+const wargs = { path: wlib, home: whome, installs_path: wInstalls, kind: "skill", name: "diagnose" };
+
+// install diagnose → claude (a clean first install → `installed`)
+await capture("install_summary", {
+  v: 1, command: "install",
+  args: { ...wargs, targets: ["claude"], force: false, installed_at: NOW },
+});
+// per-primitive drift right after a clean install → `clean`
+await capture("scan_drift", { v: 1, command: "scan_drift", args: wargs });
+// the compact per-target install projection the UI renders rows from
+await capture("list_installs", { v: 1, command: "list_installs_for_primitive", args: wargs });
+// uninstall diagnose ← claude on a clean install → `removed` (captured LAST so
+// it doesn't disturb the scan/list fixtures above)
+await capture("uninstall_summary", {
+  v: 1, command: "uninstall",
+  args: { ...wargs, targets: ["claude"], force: false },
+});
+
 console.log("done.");
