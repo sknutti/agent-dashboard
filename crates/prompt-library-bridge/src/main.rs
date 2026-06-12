@@ -46,11 +46,12 @@ use prompt_library_core::{
         list_overlays, read_primitive_detail, read_primitive_for_target,
         read_primitive_version_view, revert_primitive_to_version,
     },
-    install, listing::list_primitives, scan_drift_for_primitive, scan_record, uninstall,
-    update_primitive_metadata, working_files, DriftReport, Error as CoreError, InstallPaths,
-    InstallRequest, InstallsFile, KindInfoTable, LibraryLayout, MetadataUpdate, PrimitiveKind,
-    PrimitiveName, Target, UninstallRequest, VersionLabel, VersionMetadata, VersionStore,
-    WorkingCopy, INSTALLS_FORMAT_VERSION,
+    install, listing::list_primitives, reimport_install_as_version, scan_drift_for_primitive,
+    scan_record, uninstall, update_primitive_metadata, working_files, DriftReport,
+    Error as CoreError, InstallPaths, InstallRequest, InstallsFile, KindInfoTable, LibraryLayout,
+    MetadataUpdate, PrimitiveKind, PrimitiveName, ReimportRequest, ReimportResult, Target,
+    UninstallRequest, VersionLabel, VersionMetadata, VersionStore, WorkingCopy,
+    INSTALLS_FORMAT_VERSION,
 };
 use prompt_library_git::{
     git_ops::{current_branch, git_add_all, git_commit, git_diff_changed_files},
@@ -156,6 +157,17 @@ async fn dispatch(command: &str, args: &Value) -> Result<Value, LibraryError> {
         // COMMITS (`.await`) — the same non-fatal commit-on-write posture as
         // publish/set-current (Slice 4), not the no-commit overlay posture.
         "update_metadata" => cmd_update_metadata(args).await,
+        // Reimport-from-drift slice. Pulls an installed copy's on-disk (drifted)
+        // bytes back into the library as a NEW published version, then
+        // re-baselines `installs.json` so the next drift scan reads Clean. The
+        // new `versions/<label>/` tree is git-TRACKED, so this COMMITS on the
+        // `Reimported` outcome (`.await`) — the same commit-on-write posture as
+        // publish (Slice 4). NOTE: this DIVERGES from the reference, which never
+        // commits reimport; the dashboard commits so the reimported version is
+        // not left as an uncommitted tree a later publish would sweep up under
+        // the wrong message. The non-success outcomes (dirty/broken/missing)
+        // wrote nothing git-tracked, so they do NOT commit.
+        "reimport_install" => cmd_reimport(args).await,
         other => Err(LibraryError::new(
             "unknown_command",
             "unknown bridge command",
@@ -820,6 +832,75 @@ async fn cmd_update_metadata(args: &Value) -> Result<Value, LibraryError> {
 }
 
 // ---------------------------------------------------------------------------
+// Reimport-from-drift command (reimport-from-drift slice)
+// ---------------------------------------------------------------------------
+
+/// Capture an installed copy's on-disk (drifted) bytes back into the library as
+/// a new published version and re-baseline `installs.json` so the next drift
+/// scan reads Clean. Reimport is the INVERSE of install: install deploys the
+/// library to disk; reimport pulls disk back into the library.
+///
+/// The `ReimportResult` tagged union rides the `ok` envelope as DATA the UI
+/// routes on (like `InstallSummary`), NOT as an error:
+/// - `reimported` — snapshot wrote, `current.txt` advanced, the record
+///   re-baselined. The new `versions/<label>/` tree is git-tracked, so this
+///   arm — and ONLY this arm — COMMITS (non-fatal `{committed, commit_error}`,
+///   publish posture). Reference DIVERGENCE: the standalone app never commits
+///   reimport; the dashboard does so the version is not orphaned uncommitted.
+/// - `working_copy_dirty` — `working/` has unpublished edits; the UI confirms,
+///   then retries with `discard_working: true`.
+/// - `broken_source` — the on-disk primary file won't parse; the UI offers a
+///   fix sheet, then retries with `fixed_primary_text`.
+/// - `not_installed` / `install_missing` — no record / the install path is gone.
+///
+/// `created_at` is the TS-supplied publish timestamp (the bridge owns no clock),
+/// shape-validated like publish. `fixed_primary_text` is UTF-8 on the wire;
+/// core wants `Vec<u8>`, so `.into_bytes()` is the bridge's job (a non-UTF-8
+/// payload can't arrive via JSON, and core re-validates the fixed bytes).
+async fn cmd_reimport(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let (install_paths, installs_file_path) = install_context(args)?;
+    let kind = parse_kind(args)?;
+    let name = parse_name(args)?;
+    let source_target = parse_target(args)?;
+    let new_version = parse_version_label(args)?;
+    let created_at = parse_created_at(args)?;
+    let notes = parse_optional_notes(args);
+    let discard_working = parse_discard_working(args);
+    let fixed_primary_bytes = parse_fixed_primary_text(args).map(String::into_bytes);
+
+    let result = reimport_install_as_version(ReimportRequest {
+        layout: LibraryLayout::new(&root),
+        install_paths: &install_paths,
+        installs_file_path: &installs_file_path,
+        kind,
+        name: &name,
+        source_target,
+        new_version,
+        created_at: &created_at,
+        notes: notes.clone(),
+        discard_working,
+        fixed_primary_bytes,
+    })
+    .map_err(map_core_error)?;
+
+    let mut value = serde_json::to_value(&result).map_err(serialize_err)?;
+    // Commit ONLY on the `reimported` outcome: the other results wrote nothing
+    // git-tracked, so committing them would be a no-op at best and misleading at
+    // worst. The new version tree is what we commit (working/ is gitignored, so
+    // `git add -A` only ever sweeps `versions/<label>/` + `current.txt`).
+    if let ReimportResult::Reimported { new_version } = &result {
+        let message = format_reimport_commit_message(kind, &name, new_version, notes.as_deref());
+        let (committed, commit_error) = commit_change(&root, &message).await;
+        if let Value::Object(map) = &mut value {
+            map.insert("committed".into(), json!(committed));
+            map.insert("commit_error".into(), json!(commit_error));
+        }
+    }
+    Ok(value)
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -1101,6 +1182,24 @@ fn parse_optional_notes(args: &Value) -> Option<String> {
     args.get("notes").and_then(Value::as_str).map(str::to_string)
 }
 
+/// Reimport's `discard_working` flag. Defaults to `false` — the two-phase-confirm
+/// safe default (mirror of `parse_force`): with it false, reimport HARD-BLOCKS
+/// (`working_copy_dirty`) when `working/` has unpublished edits, and the UI
+/// re-issues with `true` only after the user confirms the discard.
+fn parse_discard_working(args: &Value) -> bool {
+    args.get("discard_working").and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// Reimport's broken-source retry payload: the bytes the user manually fixed in
+/// the UI's temp buffer when the on-disk primary file's frontmatter/TOML didn't
+/// parse. Absent/null/non-string → `None` (the normal first-attempt path). Like
+/// `notes` it rides the JSON body, never argv, so a multi-line corrected file
+/// round-trips intact; the caller `.into_bytes()`es it for core (which
+/// re-validates the fixed bytes itself).
+fn parse_fixed_primary_text(args: &Value) -> Option<String> {
+    args.get("fixed_primary_text").and_then(Value::as_str).map(str::to_string)
+}
+
 /// Stage and commit every tracked change with `message`, returning a non-fatal
 /// `(committed, commit_error)` rather than erroring (D1/D3). The library
 /// `.gitignore` excludes `*/working/`, so `git add -A` only ever commits the
@@ -1154,6 +1253,23 @@ fn format_publish_commit_message(
     notes: Option<&str>,
 ) -> String {
     let subject = format!("publish({}/{}): {}", kind.dir_name(), name.as_str(), label.as_str());
+    match notes.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(body) => format!("{subject}\n\n{body}\n"),
+        None => format!("{subject}\n"),
+    }
+}
+
+/// `reimport(<dir>/<name>): <label>` subject + an optional notes body — the
+/// reimport analogue of `format_publish_commit_message`. The `reimport(...)`
+/// subject (vs. `publish(...)`) keeps the git log honest about how the version
+/// was cut: from drifted on-disk bytes, not the editor.
+fn format_reimport_commit_message(
+    kind: PrimitiveKind,
+    name: &PrimitiveName,
+    label: &VersionLabel,
+    notes: Option<&str>,
+) -> String {
+    let subject = format!("reimport({}/{}): {}", kind.dir_name(), name.as_str(), label.as_str());
     match notes.map(str::trim).filter(|s| !s.is_empty()) {
         Some(body) => format!("{subject}\n\n{body}\n"),
         None => format!("{subject}\n"),
@@ -2904,6 +3020,200 @@ mod tests {
         assert_eq!(
             cmd_update_metadata(&args).await.unwrap_err().code,
             "library_invalid_target"
+        );
+    }
+
+    // ---- reimport-from-drift (reimport slice) -------------------------------
+    //
+    // Every test builds on `install_fx` (published `diagnose` skill + temp
+    // install home + temp installs.json), installs it to Claude, then drives the
+    // five `ReimportResult` variants. The fixtures stay network-free +
+    // secrets-free (the crate structurally cannot depend on prompt-library-
+    // secrets). A Skill→Claude install is a DIRECTORY layout: `<home>/.claude/
+    // skills/<name>/SKILL.md`, so the primary install key is `SKILL.md`.
+
+    /// Install the published `diagnose` skill to Claude (the precondition for
+    /// every reimport — reimport reads the installed bytes back).
+    fn install_diagnose_claude(fx: &InstallFx) {
+        let summary = cmd_install(&write_args(fx, json!(["claude"]), false)).unwrap();
+        assert_eq!(
+            summary["successes"][0]["outcome"]["kind"],
+            json!("installed"),
+            "fixture precondition: diagnose must install cleanly"
+        );
+    }
+
+    /// Reimport args for `diagnose` from its Claude install as `label`. Mutate
+    /// the returned object for `discard_working` / `fixed_primary_text` / `notes`.
+    fn reimport_args(fx: &InstallFx, label: &str) -> Value {
+        json!({
+            "path": fx.root.as_str(),
+            "home": fx.home.as_str(),
+            "installs_path": fx.installs.as_str(),
+            "kind": "skill",
+            "name": "diagnose",
+            "target": "claude",
+            "version_label": label,
+            "created_at": NOW,
+        })
+    }
+
+    /// Overwrite the on-disk installed SKILL.md (induce `Modified` drift).
+    fn write_installed_skill(fx: &InstallFx, bytes: &[u8]) {
+        std::fs::write(claude_skill_file(fx, "diagnose").as_std_path(), bytes).unwrap();
+    }
+
+    /// Args for `read_primitive_version` against `diagnose` (reads the frozen
+    /// version body the reimport snapshotted).
+    fn ver_read_args(fx: &InstallFx, label: &str) -> Value {
+        json!({
+            "path": fx.root.as_str(), "kind": "skill", "name": "diagnose",
+            "version_label": label, "created_at": NOW,
+        })
+    }
+
+    #[tokio::test]
+    async fn reimport_captures_drifted_disk_as_new_version() {
+        let fx = install_fx(vec![Target::Claude]);
+        install_diagnose_claude(&fx);
+        // Drift: edit the installed copy out-of-band to NEW valid bytes.
+        write_installed_skill(&fx, b"---\n---\nbody-DRIFTED\n");
+
+        let data = cmd_reimport(&reimport_args(&fx, "v2")).await.unwrap();
+        assert_eq!(data["kind"], json!("reimported"));
+        // VersionLabel serializes as a bare string (serde `into = "String"`).
+        assert_eq!(data["new_version"], json!("v2"));
+
+        // current.txt advanced and the new frozen version carries the disk bytes.
+        assert_eq!(current_label(&fx.root).as_deref(), Some("v2"));
+        let view = cmd_read_primitive_version(&ver_read_args(&fx, "v2")).unwrap();
+        assert_eq!(view["working"]["body"], json!("body-DRIFTED\n"));
+
+        // The install record was re-baselined → the next drift scan reads Clean.
+        let drift = cmd_scan_drift(&drift_args(&fx)).unwrap();
+        assert_eq!(drift[0]["status"]["kind"], json!("clean"));
+    }
+
+    #[tokio::test]
+    async fn reimport_commits_when_git_configured() {
+        let fx = install_fx(vec![Target::Claude]);
+        git_init_repo(&fx.root);
+        install_diagnose_claude(&fx);
+        write_installed_skill(&fx, b"---\n---\nbody-DRIFTED\n");
+
+        // Dispatch through the FULL envelope.
+        let env = handle(
+            &json!({ "v": 1, "command": "reimport_install", "args": reimport_args(&fx, "v2") })
+                .to_string(),
+        )
+        .await;
+        assert_eq!(env["ok"], json!(true));
+        assert_eq!(env["data"]["kind"], json!("reimported"));
+        assert_eq!(env["data"]["committed"], json!(true));
+        assert_eq!(env["data"]["commit_error"], json!(null));
+        // The subject names reimport (not publish) so the log stays honest.
+        assert_eq!(
+            git_capture(&fx.root, &["log", "-1", "--pretty=%s"]),
+            "reimport(skills/diagnose): v2"
+        );
+    }
+
+    #[tokio::test]
+    async fn reimport_without_git_snapshots_but_reports_no_commit() {
+        let fx = install_fx(vec![Target::Claude]);
+        install_diagnose_claude(&fx);
+        write_installed_skill(&fx, b"---\n---\nbody-DRIFTED\n");
+        // No `.git/` → snapshot succeeds, commit silently skipped (not a failure).
+        let data = cmd_reimport(&reimport_args(&fx, "v2")).await.unwrap();
+        assert_eq!(data["kind"], json!("reimported"));
+        assert_eq!(data["committed"], json!(false));
+        assert_eq!(data["commit_error"], json!(null));
+    }
+
+    #[tokio::test]
+    async fn reimport_working_dirty_blocks_uncommitted_then_discard_succeeds() {
+        let fx = install_fx(vec![Target::Claude]);
+        git_init_repo(&fx.root);
+        install_diagnose_claude(&fx);
+        write_installed_skill(&fx, b"---\n---\nbody-DRIFTED\n");
+        // Unpublished working-copy edit → working/ diverges from current v1.
+        set_working_body(&fx.root, b"---\n---\nbody-UNPUBLISHED\n");
+
+        // Without discard: a hard block, NOT an error, and NOTHING committed.
+        let blocked = cmd_reimport(&reimport_args(&fx, "v2")).await.unwrap();
+        assert_eq!(blocked["kind"], json!("working_copy_dirty"));
+        assert!(blocked.get("committed").is_none(), "a block must not commit");
+        assert_eq!(current_label(&fx.root).as_deref(), Some("v1"), "no new version on a block");
+        assert_eq!(
+            git_capture(&fx.root, &["rev-list", "--count", "HEAD"]).parse::<u32>().unwrap_or(0),
+            0,
+            "a working_copy_dirty result must leave the git log untouched"
+        );
+
+        // With discard: working/ is reverted to current, disk bytes captured.
+        let mut args = reimport_args(&fx, "v2");
+        args["discard_working"] = json!(true);
+        let ok = cmd_reimport(&args).await.unwrap();
+        assert_eq!(ok["kind"], json!("reimported"));
+        assert_eq!(ok["committed"], json!(true));
+        let view = cmd_read_primitive_version(&ver_read_args(&fx, "v2")).unwrap();
+        assert_eq!(view["working"]["body"], json!("body-DRIFTED\n"));
+    }
+
+    #[tokio::test]
+    async fn reimport_broken_source_then_fixed_retry_succeeds() {
+        let fx = install_fx(vec![Target::Claude]);
+        install_diagnose_claude(&fx);
+        // Corrupt the installed primary so its frontmatter won't parse.
+        write_installed_skill(&fx, b"this is not valid frontmatter at all");
+
+        let broken = cmd_reimport(&reimport_args(&fx, "v2")).await.unwrap();
+        assert_eq!(broken["kind"], json!("broken_source"));
+        assert_eq!(broken["primary_path"], json!("SKILL.md"));
+        assert!(broken["parse_error"].as_str().is_some_and(|s| !s.is_empty()));
+        // raw_bytes rides the wire as a byte array for the UI's fix buffer.
+        assert!(broken["raw_bytes"].is_array());
+        assert_eq!(broken.get("committed"), None, "a broken source must not commit");
+
+        // Retry with the user's fixed primary bytes → reimported.
+        let mut args = reimport_args(&fx, "v2");
+        args["fixed_primary_text"] = json!("---\n---\nbody-FIXED\n");
+        let fixed = cmd_reimport(&args).await.unwrap();
+        assert_eq!(fixed["kind"], json!("reimported"));
+        let view = cmd_read_primitive_version(&ver_read_args(&fx, "v2")).unwrap();
+        assert_eq!(view["working"]["body"], json!("body-FIXED\n"));
+    }
+
+    #[tokio::test]
+    async fn reimport_not_installed_when_no_record() {
+        let fx = install_fx(vec![Target::Claude]);
+        // No install performed for claude → no record for (skill, diagnose, claude).
+        let data = cmd_reimport(&reimport_args(&fx, "v2")).await.unwrap();
+        assert_eq!(data["kind"], json!("not_installed"));
+    }
+
+    #[tokio::test]
+    async fn reimport_install_missing_when_path_gone() {
+        let fx = install_fx(vec![Target::Claude]);
+        install_diagnose_claude(&fx);
+        // Remove the installed directory after recording it.
+        std::fs::remove_dir_all(
+            claude_skill_file(&fx, "diagnose").parent().unwrap().as_std_path(),
+        )
+        .unwrap();
+        let data = cmd_reimport(&reimport_args(&fx, "v2")).await.unwrap();
+        assert_eq!(data["kind"], json!("install_missing"));
+    }
+
+    #[tokio::test]
+    async fn reimport_rejects_invalid_version_label() {
+        let fx = install_fx(vec![Target::Claude]);
+        install_diagnose_claude(&fx);
+        let mut args = reimport_args(&fx, "not-a-version");
+        args["version_label"] = json!("nope");
+        assert_eq!(
+            cmd_reimport(&args).await.unwrap_err().code,
+            "library_invalid_version"
         );
     }
 }
