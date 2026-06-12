@@ -47,9 +47,10 @@ use prompt_library_core::{
         read_primitive_version_view, revert_primitive_to_version,
     },
     install, listing::list_primitives, scan_drift_for_primitive, scan_record, uninstall,
-    working_files, DriftReport, Error as CoreError, InstallPaths, InstallRequest, InstallsFile,
-    KindInfoTable, LibraryLayout, PrimitiveKind, PrimitiveName, Target, UninstallRequest,
-    VersionLabel, VersionMetadata, VersionStore, WorkingCopy, INSTALLS_FORMAT_VERSION,
+    update_primitive_metadata, working_files, DriftReport, Error as CoreError, InstallPaths,
+    InstallRequest, InstallsFile, KindInfoTable, LibraryLayout, MetadataUpdate, PrimitiveKind,
+    PrimitiveName, Target, UninstallRequest, VersionLabel, VersionMetadata, VersionStore,
+    WorkingCopy, INSTALLS_FORMAT_VERSION,
 };
 use prompt_library_git::{
     git_ops::{current_branch, git_add_all, git_commit, git_diff_changed_files},
@@ -150,6 +151,11 @@ async fn dispatch(command: &str, args: &Value) -> Result<Value, LibraryError> {
         "write_overlay" => cmd_write_overlay(args),
         "remove_overlay" => cmd_remove_overlay(args),
         "list_overlays" => cmd_list_overlays(args),
+        // Metadata-editing slice. `metadata.yaml` is git-TRACKED (NOT under the
+        // gitignored `working/`), so unlike the overlay writes above this one
+        // COMMITS (`.await`) — the same non-fatal commit-on-write posture as
+        // publish/set-current (Slice 4), not the no-commit overlay posture.
+        "update_metadata" => cmd_update_metadata(args).await,
         other => Err(LibraryError::new(
             "unknown_command",
             "unknown bridge command",
@@ -782,6 +788,38 @@ fn cmd_list_overlays(args: &Value) -> Result<Value, LibraryError> {
 }
 
 // ---------------------------------------------------------------------------
+// Metadata-editing command (metadata-editing slice)
+// ---------------------------------------------------------------------------
+
+/// Replace a primitive's editable metadata fields (`allowed_targets` /
+/// `display_name` / `author`) and COMMIT. Core atomic-writes `metadata.yaml`
+/// (preserving comments + `created_at` verbatim), then `commit_change` runs:
+/// unlike the overlay writes (gitignored `working/`), `metadata.yaml` is git-
+/// tracked, so this is commit-on-write like publish/set-current (Slice 4). The
+/// commit is NON-fatal — the write already landed — and rides back as
+/// `{committed, commit_error}` at the `ok` envelope level, never an error
+/// envelope.
+///
+/// Dropping an `allowed_target` that still has overlay files is the one
+/// destructive-adjacent path: with `discard_orphan_overlays` false (the safe
+/// two-phase-confirm default, mirror of `force`) core refuses with
+/// `library_target_removed_with_overlays` (mapped to 409) and disk is untouched;
+/// the UI confirms, then re-issues with the flag set to delete the orphans.
+async fn cmd_update_metadata(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let kind = parse_kind(args)?;
+    let name = parse_name(args)?;
+    let update = parse_metadata_update(args)?;
+
+    let metadata = update_primitive_metadata(LibraryLayout::new(&root), kind, &name, update)
+        .map_err(map_core_error)?;
+
+    let message = format!("metadata({}/{})", kind.dir_name(), name.as_str());
+    let (committed, commit_error) = commit_change(&root, &message).await;
+    Ok(json!({ "metadata": metadata, "committed": committed, "commit_error": commit_error }))
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -889,6 +927,52 @@ fn parse_targets(args: &Value) -> Result<Vec<Target>, LibraryError> {
             format!("targets must be an array of claude|pi|codex: {e}"),
         )
     })
+}
+
+/// Assemble a `MetadataUpdate` from request args (the metadata-editing slice).
+/// `allowed_targets` reads its OWN wire key (not the install verb's `targets`),
+/// keeping the two verbs' contracts from overloading one key. `display_name`
+/// and `author` are optional free-text where absent/`null`/empty-string all
+/// mean "clear" (→ `None`) so the field drops from the YAML. The kind-vs-target
+/// legality check stays in core (`TargetNotAllowedForKind`); this only shapes
+/// the wire input.
+fn parse_metadata_update(args: &Value) -> Result<MetadataUpdate, LibraryError> {
+    Ok(MetadataUpdate {
+        allowed_targets: parse_allowed_targets(args)?,
+        display_name: parse_optional_nonempty(args, "display_name"),
+        author: parse_optional_nonempty(args, "author"),
+        discard_orphan_overlays: args
+            .get("discard_orphan_overlays")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
+}
+
+/// Parse the `allowed_targets` enum array — the metadata-editing analogue of
+/// `parse_targets`, reading its own `allowed_targets` key (O2). A malformed or
+/// unknown target is a typed error, never a silent drop.
+fn parse_allowed_targets(args: &Value) -> Result<Vec<Target>, LibraryError> {
+    let raw = args.get("allowed_targets").cloned().unwrap_or(Value::Null);
+    serde_json::from_value::<Vec<Target>>(raw).map_err(|e| {
+        LibraryError::new(
+            "library_invalid_target",
+            "unknown or malformed allowed target",
+            format!("allowed_targets must be an array of claude|pi|codex: {e}"),
+        )
+    })
+}
+
+/// An optional free-text metadata field (`display_name`/`author`): an absent
+/// key, an explicit JSON `null`, an empty string, and a whitespace-only string
+/// ALL mean "clear" (→ `None`); only a present non-blank string becomes `Some`
+/// (stored verbatim, untrimmed). The bridge collapses `""`/`null` here so core
+/// never stores `Some("")`, which would render as a blank field instead of the
+/// read view's `—` default.
+fn parse_optional_nonempty(args: &Value, key: &str) -> Option<String> {
+    match args.get(key).and_then(Value::as_str) {
+        Some(s) if !s.trim().is_empty() => Some(s.to_string()),
+        _ => None,
+    }
 }
 
 /// Parse a single `target` enum value (acknowledge-drift is per-target).
@@ -1122,6 +1206,15 @@ fn map_core_error(e: CoreError) -> LibraryError {
         }
         CoreError::TargetNotAllowedForKind { .. } => {
             ("library_target_not_allowed_for_kind", "target is not allowed for this kind")
+        }
+        // Metadata-editing variant: dropping an allowed_target that still has
+        // overlay files. Promoted out of the catch-all so the route maps it to
+        // 409 and the UI offers a confirm-then-discard (re-issue with
+        // `discard_orphan_overlays: true`) rather than an opaque 502. The
+        // payload's dropped-target paths stay server-side (m4 / never-forward-
+        // detail); the UI names them from its already-loaded `list_overlays`.
+        CoreError::TargetRemovedWithOverlays { .. } => {
+            ("library_target_removed_with_overlays", "dropping a target would orphan its overlay files")
         }
         CoreError::InstallNotSupported { .. } => {
             ("library_install_not_supported", "install is not supported for this kind/target")
@@ -2609,6 +2702,207 @@ mod tests {
         // A target value outside the closed enum is a wire-boundary error.
         assert_eq!(
             cmd_read_primitive_target(&ov_args(&root, "nonsense")).unwrap_err().code,
+            "library_invalid_target"
+        );
+    }
+
+    // ---- metadata editing ---------------------------------------------------
+
+    /// Args for `update_metadata` on the `diagnose` skill. `display`/`author`
+    /// accept a string, `""`, or `null` (the last two both clear the field).
+    fn meta_args(
+        root: &Utf8PathBuf,
+        targets: Value,
+        display: Value,
+        author: Value,
+        discard: bool,
+    ) -> Value {
+        json!({
+            "path": root.as_str(),
+            "kind": "skill",
+            "name": "diagnose",
+            "allowed_targets": targets,
+            "display_name": display,
+            "author": author,
+            "discard_orphan_overlays": discard,
+        })
+    }
+
+    /// Raw on-disk `metadata.yaml` for the `diagnose` skill.
+    fn read_metadata_yaml(root: &Utf8PathBuf) -> String {
+        let n = PrimitiveName::try_new("diagnose").unwrap();
+        let path = LibraryLayout::new(root).primitive_metadata(PrimitiveKind::Skill, &n);
+        std::fs::read_to_string(path.as_std_path()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn update_metadata_replaces_fields_preserves_created_at_and_commits() {
+        let (_tmp, root) = overlay_fx(); // diagnose skill, allowed [Claude, Pi], created_at NOW
+        git_init_repo(&root);
+        let res = cmd_update_metadata(&meta_args(
+            &root,
+            json!(["claude", "pi"]),
+            json!("Diag"),
+            json!("Alice"),
+            false,
+        ))
+        .await
+        .unwrap();
+        assert_eq!(res["metadata"]["display_name"], json!("Diag"));
+        assert_eq!(res["metadata"]["author"], json!("Alice"));
+        assert_eq!(res["metadata"]["allowed_targets"], json!(["claude", "pi"]));
+        assert_eq!(res["metadata"]["created_at"], json!(NOW), "created_at is preserved verbatim");
+        // metadata.yaml is git-tracked (not under gitignored working/), so it COMMITS.
+        assert_eq!(res["committed"], json!(true));
+        assert_eq!(res["commit_error"], json!(null));
+        assert_eq!(
+            git_capture(&root, &["log", "-1", "--pretty=%s"]),
+            "metadata(skills/diagnose)"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_metadata_clears_optional_fields_dropping_them_from_yaml() {
+        let (_tmp, root) = overlay_fx();
+        cmd_update_metadata(&meta_args(&root, json!(["claude", "pi"]), json!("Diag"), json!("Alice"), false))
+            .await
+            .unwrap();
+        // Clear via empty string + null — both map to None (drop the field).
+        let res = cmd_update_metadata(&meta_args(&root, json!(["claude", "pi"]), json!(""), json!(null), false))
+            .await
+            .unwrap();
+        assert_eq!(res["metadata"]["display_name"], json!(null));
+        assert_eq!(res["metadata"]["author"], json!(null));
+        let raw = read_metadata_yaml(&root);
+        assert!(!raw.contains("display_name"), "cleared display_name must drop from YAML:\n{raw}");
+        assert!(!raw.contains("author"), "cleared author must drop from YAML:\n{raw}");
+    }
+
+    #[tokio::test]
+    async fn update_metadata_dropping_target_with_overlay_requires_confirm() {
+        let (_tmp, root) = overlay_fx(); // [Claude, Pi]
+        // Give Claude an overlay so dropping Claude would orphan it.
+        let mut write = ov_args(&root, "claude");
+        write["content"] = json!("---\n---\nclaude-only\n");
+        cmd_write_overlay(&write).unwrap();
+
+        // Drop Claude WITHOUT the confirm flag → refused; disk untouched.
+        let err = cmd_update_metadata(&meta_args(&root, json!(["pi"]), json!(null), json!(null), false))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "library_target_removed_with_overlays");
+        // Claude is still allowed (read_primitive_target would 422 if it weren't)
+        // AND its overlay file survives — proving the metadata write never ran.
+        assert_eq!(
+            cmd_read_primitive_target(&ov_args(&root, "claude")).unwrap()["has_overlay"],
+            json!(true)
+        );
+
+        // Confirm: re-issue the identical update with the discard flag → succeeds,
+        // Claude dropped, the orphaned overlay deleted.
+        let res = cmd_update_metadata(&meta_args(&root, json!(["pi"]), json!(null), json!(null), true))
+            .await
+            .unwrap();
+        assert_eq!(res["metadata"]["allowed_targets"], json!(["pi"]));
+        assert_eq!(cmd_list_overlays(&ov_args(&root, "claude")).unwrap(), json!([]));
+    }
+
+    #[tokio::test]
+    async fn update_metadata_dropping_target_without_overlay_just_works() {
+        let (_tmp, root) = overlay_fx(); // [Claude, Pi], no overlays
+        // Drop Claude (no overlay) → no confirm needed.
+        let res = cmd_update_metadata(&meta_args(&root, json!(["pi"]), json!(null), json!(null), false))
+            .await
+            .unwrap();
+        assert_eq!(res["metadata"]["allowed_targets"], json!(["pi"]));
+    }
+
+    #[tokio::test]
+    async fn update_metadata_rejects_target_not_in_kind_matrix() {
+        let tmp = TempDir::new().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().canonicalize().unwrap()).unwrap();
+        init_library(&root, NOW).unwrap();
+        let n = PrimitiveName::try_new("router").unwrap();
+        // Agent disallows Codex (kind matrix: Claude, Pi only).
+        scaffold_primitive(LibraryLayout::new(&root), PrimitiveKind::Agent, &n, NOW, None).unwrap();
+        let args = json!({
+            "path": root.as_str(),
+            "kind": "agent",
+            "name": "router",
+            "allowed_targets": ["codex"],
+            "display_name": null,
+            "author": null,
+            "discard_orphan_overlays": false,
+        });
+        // Rejected before any read; the 422-mapped code, distinct from the
+        // allowed_targets (`library_target_not_allowed`) check.
+        assert_eq!(
+            cmd_update_metadata(&args).await.unwrap_err().code,
+            "library_target_not_allowed_for_kind"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_metadata_without_git_writes_but_reports_no_commit() {
+        let (_tmp, root) = overlay_fx(); // no .git/
+        let res = cmd_update_metadata(&meta_args(&root, json!(["claude", "pi"]), json!("Diag"), json!(null), false))
+            .await
+            .unwrap();
+        assert_eq!(res["committed"], json!(false));
+        assert_eq!(res["commit_error"], json!(null), "a non-git library is not a commit failure");
+        assert_eq!(res["metadata"]["display_name"], json!("Diag"), "the write still landed");
+    }
+
+    #[tokio::test]
+    async fn update_metadata_commit_failure_is_nonfatal() {
+        let (_tmp, root) = overlay_fx();
+        git_init_repo(&root);
+        // A pre-commit hook that always fails: `git add` succeeds, `git commit`
+        // fails AFTER the atomic metadata write already landed (the commit is
+        // advisory — Slice 4's posture).
+        run_git(&root, &["config", "core.hooksPath", ".git/hooks"]);
+        let hooks = root.join(".git/hooks");
+        std::fs::create_dir_all(hooks.as_std_path()).unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(hook.as_std_path(), b"#!/bin/sh\necho 'blocked by test hook' 1>&2\nexit 1\n")
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(hook.as_std_path(), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let env = handle(
+            &json!({
+                "v": 1,
+                "command": "update_metadata",
+                "args": meta_args(&root, json!(["claude", "pi"]), json!("Diag"), json!(null), false),
+            })
+            .to_string(),
+        )
+        .await;
+        assert_eq!(env["ok"], json!(true), "a commit failure must NOT fail the envelope");
+        assert_eq!(env["data"]["committed"], json!(false));
+        assert!(
+            env["data"]["commit_error"].as_str().is_some_and(|s| !s.is_empty()),
+            "a commit failure must surface a legible message, got {:?}",
+            env["data"]["commit_error"]
+        );
+        // The write landed regardless of the commit failure.
+        assert_eq!(env["data"]["metadata"]["display_name"], json!("Diag"));
+    }
+
+    #[tokio::test]
+    async fn update_metadata_rejects_malformed_allowed_targets() {
+        let (_tmp, root) = overlay_fx();
+        let args = json!({
+            "path": root.as_str(),
+            "kind": "skill",
+            "name": "diagnose",
+            "allowed_targets": ["nonsense"],
+        });
+        assert_eq!(
+            cmd_update_metadata(&args).await.unwrap_err().code,
             "library_invalid_target"
         );
     }
