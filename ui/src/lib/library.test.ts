@@ -6,6 +6,8 @@ import {
   parseSelection,
   dirtyCue,
   editorDirtyCue,
+  publishStateCue,
+  currentVersionCue,
   gitSummary,
   driftByTarget,
   installStateFor,
@@ -99,6 +101,43 @@ describe("editorDirtyCue (distinct copy from dirtyCue; colorblind-safe)", () => 
     expect(saved.glyph.length).toBeGreaterThan(0);
     expect(["amber", "cyan", "default"]).toContain(unsaved.tone);
     expect(["amber", "cyan", "default"]).toContain(saved.tone);
+  });
+});
+
+describe("publishStateCue (non-fatal commit contract; colorblind-safe)", () => {
+  test("three distinct states distinguishable by label + glyph, never bare red/green", () => {
+    const committed = publishStateCue(true, null);
+    const failed = publishStateCue(false, "Author identity unknown");
+    const noCommit = publishStateCue(false, null);
+    // All three carry distinct labels.
+    const labels = [committed.label, failed.label, noCommit.label];
+    expect(new Set(labels).size).toBe(3);
+    expect(committed.label).toBe("committed locally");
+    // The commit-failed state is the only amber (attention) one.
+    expect(failed.tone).toBe("amber");
+    expect(committed.tone).not.toBe("amber");
+    expect(noCommit.tone).not.toBe("amber");
+    // Distinguishable WITHOUT color: every state has a non-empty glyph.
+    for (const c of [committed, failed, noCommit]) {
+      expect(c.glyph.length).toBeGreaterThan(0);
+      expect(["amber", "cyan", "default"]).toContain(c.tone);
+    }
+    // "no commit" (non-git / nothing staged) is NOT styled as a failure.
+    expect(noCommit.label).toBe("published");
+  });
+});
+
+describe("currentVersionCue (current vs past; colorblind-safe)", () => {
+  test("current vs past differ by label + glyph; current is cyan, never green", () => {
+    const cur = currentVersionCue("v2", "v2");
+    const past = currentVersionCue("v1", "v2");
+    expect(cur.label).toBe("current");
+    expect(past.label).toBe("past version");
+    expect(cur.label).not.toBe(past.label);
+    expect(cur.glyph).not.toBe(past.glyph); // distinguishable without color
+    expect(cur.tone).toBe("cyan"); // CVD-safe accent, not green
+    // A null current (no pin) reads everything as past.
+    expect(currentVersionCue("v1", null).label).toBe("past version");
   });
 });
 

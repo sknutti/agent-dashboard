@@ -92,6 +92,27 @@ export function editorDirtyCue(isDirty: boolean): Cue {
     : { label: "saved", tone: "default", glyph: "○" };
 }
 
+/** Post-publish / set-current commit state. The version mutation ALWAYS
+ *  succeeded by the time this renders (Decision 1+3) — this cue describes only
+ *  the advisory git commit. Three distinct, colorblind-safe states (label +
+ *  glyph, never bare red/green): committed, published-but-the-commit-failed
+ *  (amber — the git message is shown alongside), and published-with-no-commit
+ *  (a non-git library or a no-op — NOT a failure). */
+export function publishStateCue(committed: boolean, commitError: string | null): Cue {
+  if (committed) return { label: "committed locally", tone: "default", glyph: "✓" };
+  if (commitError) return { label: "published · not committed", tone: "amber", glyph: "●" };
+  return { label: "published", tone: "default", glyph: "✓" };
+}
+
+/** Distinguish the current pinned version from a past one in the inspector —
+ *  by label + glyph + a CVD-safe cyan (never a bare red/green); "current" is the
+ *  pointer a future install reads. */
+export function currentVersionCue(label: string, current: string | null): Cue {
+  return label === current
+    ? { label: "current", tone: "cyan", glyph: "◆" }
+    : { label: "past version", tone: "default", glyph: "○" };
+}
+
 /** A words-only git summary for the status rail (no color-coded dots). Nulls are
  *  indeterminate — never asserted as "clean"/"all pushed". */
 export function gitSummary(s: LibraryStatus): string {

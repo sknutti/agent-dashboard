@@ -22,11 +22,17 @@
     uninstallPrimitive,
     acknowledgeDrift,
     importInstalls,
+    publishVersion,
+    setCurrentVersion,
+    revertToVersion,
+    readPrimitiveVersion,
     LibraryApiError,
     type LibraryKind,
     type LibraryTarget,
     type LibraryInstallSummary,
     type LibraryUninstallSummary,
+    type LibraryPublishResult,
+    type WorkingContent,
   } from "../lib/api";
   import {
     filterPrimitives,
@@ -41,6 +47,8 @@
     outcomeCue,
     uninstallCue,
     anyDrift,
+    publishStateCue,
+    currentVersionCue,
     KIND_LABELS,
   } from "../lib/library";
 
@@ -200,6 +208,152 @@
    *  server-side; we only ever see code + safe message). */
   function noticeFor(e: unknown, fallback: string): string {
     return e instanceof LibraryApiError ? e.message : fallback;
+  }
+
+  // ── versioning / publishing (versioning slice) ────────────────────────────
+  // The editor instance — bound through the {#key} block. Its pull-based exports
+  // let publish refuse stale (unsaved) bytes and let revert reseed the buffer,
+  // both WITHOUT an effect-driven prop sync.
+  let editorRef = $state<{
+    hasUnsavedEdits(): boolean;
+    applyWorking(w: WorkingContent): void;
+  } | null>(null);
+
+  let publishOpen = $state(false);
+  let publishLabel = $state("");
+  let publishNotes = $state("");
+  let versionBusy = $state(false);
+  // The PublishResult of the last publish/set-current — drives the commit-state
+  // cue (committed / not-committed / no-commit). Cleared on a new action/selection.
+  let publishResult = $state<LibraryPublishResult | null>(null);
+  // Route-local version notices (label hint, save-first guard, route errors,
+  // restore confirmation) — never the shell.
+  let versionNotice = $state<{ tone: "default" | "amber" | "cyan"; text: string } | null>(null);
+
+  // The inspected (frozen) version — lazily read per (selection, label). Reuses
+  // resource() for loading/error, keyed so a label change refetches; resets to
+  // closed (null label) whenever the selection changes (selectPrimitive).
+  let inspectLabel = $state<string | null>(null);
+  const inspectRes = resource(
+    () => (selected && inspectLabel ? `inspect:${selected}@${inspectLabel}` : "library:none"),
+    (k) => {
+      if (k === "library:none") return Promise.resolve(null);
+      const sel = parseSelection(selected ?? "");
+      return sel && inspectLabel
+        ? readPrimitiveVersion(sel.kind, sel.name, inspectLabel)
+        : Promise.resolve(null);
+    },
+  );
+  const inspectView = $derived(inspectRes.data);
+
+  // Captured-intent revert confirm (mirrors the install conflict dialog, D2): the
+  // dialog stores {kind,name,label} so a selection change across the confirm await
+  // can't redirect the rewind at the wrong primitive.
+  let revertDialog = $state<{ kind: LibraryKind; name: string; label: string } | null>(null);
+
+  /** Select a primitive AND reset all version UI (inspector/publish form/cues) so
+   *  a label or commit cue never leaks across primitives. */
+  function selectPrimitive(key: string): void {
+    selected = key;
+    inspectLabel = null;
+    publishOpen = false;
+    publishLabel = "";
+    publishNotes = "";
+    publishResult = null;
+    versionNotice = null;
+  }
+
+  /** Publish the SAVED working copy as a new immutable version. Refuses while the
+   *  editor has unsaved edits (publish snapshots on-disk state, not the buffer)
+   *  and validates the label shape client-side before the round-trip. */
+  async function doPublish(): Promise<void> {
+    if (!detail || versionBusy) return;
+    versionNotice = null;
+    publishResult = null;
+    const label = publishLabel.trim();
+    if (!/^v\d/.test(label)) {
+      versionNotice = {
+        tone: "amber",
+        text: "A version label looks like v1, v2, or v1.0 — start with “v” and a number.",
+      };
+      return;
+    }
+    if (editorRef?.hasUnsavedEdits()) {
+      versionNotice = {
+        tone: "amber",
+        text: "Save your edits in the editor first — publish snapshots the saved working copy.",
+      };
+      return;
+    }
+    versionBusy = true;
+    try {
+      const res = await publishVersion(detail.kind, detail.name, label, publishNotes.trim() || undefined);
+      publishResult = res;
+      publishOpen = false;
+      publishLabel = "";
+      publishNotes = "";
+      detailRes.reload(); // versions + current_version + the dirty badge
+      primitivesRes.reload();
+    } catch (e) {
+      versionNotice = { tone: "amber", text: noticeFor(e, "Couldn’t publish this version.") };
+    } finally {
+      versionBusy = false;
+    }
+  }
+
+  /** Move the current pointer (what a FUTURE install reads). Distinct from a
+   *  revert — it does NOT touch the working copy. */
+  async function doSetCurrent(label: string): Promise<void> {
+    if (!detail || versionBusy) return;
+    versionNotice = null;
+    publishResult = null;
+    versionBusy = true;
+    try {
+      const res = await setCurrentVersion(detail.kind, detail.name, label);
+      publishResult = res;
+      detailRes.reload(); // current_version + dirty
+      reloadInstallState(); // the install section gates on current_version
+    } catch (e) {
+      versionNotice = { tone: "amber", text: noticeFor(e, "Couldn’t set the current version.") };
+    } finally {
+      versionBusy = false;
+    }
+  }
+
+  /** Open the captured-intent confirm for a working-copy restore (it discards
+   *  uncommitted working edits, so it's destructive-adjacent — two-phase). */
+  function askRevert(label: string): void {
+    if (!detail) return;
+    revertDialog = { kind: detail.kind, name: detail.name, label };
+  }
+
+  async function confirmRevert(): Promise<void> {
+    const intent = revertDialog;
+    if (!intent || versionBusy) return;
+    revertDialog = null;
+    versionNotice = null;
+    publishResult = null;
+    versionBusy = true;
+    try {
+      await revertToVersion(intent.kind, intent.name, intent.label);
+      // Reseed the open editor buffer from the reverted working copy — fetch fresh
+      // detail directly so the reseed is deterministic regardless of resource
+      // reload timing (the buffer never tracks the `working` prop — W5).
+      const fresh = await getLibraryPrimitiveDetail(intent.kind, intent.name);
+      editorRef?.applyWorking(fresh.working);
+      detailRes.reload(); // keep the resource (working/dirty) consistent
+      primitivesRes.reload();
+      versionNotice = { tone: "default", text: `Working copy restored from ${intent.label}.` };
+    } catch (e) {
+      versionNotice = { tone: "amber", text: noticeFor(e, "Couldn’t restore the working copy.") };
+    } finally {
+      versionBusy = false;
+    }
+  }
+
+  /** Display text for a frozen version's primary (fenced for md, raw for toml). */
+  function versionDisplayText(w: WorkingContent): string {
+    return w.kind === "md" ? `---\n${w.frontmatter}---\n${w.body}` : w.text;
   }
 
   async function doInstall(
@@ -468,7 +622,7 @@
                         type="button"
                         class="item"
                         class:selected={selected === key}
-                        onclick={() => (selected = key)}
+                        onclick={() => selectPrimitive(key)}
                       >
                         <span class="item-name">{p.name}</span>
                         {#if drifted}
@@ -519,6 +673,7 @@
                selection hydrate fresh at init, never via an effect). -->
           {#key detail.kind + "/" + detail.name}
             <WorkingFileEditor
+              bind:this={editorRef}
               kind={detail.kind}
               name={detail.name}
               working={detail.working}
@@ -527,15 +682,109 @@
           {/key}
 
           <div class="versions">
-            <h4>Versions</h4>
+            <div class="versions-head">
+              <h4>Versions</h4>
+              <button type="button" class="act" disabled={versionBusy} onclick={() => (publishOpen = !publishOpen)}>
+                {publishOpen ? "Cancel" : "Publish version"}
+              </button>
+            </div>
+
+            {#if publishOpen}
+              <div class="publish-form">
+                <label>
+                  <span>Version label</span>
+                  <input
+                    class="mono"
+                    type="text"
+                    placeholder="v1"
+                    bind:value={publishLabel}
+                    disabled={versionBusy}
+                  />
+                </label>
+                <label>
+                  <span>Release notes <em>(optional)</em></span>
+                  <textarea rows="2" bind:value={publishNotes} disabled={versionBusy}></textarea>
+                </label>
+                <div class="publish-actions">
+                  <button type="button" class="act primary" disabled={versionBusy} onclick={doPublish}>
+                    {versionBusy ? "Publishing…" : "Publish"}
+                  </button>
+                  <small class="muted-line">Snapshots the saved working copy, then commits.</small>
+                </div>
+              </div>
+            {/if}
+
+            {#if publishResult}
+              {@const pc = publishStateCue(publishResult.committed, publishResult.commit_error)}
+              <div class="publish-result" class:warn={pc.tone === "amber"} role="status">
+                <Badge tone={pc.tone}>{pc.glyph} {pc.label}</Badge>
+                {#if publishResult.commit_error}
+                  <p class="commit-error">
+                    The version was published, but the git commit failed — set <code>user.email</code> in
+                    the library repo, then it commits on the next publish.
+                  </p>
+                  <pre class="commit-error-detail">{publishResult.commit_error}</pre>
+                {/if}
+              </div>
+            {/if}
+
             {#if detail.versions.length}
               <div class="version-strip">
                 {#each detail.versions as v (v)}
-                  <span class:current={v === detail.current_version}>{v}</span>
+                  {@const vc = currentVersionCue(v, detail.current_version)}
+                  <button
+                    type="button"
+                    class="version-chip"
+                    class:current={v === detail.current_version}
+                    class:active={v === inspectLabel}
+                    title={vc.label}
+                    onclick={() => (inspectLabel = inspectLabel === v ? null : v)}
+                  >
+                    <span class="mono">{v}</span>
+                    {#if v === detail.current_version}<span class="chip-glyph">{vc.glyph}</span>{/if}
+                  </button>
                 {/each}
               </div>
             {:else}
               <p class="muted-line">No published versions yet — working copy only.</p>
+            {/if}
+
+            {#if versionNotice}
+              <div class="route-notice" class:warn={versionNotice.tone === "amber"} role="status">
+                {versionNotice.text}
+              </div>
+            {/if}
+
+            {#if inspectLabel}
+              {@const ic = currentVersionCue(inspectLabel, detail.current_version)}
+              <div class="version-inspector">
+                <div class="inspector-head">
+                  <span class="mono">{inspectLabel}</span>
+                  <Badge tone={ic.tone}>{ic.glyph} {ic.label}</Badge>
+                  <button type="button" class="link-btn" onclick={() => (inspectLabel = null)}>Close</button>
+                </div>
+                {#if inspectRes.loading && !inspectView}
+                  <div class="muted">Loading…</div>
+                {:else if inspectRes.error}
+                  <EmptyState icon="file-text" title="Couldn’t read this version" error={true} onRetry={inspectRes.reload} />
+                {:else if inspectView}
+                  <div class="inspector-meta">
+                    <span>Created {inspectView.metadata.created_at.slice(0, 10)}</span>
+                    {#if inspectView.metadata.notes}<span class="notes">“{inspectView.metadata.notes}”</span>{/if}
+                  </div>
+                  <pre class="frozen mono">{versionDisplayText(inspectView.working)}</pre>
+                  <div class="inspector-actions">
+                    {#if inspectLabel !== detail.current_version}
+                      <button type="button" class="act" disabled={versionBusy} onclick={() => doSetCurrent(inspectLabel!)}>
+                        Set as current
+                      </button>
+                    {/if}
+                    <button type="button" class="act danger" disabled={versionBusy} onclick={() => askRevert(inspectLabel!)}>
+                      Restore working copy
+                    </button>
+                  </div>
+                {/if}
+              </div>
             {/if}
           </div>
 
@@ -653,6 +902,27 @@
           <button type="button" class="act" onclick={cancelConflict}>Cancel</button>
           <button type="button" class="act danger" onclick={confirmConflict}>
             {dialog.action === "install" ? "Overwrite" : "Remove anyway"}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Restore-working-copy confirm. Captured-intent {kind,name,label} (D2). The
+       rewind discards uncommitted working edits, so it's two-phase. -->
+  {#if revertDialog}
+    <div class="dialog-scrim" role="dialog" aria-modal="true" aria-labelledby="revert-title">
+      <div class="dialog">
+        <h3 id="revert-title">Restore working copy?</h3>
+        <p>
+          This overwrites the working copy of <strong>{revertDialog.name}</strong> with the contents of
+          <strong class="mono">{revertDialog.label}</strong>, deleting any files added since that version.
+        </p>
+        <p class="dialog-warn">Uncommitted edits in the working copy are discarded. There is no backup.</p>
+        <div class="dialog-actions">
+          <button type="button" class="act" onclick={() => (revertDialog = null)}>Cancel</button>
+          <button type="button" class="act danger" disabled={versionBusy} onclick={confirmRevert}>
+            Restore from {revertDialog.label}
           </button>
         </div>
       </div>
@@ -882,24 +1152,158 @@
   .versions {
     margin-top: 14px;
   }
+  .versions-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
   .version-strip {
     display: flex;
     gap: 6px;
     flex-wrap: wrap;
+    margin-top: 8px;
   }
-  .version-strip span {
-    padding: 4px 8px;
+  .version-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 9px;
     border: 1px solid var(--border);
     border-radius: 999px;
+    background: transparent;
     color: var(--text-dim);
-    font-family: var(--font-mono);
     font-size: 11px;
+    cursor: pointer;
   }
-  /* "current" uses cyan + a font-weight bump, not green (CVD). */
-  .version-strip .current {
+  .version-chip:hover {
+    border-color: var(--text-subtle);
+  }
+  /* "current" uses cyan + a weight bump, not green (CVD). */
+  .version-chip.current {
     color: var(--cyan, var(--accent-from));
     font-weight: 650;
     border-color: color-mix(in srgb, var(--accent-from) 40%, var(--border));
+  }
+  .version-chip.active {
+    background: color-mix(in srgb, var(--accent-from) 12%, transparent);
+    border-color: color-mix(in srgb, var(--accent-from) 45%, var(--border));
+  }
+  .version-chip .chip-glyph {
+    font-size: 10px;
+  }
+  .publish-form {
+    display: grid;
+    gap: 8px;
+    margin: 10px 0;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .publish-form label {
+    display: grid;
+    gap: 4px;
+    font-size: 11.5px;
+    color: var(--text-subtle);
+  }
+  .publish-form label em {
+    color: var(--text-dim);
+    font-style: normal;
+  }
+  .publish-form input,
+  .publish-form textarea {
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-inset, transparent);
+    color: var(--text);
+    font-size: 12px;
+  }
+  .publish-form textarea {
+    resize: vertical;
+    font-family: inherit;
+  }
+  .publish-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .publish-result {
+    display: grid;
+    gap: 6px;
+    margin: 10px 0;
+    padding: 9px 11px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .publish-result.warn {
+    border-color: color-mix(in srgb, var(--amber, #d08b00) 50%, var(--border));
+    background: color-mix(in srgb, var(--amber, #d08b00) 8%, transparent);
+  }
+  .commit-error {
+    margin: 0;
+    font-size: 11.5px;
+    color: var(--text-subtle);
+  }
+  .commit-error-detail {
+    margin: 0;
+    padding: 7px 9px;
+    border-radius: 6px;
+    background: var(--bg-inset, rgba(0, 0, 0, 0.18));
+    color: var(--text-dim);
+    font-size: 11px;
+    white-space: pre-wrap;
+    overflow-x: auto;
+  }
+  .version-inspector {
+    margin-top: 12px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .inspector-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .inspector-head .link-btn {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 11.5px;
+    cursor: pointer;
+    text-decoration: underline;
+  }
+  .inspector-meta {
+    display: flex;
+    gap: 12px;
+    margin: 8px 0;
+    font-size: 11.5px;
+    color: var(--text-subtle);
+  }
+  .inspector-meta .notes {
+    color: var(--text-dim);
+    font-style: italic;
+  }
+  .frozen {
+    max-height: 220px;
+    overflow: auto;
+    margin: 0 0 10px;
+    padding: 9px 11px;
+    border-radius: 6px;
+    background: var(--bg-inset, rgba(0, 0, 0, 0.18));
+    color: var(--text-dim);
+    font-size: 11.5px;
+    white-space: pre-wrap;
+  }
+  .inspector-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .act.primary {
+    border-color: color-mix(in srgb, var(--accent-from) 55%, var(--border));
+    color: var(--accent-from);
   }
   .rail-stack {
     display: grid;

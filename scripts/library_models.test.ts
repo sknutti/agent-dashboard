@@ -8,6 +8,8 @@ import {
   parseImportResult,
   parseWorkingFileEntries,
   parseWorkingFileBytes,
+  parsePrimitiveVersionView,
+  parsePublishResult,
 } from "./library_models.ts";
 
 // These parsers guard the WRITE-side process boundary. The load-bearing check
@@ -238,5 +240,76 @@ describe("parseWorkingFileBytes", () => {
 
   test("rejects a text variant missing its text", () => {
     expect(() => parseWorkingFileBytes({ kind: "text", ext: "md" })).toThrow(BridgeShapeError);
+  });
+});
+
+describe("parsePrimitiveVersionView (frozen version inspector)", () => {
+  test("parses an md working content + metadata with notes", () => {
+    const v = parsePrimitiveVersionView({
+      working: { kind: "md", frontmatter: "", body: "body-v1\n" },
+      metadata: { created_at: "2026-04-30T12:00:00Z", notes: "first publish" },
+    });
+    expect(v.working).toEqual({ kind: "md", frontmatter: "", body: "body-v1\n" });
+    expect(v.metadata).toEqual({ created_at: "2026-04-30T12:00:00Z", notes: "first publish" });
+  });
+
+  test("parses a toml working content + metadata without notes (skip_serializing_if=None)", () => {
+    const v = parsePrimitiveVersionView({
+      working: { kind: "toml", text: "x = 1\n" },
+      metadata: { created_at: "2026-04-30T12:00:00Z" },
+    });
+    expect(v.working).toEqual({ kind: "toml", text: "x = 1\n" });
+    expect(v.metadata.notes).toBeUndefined();
+  });
+
+  test("tolerates an explicit null notes (treated as absent)", () => {
+    const v = parsePrimitiveVersionView({
+      working: { kind: "md", frontmatter: "", body: "b" },
+      metadata: { created_at: "2026-04-30T12:00:00Z", notes: null },
+    });
+    expect(v.metadata.notes).toBeUndefined();
+  });
+
+  test("rejects an unknown working-content discriminant (serde rename guard)", () => {
+    expect(() =>
+      parsePrimitiveVersionView({
+        working: { kind: "markdown", frontmatter: "", body: "b" },
+        metadata: { created_at: "t" },
+      }),
+    ).toThrow(BridgeShapeError);
+  });
+
+  test("rejects metadata missing created_at", () => {
+    expect(() =>
+      parsePrimitiveVersionView({ working: { kind: "toml", text: "" }, metadata: {} }),
+    ).toThrow(BridgeShapeError);
+  });
+});
+
+describe("parsePublishResult (non-fatal commit contract)", () => {
+  test("a successful commit → committed:true, commit_error:null", () => {
+    expect(parsePublishResult({ committed: true, commit_error: null })).toEqual({
+      committed: true,
+      commit_error: null,
+    });
+  });
+
+  test("a failed commit → committed:false carrying the legible git message", () => {
+    const r = parsePublishResult({ committed: false, commit_error: "Author identity unknown" });
+    expect(r.committed).toBe(false);
+    expect(r.commit_error).toBe("Author identity unknown");
+  });
+
+  test("a no-op / non-git commit → committed:false, commit_error:null", () => {
+    expect(parsePublishResult({ committed: false, commit_error: null })).toEqual({
+      committed: false,
+      commit_error: null,
+    });
+  });
+
+  test("rejects a missing committed flag, or a non-string/non-null commit_error", () => {
+    expect(() => parsePublishResult({ commit_error: null })).toThrow(BridgeShapeError);
+    expect(() => parsePublishResult({ committed: true, commit_error: 5 })).toThrow(BridgeShapeError);
+    expect(() => parsePublishResult(null)).toThrow(BridgeShapeError);
   });
 });

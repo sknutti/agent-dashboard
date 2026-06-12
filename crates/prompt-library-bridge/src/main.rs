@@ -41,15 +41,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use prompt_library_core::{
-    acknowledge_drift, detail::read_primitive_detail, install, listing::list_primitives,
-    scan_drift_for_primitive, scan_record, uninstall, working_files, DriftReport,
-    Error as CoreError, InstallPaths, InstallRequest, InstallsFile, KindInfoTable, LibraryLayout,
-    PrimitiveKind, PrimitiveName, Target, UninstallRequest, VersionLabel, WorkingCopy,
-    INSTALLS_FORMAT_VERSION,
+    acknowledge_drift,
+    detail::{read_primitive_detail, read_primitive_version_view, revert_primitive_to_version},
+    install, listing::list_primitives, scan_drift_for_primitive, scan_record, uninstall,
+    working_files, DriftReport, Error as CoreError, InstallPaths, InstallRequest, InstallsFile,
+    KindInfoTable, LibraryLayout, PrimitiveKind, PrimitiveName, Target, UninstallRequest,
+    VersionLabel, VersionMetadata, VersionStore, WorkingCopy, INSTALLS_FORMAT_VERSION,
 };
 use prompt_library_git::{
-    git_ops::{current_branch, git_diff_changed_files},
-    runner::{GitRunner, TokioProcessRunner},
+    git_ops::{current_branch, git_add_all, git_commit, git_diff_changed_files},
+    runner::{GitRunner, RunnerError, TokioProcessRunner},
 };
 
 const PROTOCOL_VERSION: u32 = 1;
@@ -128,6 +129,14 @@ async fn dispatch(command: &str, args: &Value) -> Result<Value, LibraryError> {
         "save_working_file" => cmd_save_working_file(args),
         "rename_working_file" => cmd_rename_working_file(args),
         "delete_working_file" => cmd_delete_working_file(args),
+        // Versioning / publishing slice. `publish`/`set_current_version` are
+        // snapshot-then-commit (the commit is async git, so `.await`);
+        // `read_primitive_version`/`revert_to_version` are sync version/working
+        // fs ops with NO commit (the runtime is only needed by the git calls).
+        "publish" => cmd_publish(args).await,
+        "set_current_version" => cmd_set_current_version(args).await,
+        "read_primitive_version" => cmd_read_primitive_version(args),
+        "revert_to_version" => cmd_revert_to_version(args),
         other => Err(LibraryError::new(
             "unknown_command",
             "unknown bridge command",
@@ -618,6 +627,83 @@ fn cmd_delete_working_file(args: &Value) -> Result<Value, LibraryError> {
 }
 
 // ---------------------------------------------------------------------------
+// Versioning / publishing commands (versioning slice)
+// ---------------------------------------------------------------------------
+
+/// Snapshot the working copy into `versions/<label>/`, advance `current.txt`,
+/// then `git add -A && git commit`. Publish is TWO phases and NOT atomic across
+/// them (D1): the snapshot lands first (immutable; atomic per-file via core's
+/// `atomic_write`) and only then does the commit run, so a kill mid-publish
+/// leaves a usable, current version — never a torn library. A commit failure
+/// (e.g. no git identity) is therefore NON-fatal — the version exists and is
+/// current — and rides back as `{committed:false, commit_error}` at the
+/// envelope `ok` level (D3), never an error envelope. `created_at` is supplied
+/// by the TS layer (the install-slice seam — the bridge stays clock- and
+/// date-crate-free), shape-validated here.
+async fn cmd_publish(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let kind = parse_kind(args)?;
+    let name = parse_name(args)?;
+    let label = parse_version_label(args)?;
+    let created_at = parse_created_at(args)?;
+    let notes = parse_optional_notes(args);
+
+    let meta = VersionMetadata { created_at, notes: notes.clone() };
+    VersionStore::new(LibraryLayout::new(&root))
+        .snapshot(kind, &name, &label, &meta)
+        .map_err(map_core_error)?;
+
+    let message = format_publish_commit_message(kind, &name, &label, notes.as_deref());
+    let (committed, commit_error) = commit_change(&root, &message).await;
+    Ok(json!({ "committed": committed, "commit_error": commit_error }))
+}
+
+/// Move `current.txt` to `label` — the pointer a FUTURE install reads — and
+/// commit. `working/` is untouched (this is NOT a revert). Same non-fatal
+/// commit posture as publish (D3): a commit failure rides back in the result.
+async fn cmd_set_current_version(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let kind = parse_kind(args)?;
+    let name = parse_name(args)?;
+    let label = parse_version_label(args)?;
+
+    VersionStore::new(LibraryLayout::new(&root))
+        .set_current(kind, &name, &label)
+        .map_err(map_core_error)?;
+
+    let message = format!("current({}/{}): {}", kind.dir_name(), name.as_str(), label.as_str());
+    let (committed, commit_error) = commit_change(&root, &message).await;
+    Ok(json!({ "committed": committed, "commit_error": commit_error }))
+}
+
+/// Read a frozen version's primary file + `version.yaml` for the inspector.
+/// Read-only — no commit, no working-copy mutation.
+fn cmd_read_primitive_version(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let kind = parse_kind(args)?;
+    let name = parse_name(args)?;
+    let label = parse_version_label(args)?;
+    let view = read_primitive_version_view(LibraryLayout::new(&root), kind, &name, &label)
+        .map_err(map_core_error)?;
+    serde_json::to_value(view).map_err(serialize_err)
+}
+
+/// Rewind `working/` to a frozen version (overwrite + delete orphans). A
+/// LIBRARY-CONTENT op (D2), distinct from install-time version pinning: it does
+/// NOT commit (`working/` is gitignored, so a commit would no-op) and touches
+/// no install record. After a revert the working copy is dirty against
+/// `current.txt` until the author re-publishes.
+fn cmd_revert_to_version(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let kind = parse_kind(args)?;
+    let name = parse_name(args)?;
+    let label = parse_version_label(args)?;
+    revert_primitive_to_version(LibraryLayout::new(&root), kind, &name, &label)
+        .map_err(map_core_error)?;
+    Ok(json!({}))
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -821,6 +907,97 @@ fn looks_like_rfc3339(s: &str) -> bool {
     rest.eq_ignore_ascii_case("Z") || is_numeric_offset(rest)
 }
 
+/// Bind the untrusted `version_label` through `VersionLabel::try_new`, which
+/// enforces the `v<digits>[-suffix]` shape — a bad label becomes
+/// `library_invalid_version` (422) before any version dir is touched. Shared by
+/// publish/set-current/inspect/revert.
+fn parse_version_label(args: &Value) -> Result<VersionLabel, LibraryError> {
+    let raw = args.get("version_label").and_then(Value::as_str).unwrap_or("");
+    VersionLabel::try_new(raw).map_err(map_core_error)
+}
+
+/// Validate the caller-supplied `created_at` publish timestamp. Same posture and
+/// shape check as `parse_installed_at`: the TS layer sends
+/// `new Date().toISOString()`; the bridge owns no clock and pulls in no date
+/// crate (core stores `created_at` verbatim, doing ZERO validation itself).
+fn parse_created_at(args: &Value) -> Result<String, LibraryError> {
+    let raw = args.get("created_at").and_then(Value::as_str).unwrap_or("");
+    if !looks_like_rfc3339(raw) {
+        return Err(LibraryError::new(
+            "bridge_bad_request",
+            "missing or malformed publish timestamp",
+            format!("created_at `{raw}` is not an RFC3339 UTC timestamp"),
+        ));
+    }
+    Ok(raw.to_string())
+}
+
+/// `notes` is optional release-note text. Absent/null/non-string → `None`
+/// (notes are advisory). It travels in the JSON body, never argv, so newlines
+/// and special chars round-trip cleanly into the commit message body.
+fn parse_optional_notes(args: &Value) -> Option<String> {
+    args.get("notes").and_then(Value::as_str).map(str::to_string)
+}
+
+/// Stage and commit every tracked change with `message`, returning a non-fatal
+/// `(committed, commit_error)` rather than erroring (D1/D3). The library
+/// `.gitignore` excludes `*/working/`, so `git add -A` only ever commits the
+/// new `versions/<label>/` tree + `current.txt`, never working-copy autosave.
+///
+/// - `.git/` absent → `(false, None)`: a non-git library; the snapshot still
+///   succeeded (matches the reference's silent skip).
+/// - commit succeeds → `(true, None)`.
+/// - nothing staged (`git_commit` → `Ok(false)`) → `(false, None)`: e.g.
+///   re-publishing identical bytes. Not an error.
+/// - `git add`/`git commit` fails (e.g. no `user.email`) → `(false, Some(msg))`
+///   with git's stderr as the legible remediation. That stderr is git's own
+///   identity message, not a library path, so forwarding it preserves the m4
+///   path-discipline (the bridge never interpolates a fs path into a client
+///   message).
+async fn commit_change(repo: &Utf8Path, message: &str) -> (bool, Option<String>) {
+    if !repo.join(".git").exists() {
+        return (false, None);
+    }
+    let runner = TokioProcessRunner::new();
+    let repo_std = repo.as_std_path();
+    if let Err(e) = git_add_all(&runner, repo_std).await {
+        return (false, Some(runner_error_message(&e)));
+    }
+    match git_commit(&runner, repo_std, message).await {
+        Ok(true) => (true, None),
+        Ok(false) => (false, None),
+        Err(e) => (false, Some(runner_error_message(&e))),
+    }
+}
+
+/// The user-facing message for a git `RunnerError`: the `Failed` variant's
+/// stderr (git's own remediation text — path-free for the identity case), else
+/// the Display. This is the only git output a client ever sees.
+fn runner_error_message(e: &RunnerError) -> String {
+    match e {
+        RunnerError::Failed { stderr, .. } if !stderr.trim().is_empty() => {
+            stderr.trim().to_string()
+        }
+        other => other.to_string(),
+    }
+}
+
+/// `publish(<dir>/<name>): <label>` subject + an optional notes body (verbatim,
+/// stdin-delivered so newlines round-trip). Ported from the reference's
+/// `format_publish_commit_message`.
+fn format_publish_commit_message(
+    kind: PrimitiveKind,
+    name: &PrimitiveName,
+    label: &VersionLabel,
+    notes: Option<&str>,
+) -> String {
+    let subject = format!("publish({}/{}): {}", kind.dir_name(), name.as_str(), label.as_str());
+    match notes.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(body) => format!("{subject}\n\n{body}\n"),
+        None => format!("{subject}\n"),
+    }
+}
+
 /// `±HH:MM` numeric timezone offset.
 fn is_numeric_offset(s: &str) -> bool {
     let b = s.as_bytes();
@@ -892,6 +1069,14 @@ fn map_core_error(e: CoreError) -> LibraryError {
         CoreError::TooManyWorkingFiles { .. } => {
             ("working_file_too_many", "primitive working-file bundle is at its cap")
         }
+        // Versioning / publishing variants — promoted out of the catch-all so
+        // re-publishing an existing label is a 409 ("use a new label") and a
+        // set-current / inspect / revert against a missing label is a 404, each
+        // with an actionable UI next step instead of a generic 502.
+        CoreError::VersionExists(_) => {
+            ("library_version_exists", "a version with that label already exists")
+        }
+        CoreError::VersionNotFound(_) => ("library_version_not_found", "no such version"),
         // Anything still unmapped is a genuine bridge bug, not a known
         // application state.
         _ => ("bridge_command_failed", "library command failed"),
@@ -2005,6 +2190,225 @@ mod tests {
             data, expected,
             "read_working_file_binary drifted from the committed fixture — regenerate with \
              `bun run scripts/fixtures/bridge/capture.ts`"
+        );
+    }
+
+    // ---- versioning / publishing (versioning slice) -------------------------
+    //
+    // Publish is the dashboard's FIRST commit-on-write and FIRST multi-step
+    // mutation (snapshot + commit). These tests pin the four invariants the
+    // slice settled: immutability (re-publish → 409), the non-fatal commit
+    // posture (a commit failure rides back in the result, never an error
+    // envelope — Decision 1+3), revert-as-working-copy-rewind that does NOT
+    // commit (Decision 2), and label validation at the wire boundary.
+    //
+    // The git-backed tests shell out to the real `git` (the bridge does too via
+    // TokioProcessRunner). Each uses its own TempDir, so they never collide; a
+    // pre-commit hook gives a DETERMINISTIC commit failure independent of the
+    // dev's global git identity.
+
+    /// Versioning args for the scaffolded `diagnose` skill. `created_at` is the
+    /// TS-supplied publish timestamp (the install-slice seam — the bridge owns
+    /// no clock); it is harmlessly ignored by the read/set/revert commands.
+    fn ver_args(root: &Utf8PathBuf, label: &str) -> Value {
+        json!({
+            "path": root.as_str(), "kind": "skill", "name": "diagnose",
+            "version_label": label, "created_at": NOW,
+        })
+    }
+
+    /// Overwrite the primary `SKILL.md` working body (valid MD so the version
+    /// inspector can parse it back).
+    fn set_working_body(root: &Utf8PathBuf, body: &[u8]) {
+        let n = PrimitiveName::try_new("diagnose").unwrap();
+        WorkingCopy::new(LibraryLayout::new(root))
+            .save_base_file(PrimitiveKind::Skill, &n, Utf8Path::new("SKILL.md"), body)
+            .unwrap();
+    }
+
+    /// The current pinned label, read straight from core (`current.txt`).
+    fn current_label(root: &Utf8PathBuf) -> Option<String> {
+        let n = PrimitiveName::try_new("diagnose").unwrap();
+        VersionStore::new(LibraryLayout::new(root))
+            .read_current(PrimitiveKind::Skill, &n)
+            .unwrap()
+            .map(|l| l.as_str().to_string())
+    }
+
+    fn run_git(root: &Utf8PathBuf, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root.as_std_path())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// `git init` + a LOCAL identity (overrides any global config, so commit
+    /// success is deterministic regardless of the dev machine).
+    fn git_init_repo(root: &Utf8PathBuf) {
+        run_git(root, &["init", "-q"]);
+        run_git(root, &["config", "user.email", "test@example.com"]);
+        run_git(root, &["config", "user.name", "Library Test"]);
+    }
+
+    fn git_capture(root: &Utf8PathBuf, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root.as_std_path())
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[tokio::test]
+    async fn publish_without_git_snapshots_but_reports_no_commit() {
+        let (_tmp, root) = fixture_library();
+        set_working_body(&root, b"---\n---\nbody-v1\n");
+        // No `.git/` → snapshot succeeds, commit is silently skipped (not a
+        // failure): committed:false, commit_error:null.
+        let res = cmd_publish(&ver_args(&root, "v1")).await.unwrap();
+        assert_eq!(res["committed"], json!(false));
+        assert_eq!(res["commit_error"], json!(null), "a non-git library is not a commit failure");
+        // The version landed and current advanced.
+        assert_eq!(current_label(&root).as_deref(), Some("v1"));
+        let view = cmd_read_primitive_version(&ver_args(&root, "v1")).unwrap();
+        assert_eq!(view["working"]["kind"], json!("md"));
+        assert_eq!(view["working"]["body"], json!("body-v1\n"));
+        // Immutability: re-publishing the same label is a 409-mapped conflict.
+        assert_eq!(
+            cmd_publish(&ver_args(&root, "v1")).await.unwrap_err().code,
+            "library_version_exists"
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_commits_when_git_configured() {
+        let (_tmp, root) = fixture_library();
+        git_init_repo(&root);
+        set_working_body(&root, b"---\n---\nbody-v1\n");
+        let res = cmd_publish(&ver_args(&root, "v1")).await.unwrap();
+        assert_eq!(res["committed"], json!(true));
+        assert_eq!(res["commit_error"], json!(null));
+        assert_eq!(git_capture(&root, &["log", "-1", "--pretty=%s"]), "publish(skills/diagnose): v1");
+        assert_eq!(current_label(&root).as_deref(), Some("v1"));
+    }
+
+    #[tokio::test]
+    async fn publish_commit_failure_is_nonfatal_and_recoverable() {
+        let (_tmp, root) = fixture_library();
+        git_init_repo(&root);
+        // Force a DETERMINISTIC commit failure: a pre-commit hook that always
+        // exits non-zero. `git add` succeeds, `git commit` fails — AFTER the
+        // snapshot has already landed (Decision 1+3: the commit is advisory).
+        run_git(&root, &["config", "core.hooksPath", ".git/hooks"]);
+        let hooks = root.join(".git/hooks");
+        std::fs::create_dir_all(hooks.as_std_path()).unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(hook.as_std_path(), b"#!/bin/sh\necho 'blocked by test hook' 1>&2\nexit 1\n")
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(hook.as_std_path(), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        set_working_body(&root, b"---\n---\nbody-v1\n");
+        // Dispatch through the FULL envelope: the publish still succeeds (ok),
+        // the commit failure is data, not an error.
+        let env = handle(
+            &json!({ "v": 1, "command": "publish", "args": ver_args(&root, "v1") }).to_string(),
+        )
+        .await;
+        assert_eq!(env["ok"], json!(true), "a commit failure must NOT fail the publish envelope");
+        assert_eq!(env["data"]["committed"], json!(false));
+        assert!(
+            env["data"]["commit_error"].as_str().is_some_and(|s| !s.is_empty()),
+            "a commit failure must surface a legible message, got {:?}",
+            env["data"]["commit_error"]
+        );
+        // Recovery is a no-op: the version is on disk and current.
+        assert_eq!(current_label(&root).as_deref(), Some("v1"));
+        cmd_read_primitive_version(&ver_args(&root, "v1")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_current_moves_pointer_and_errors_on_unknown() {
+        let (_tmp, root) = fixture_library();
+        set_working_body(&root, b"---\n---\nbody-v1\n");
+        cmd_publish(&ver_args(&root, "v1")).await.unwrap();
+        set_working_body(&root, b"---\n---\nbody-v2\n");
+        cmd_publish(&ver_args(&root, "v2")).await.unwrap();
+        assert_eq!(current_label(&root).as_deref(), Some("v2"));
+        // Pin back to v1 (no git → committed:false, commit_error:null).
+        let res = cmd_set_current_version(&ver_args(&root, "v1")).await.unwrap();
+        assert_eq!(res["committed"], json!(false));
+        assert_eq!(current_label(&root).as_deref(), Some("v1"));
+        // Unknown label → 404-mapped code.
+        assert_eq!(
+            cmd_set_current_version(&ver_args(&root, "v9")).await.unwrap_err().code,
+            "library_version_not_found"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_primitive_version_returns_frozen_bytes() {
+        let (_tmp, root) = fixture_library();
+        set_working_body(&root, b"---\n---\nbody-v1\n");
+        cmd_publish(&ver_args(&root, "v1")).await.unwrap();
+        set_working_body(&root, b"---\n---\nbody-v2\n");
+        cmd_publish(&ver_args(&root, "v2")).await.unwrap();
+        // v1 stays frozen even after v2 is the working/current content.
+        let v1 = cmd_read_primitive_version(&ver_args(&root, "v1")).unwrap();
+        let v2 = cmd_read_primitive_version(&ver_args(&root, "v2")).unwrap();
+        assert_eq!(v1["working"]["body"], json!("body-v1\n"));
+        assert_eq!(v2["working"]["body"], json!("body-v2\n"));
+        assert_eq!(v1["metadata"]["created_at"], json!(NOW));
+        // Unknown label → 404-mapped code.
+        assert_eq!(
+            cmd_read_primitive_version(&ver_args(&root, "v9")).unwrap_err().code,
+            "library_version_not_found"
+        );
+    }
+
+    #[tokio::test]
+    async fn revert_rewinds_working_and_does_not_commit() {
+        let (_tmp, root) = fixture_library();
+        git_init_repo(&root);
+        set_working_body(&root, b"---\n---\nbody-v1\n");
+        cmd_publish(&ver_args(&root, "v1")).await.unwrap();
+        let head_after_publish = git_capture(&root, &["rev-parse", "HEAD"]);
+        // Mutate working: change the primary + add an orphan ref absent from v1.
+        set_working_body(&root, b"---\n---\nbody-v2\n");
+        seed_ref(&root, "orphan.md", b"orphan\n");
+        // Revert rewinds working/ exactly and creates NO commit (Decision 2).
+        let res = cmd_revert_to_version(&ver_args(&root, "v1")).unwrap();
+        assert_eq!(res, json!({}));
+        let primary = working_base(&root).join("SKILL.md");
+        assert_eq!(std::fs::read(primary.as_std_path()).unwrap(), b"---\n---\nbody-v1\n");
+        assert!(
+            !working_base(&root).join("orphan.md").exists(),
+            "revert is a true rewind — orphans are deleted"
+        );
+        assert_eq!(
+            git_capture(&root, &["rev-parse", "HEAD"]),
+            head_after_publish,
+            "revert touches only gitignored working/ — it must not commit"
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_rejects_invalid_version_label() {
+        let (_tmp, root) = fixture_library();
+        set_working_body(&root, b"---\n---\nbody\n");
+        // `1.0` is not `v<digits>` — rejected at the wire boundary, no dir touched.
+        assert_eq!(
+            cmd_publish(&ver_args(&root, "1.0")).await.unwrap_err().code,
+            "library_invalid_version"
         );
     }
 }

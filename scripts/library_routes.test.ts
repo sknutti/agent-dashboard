@@ -22,6 +22,10 @@ import {
   buildSaveWorkingFile,
   buildRenameWorkingFile,
   buildDeleteWorkingFile,
+  buildPublish,
+  buildSetCurrentVersion,
+  buildReadPrimitiveVersion,
+  buildRevertToVersion,
   withWriteLock,
   statusForCode,
   registerLibraryRoutes,
@@ -578,6 +582,162 @@ describe("buildDeleteWorkingFile", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Versioning / publishing (versioning slice)
+//
+// Inline result shapes (no committed fixtures): publish/set-current return a
+// PublishResult; a commit failure is DATA at 200, not an error. read returns a
+// PrimitiveVersionView. The load-bearing checks: the commit failure rides 200
+// (Decision 1+3), the version write root is config-resolved (never body), the
+// label flows to the bridge as `version_label`, and publish server-stamps
+// `created_at` (the body cannot set it).
+// ---------------------------------------------------------------------------
+
+const PUBLISH_OK = { committed: true, commit_error: null };
+const PUBLISH_NO_COMMIT = { committed: false, commit_error: null }; // non-git / nothing staged
+const PUBLISH_COMMIT_FAILED = {
+  committed: false,
+  commit_error: "Author identity unknown\n\n*** Please tell me who you are.",
+};
+const VERSION_VIEW = {
+  working: { kind: "md", frontmatter: "", body: "body-v1\n" },
+  metadata: { created_at: "2026-04-30T12:00:00Z", notes: "first publish" },
+};
+
+describe("statusForCode — versioning codes", () => {
+  test("re-publishing an existing label is a 409 immutability conflict", () => {
+    expect(statusForCode("library_version_exists")).toBe(409);
+  });
+  test("a missing version (set-current/inspect/revert) is 404", () => {
+    expect(statusForCode("library_version_not_found")).toBe(404);
+  });
+});
+
+describe("buildPublish", () => {
+  test("success → 200 with the PublishResult", async () => {
+    const r = await buildPublish(CONFIGURED, "skill", "diagnose", { version_label: "v1" }, okRun(PUBLISH_OK));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual(PUBLISH_OK);
+  });
+  test("a commit failure is NON-fatal — 200 carrying committed:false + the message (Decision 1+3)", async () => {
+    const r = await buildPublish(CONFIGURED, "skill", "diagnose", { version_label: "v1" }, okRun(PUBLISH_COMMIT_FAILED));
+    expect(r.status).toBe(200);
+    expect((r.body as any).committed).toBe(false);
+    expect((r.body as any).commit_error).toContain("identity unknown");
+  });
+  test("re-publishing an existing label → 409 library_version_exists", async () => {
+    const r = await buildPublish(CONFIGURED, "skill", "diagnose", { version_label: "v1" }, errRun(libErr("library_version_exists")));
+    expect(r.status).toBe(409);
+    expect((r.body as any).code).toBe("library_version_exists");
+    expect(JSON.stringify(r.body)).not.toContain("/Users/"); // m4: detail withheld
+  });
+  test("forwards version_label + notes + a SERVER-stamped created_at; root stays config (body can't set it)", async () => {
+    const { run, calls } = captureRun({ ok: true, data: PUBLISH_OK });
+    await buildPublish(
+      CONFIGURED,
+      "skill",
+      "diagnose",
+      { version_label: "v2", notes: "release notes", path: "/etc/evil", created_at: "1999-01-01T00:00:00Z" } as any,
+      run,
+      "2026-06-12T00:00:00Z",
+    );
+    expect(calls[0]!.command).toBe("publish");
+    expect(calls[0]!.args).toMatchObject({
+      path: "/libs/x", // config root, NOT the body's /etc/evil
+      kind: "skill",
+      name: "diagnose",
+      version_label: "v2",
+      notes: "release notes",
+      created_at: "2026-06-12T00:00:00Z", // the injected `now`, NOT the body's 1999 value
+    });
+  });
+  test("absent notes → null (not undefined) on the wire", async () => {
+    const { run, calls } = captureRun({ ok: true, data: PUBLISH_NO_COMMIT });
+    await buildPublish(CONFIGURED, "skill", "diagnose", { version_label: "v1" }, run, "2026-06-12T00:00:00Z");
+    expect(calls[0]!.args.notes).toBeNull();
+  });
+  test("unconfigured → 409 WITHOUT spawning (needs the layout to snapshot)", async () => {
+    const { run, calls } = captureRun({ ok: true, data: PUBLISH_OK });
+    const r = await buildPublish(UNCONFIGURED, "skill", "diagnose", { version_label: "v1" }, run);
+    expect(r.status).toBe(409);
+    expect((r.body as any).code).toBe("library_unconfigured");
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("buildSetCurrentVersion", () => {
+  test("success → 200 with the commit result", async () => {
+    const r = await buildSetCurrentVersion(CONFIGURED, "skill", "diagnose", { version_label: "v1" }, okRun(PUBLISH_NO_COMMIT));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual(PUBLISH_NO_COMMIT);
+  });
+  test("an unknown label → 404 library_version_not_found", async () => {
+    const r = await buildSetCurrentVersion(CONFIGURED, "skill", "diagnose", { version_label: "v9" }, errRun(libErr("library_version_not_found")));
+    expect(r.status).toBe(404);
+  });
+  test("forwards version_label; root stays config", async () => {
+    const { run, calls } = captureRun({ ok: true, data: PUBLISH_NO_COMMIT });
+    await buildSetCurrentVersion(CONFIGURED, "skill", "diagnose", { version_label: "v1" }, run);
+    expect(calls[0]!.command).toBe("set_current_version");
+    expect(calls[0]!.args).toMatchObject({ path: "/libs/x", kind: "skill", name: "diagnose", version_label: "v1" });
+  });
+  test("unconfigured → 409 WITHOUT spawning", async () => {
+    const { run, calls } = captureRun({ ok: true, data: PUBLISH_NO_COMMIT });
+    const r = await buildSetCurrentVersion(UNCONFIGURED, "skill", "diagnose", { version_label: "v1" }, run);
+    expect(r.status).toBe(409);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("buildReadPrimitiveVersion (read — no write lock)", () => {
+  test("success → 200 with the frozen view", async () => {
+    const r = await buildReadPrimitiveVersion(CONFIGURED, "skill", "diagnose", "v1", okRun(VERSION_VIEW));
+    expect(r.status).toBe(200);
+    expect((r.body as any).working.body).toBe("body-v1\n");
+    expect((r.body as any).metadata.created_at).toBe("2026-04-30T12:00:00Z");
+  });
+  test("an unknown label → 404 library_version_not_found", async () => {
+    const r = await buildReadPrimitiveVersion(CONFIGURED, "skill", "diagnose", "v9", errRun(libErr("library_version_not_found")));
+    expect(r.status).toBe(404);
+  });
+  test("the label reaches the bridge as version_label; root stays config", async () => {
+    const { run, calls } = captureRun({ ok: true, data: VERSION_VIEW });
+    await buildReadPrimitiveVersion(CONFIGURED, "skill", "diagnose", "v1", run);
+    expect(calls[0]!.command).toBe("read_primitive_version");
+    expect(calls[0]!.args).toMatchObject({ path: "/libs/x", kind: "skill", name: "diagnose", version_label: "v1" });
+  });
+  test("unconfigured → 409 WITHOUT spawning", async () => {
+    const { run, calls } = captureRun({ ok: true, data: VERSION_VIEW });
+    const r = await buildReadPrimitiveVersion(UNCONFIGURED, "skill", "diagnose", "v1", run);
+    expect(r.status).toBe(409);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("buildRevertToVersion", () => {
+  test("success → 200 {} (a working-copy rewind, not a commit)", async () => {
+    const r = await buildRevertToVersion(CONFIGURED, "skill", "diagnose", { version_label: "v1" }, okRun({}));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({});
+  });
+  test("an unknown label → 404 library_version_not_found", async () => {
+    const r = await buildRevertToVersion(CONFIGURED, "skill", "diagnose", { version_label: "v9" }, errRun(libErr("library_version_not_found")));
+    expect(r.status).toBe(404);
+  });
+  test("forwards version_label; root stays config", async () => {
+    const { run, calls } = captureRun({ ok: true, data: {} });
+    await buildRevertToVersion(CONFIGURED, "skill", "diagnose", { version_label: "v1" }, run);
+    expect(calls[0]!.command).toBe("revert_to_version");
+    expect(calls[0]!.args).toMatchObject({ path: "/libs/x", kind: "skill", name: "diagnose", version_label: "v1" });
+  });
+  test("unconfigured → 409 WITHOUT spawning", async () => {
+    const { run, calls } = captureRun({ ok: true, data: {} });
+    const r = await buildRevertToVersion(UNCONFIGURED, "skill", "diagnose", { version_label: "v1" }, run);
+    expect(r.status).toBe(409);
+    expect(calls).toHaveLength(0);
+  });
+});
+
 // Route-local isolation: library routes mounted on a Hono app must not affect a
 // sibling Observability route, even with no library configured.
 describe("registerLibraryRoutes — HTTP wiring + Observability isolation", () => {
@@ -674,6 +834,39 @@ describe("registerLibraryRoutes — HTTP wiring + Observability isolation", () =
       body: JSON.stringify({ content: "---\n---\nx\n" }),
     });
     expect([409, 422, 502]).toContain(save.status); // a library-local failure status
+
+    const summary = await app.request("/api/summary");
+    expect(summary.status).toBe(200); // Observability untouched
+  });
+
+  test("the versioning routes are wired (read version / publish / set-current / revert)", async () => {
+    const app = new Hono();
+    registerLibraryRoutes(app, () => CONFIGURED);
+    const post = (p: string) =>
+      app.request(p, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+        body: JSON.stringify({ version_label: "v1", notes: "x" }),
+      });
+    // Read (label as a path segment).
+    expect((await app.request("/api/library/primitives/skill/diagnose/versions/v1")).status).not.toBe(404);
+    // Writes.
+    expect((await post("/api/library/primitives/skill/diagnose/versions")).status).not.toBe(404);
+    expect((await post("/api/library/primitives/skill/diagnose/current-version")).status).not.toBe(404);
+    expect((await post("/api/library/primitives/skill/diagnose/revert")).status).not.toBe(404);
+  });
+
+  test("a failing publish is route-local: a sibling Observability route stays 200", async () => {
+    const app = new Hono();
+    app.get("/api/summary", (c) => c.json({ ok: true }));
+    registerLibraryRoutes(app, () => ({ ...CONFIGURED, bridgePath: "/no/such/bridge" }));
+
+    const publish = await app.request("/api/library/primitives/skill/diagnose/versions", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+      body: JSON.stringify({ version_label: "v1" }),
+    });
+    expect([409, 422, 502]).toContain(publish.status); // a library-local failure status
 
     const summary = await app.request("/api/summary");
     expect(summary.status).toBe(200); // Observability untouched

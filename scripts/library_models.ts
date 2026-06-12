@@ -90,6 +90,37 @@ export interface PrimitiveDetail {
   current_version: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// Versioning / publishing wire models (versioning slice)
+//
+// Mirror core's `version_store.rs::VersionMetadata` + `detail.rs::
+// PrimitiveVersionView`, and the bridge's publish/set-current result envelope.
+// `PublishResult` is the dashboard's non-fatal commit contract (Decision 3):
+// the snapshot always succeeded by the time this returns; `committed`/
+// `commit_error` describe ONLY the advisory git step. `commit_error` is git's
+// own stderr (the legible "set user.email" remediation), null when the commit
+// succeeded OR was a no-op (nothing staged / non-git library).
+// ---------------------------------------------------------------------------
+
+/** Per-version metadata (`version.yaml`). `notes` is skip_serializing_if=None. */
+export interface VersionMetadata {
+  created_at: string;
+  notes?: string;
+}
+
+/** A frozen version's primary content + its metadata, for the inspector pane. */
+export interface PrimitiveVersionView {
+  working: WorkingContent;
+  metadata: VersionMetadata;
+}
+
+/** The outcome of a publish / set-current: the version mutation already
+ *  succeeded; this reports the advisory git commit only. */
+export interface PublishResult {
+  committed: boolean;
+  commit_error: string | null;
+}
+
 export interface LibraryStatus {
   is_valid: boolean;
   marker_exists: boolean;
@@ -312,6 +343,30 @@ export function parsePrimitiveDetail(v: unknown): PrimitiveDetail {
     working: parseWorkingContent(v.working),
     versions: asStringArray(v.versions, "PrimitiveDetail.versions"),
     current_version: asNullableString(v.current_version, "PrimitiveDetail.current_version"),
+  };
+}
+
+function parseVersionMetadata(v: unknown): VersionMetadata {
+  if (!isObject(v)) fail("VersionMetadata");
+  const m: VersionMetadata = { created_at: asString(v.created_at, "VersionMetadata.created_at") };
+  // `notes` is skip_serializing_if=None on the Rust side — present-or-absent.
+  if (v.notes !== undefined && v.notes !== null) m.notes = asString(v.notes, "VersionMetadata.notes");
+  return m;
+}
+
+export function parsePrimitiveVersionView(v: unknown): PrimitiveVersionView {
+  if (!isObject(v)) fail("PrimitiveVersionView");
+  return {
+    working: parseWorkingContent(v.working),
+    metadata: parseVersionMetadata(v.metadata),
+  };
+}
+
+export function parsePublishResult(v: unknown): PublishResult {
+  if (!isObject(v)) fail("PublishResult");
+  return {
+    committed: asBool(v.committed, "PublishResult.committed"),
+    commit_error: asNullableString(v.commit_error, "PublishResult.commit_error"),
   };
 }
 

@@ -643,3 +643,57 @@ export const renameWorkingFile = (kind: string, name: string, oldPath: string, n
 
 export const deleteWorkingFile = (kind: string, name: string, path: string) =>
   sendJson<Record<string, never>>(wfPath(kind, name), "DELETE", { path });
+
+// ── Prompt Library versioning / publishing fetchers (versioning slice) ──────
+// Mirror scripts/library_models.ts. publish/set-current return a PublishResult
+// even on a commit failure (the version mutation already succeeded — Decision
+// 1+3); the UI renders `committed`/`commit_error` as a colorblind-safe cue, not
+// an error. revert is a working-copy rewind (returns {}). read is a GET.
+
+/** Per-version metadata (`version.yaml`). `notes` is optional (None on Rust). */
+export interface LibraryVersionMetadata {
+  created_at: string;
+  notes?: string;
+}
+
+/** A frozen version's primary content + metadata, for the inspector. */
+export interface LibraryPrimitiveVersionView {
+  working: WorkingContent;
+  metadata: LibraryVersionMetadata;
+}
+
+/** Outcome of a publish / set-current: the version mutation already succeeded;
+ *  this reports the advisory git commit only. `commit_error` is git's legible
+ *  remediation message, null when the commit succeeded OR was a no-op. */
+export interface LibraryPublishResult {
+  committed: boolean;
+  commit_error: string | null;
+}
+
+/** Snapshot the working copy as a new immutable version, then commit. A
+ *  re-published label → LibraryApiError("library_version_exists"). */
+export const publishVersion = (kind: string, name: string, versionLabel: string, notes?: string) =>
+  sendJson<LibraryPublishResult>(`${primPath(kind, name)}/versions`, "POST", {
+    version_label: versionLabel,
+    notes: notes ?? null,
+  });
+
+/** Move the current pointer (what a FUTURE install reads). Unknown label →
+ *  LibraryApiError("library_version_not_found"). Working copy untouched. */
+export const setCurrentVersion = (kind: string, name: string, versionLabel: string) =>
+  sendJson<LibraryPublishResult>(`${primPath(kind, name)}/current-version`, "POST", {
+    version_label: versionLabel,
+  });
+
+/** Rewind `working/` to a frozen version (overwrite + delete orphans). A
+ *  library-content op, NOT a re-install; does not commit. */
+export const revertToVersion = (kind: string, name: string, versionLabel: string) =>
+  sendJson<Record<string, never>>(`${primPath(kind, name)}/revert`, "POST", {
+    version_label: versionLabel,
+  });
+
+/** Read a frozen version's primary content + metadata for the inspector. */
+export const readPrimitiveVersion = (kind: string, name: string, label: string) =>
+  getJson<LibraryPrimitiveVersionView>(
+    `${primPath(kind, name)}/versions/${encodeURIComponent(label)}`,
+  );

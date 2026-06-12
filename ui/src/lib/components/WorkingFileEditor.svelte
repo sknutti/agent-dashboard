@@ -136,6 +136,26 @@
     }
   }
 
+  // Pull-based surface for the parent (Library.svelte version pane) — lets it act
+  // on the editor's SAVED state WITHOUT an effect-driven prop sync (no useEffect):
+  //  - hasUnsavedEdits(): publish snapshots the on-disk working copy, so the
+  //    version pane refuses to publish while the open buffer is dirty.
+  //  - applyWorking(w): after "Restore working copy" rewrites working/ on disk,
+  //    the parent hands the freshly-fetched primary back so the open buffer
+  //    reflects the revert (the buffer never tracks the `working` prop — W5 — so
+  //    a reseed must be pushed explicitly).
+  export function hasUnsavedEdits(): boolean {
+    return isDirty;
+  }
+  export function applyWorking(w: WorkingContent): void {
+    loadNonce++; // cancel any in-flight ref read
+    selectedFile = null;
+    loadedContent = null;
+    buffer = primaryToText(w);
+    baseline = buffer;
+    editorError = null;
+  }
+
   /** Open the primary (no fetch — its content is the `working` prop). Cancels any
    *  in-flight ref read via the nonce. */
   function openPrimary(): void {

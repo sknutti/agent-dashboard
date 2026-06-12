@@ -361,3 +361,114 @@ describe("Library route — install rows, two-phase confirm, drift, import", () 
     expect(await screen.findByText(/upgrade the dashboard/)).toBeTruthy();
   });
 });
+
+// A primitive with published versions so the strip renders clickable chips and
+// the publish/inspect/set-current/restore flow is exercisable. v2 is current.
+const VERSIONED: LibraryPrimitiveDetail = {
+  kind: "skill", name: "diagnose",
+  metadata: { allowed_targets: ["claude"], created_at: "2026-04-30T12:00:00Z", author: "Ada Lovelace" },
+  working: { kind: "md", frontmatter: "", body: "current body\n" },
+  versions: ["v1", "v2"], current_version: "v2",
+};
+const FROZEN_V1: api.LibraryPrimitiveVersionView = {
+  working: { kind: "md", frontmatter: "", body: "frozen v1 body\n" },
+  metadata: { created_at: "2026-03-01T00:00:00Z", notes: "first cut" },
+};
+
+describe("Library route — versioning / publishing", () => {
+  test("publishing a version calls publishVersion and shows the committed-locally cue", async () => {
+    mockValidLibrary(VERSIONED);
+    const pubSpy = vi.spyOn(api, "publishVersion").mockResolvedValue({ committed: true, commit_error: null });
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(screen.getByRole("button", { name: "Publish version" }));
+    await fireEvent.input(screen.getByPlaceholderText("v1"), { target: { value: "v3" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+    expect(pubSpy).toHaveBeenCalledWith("skill", "diagnose", "v3", undefined);
+    expect(await screen.findByText(/committed locally/)).toBeTruthy();
+  });
+
+  test("a publish whose commit failed shows 'not committed' + the git remediation, NOT an error", async () => {
+    mockValidLibrary(VERSIONED);
+    vi.spyOn(api, "publishVersion").mockResolvedValue({
+      committed: false,
+      commit_error: "Author identity unknown",
+    });
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(screen.getByRole("button", { name: "Publish version" }));
+    await fireEvent.input(screen.getByPlaceholderText("v1"), { target: { value: "v3" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+    expect(await screen.findByText(/not committed/)).toBeTruthy();
+    expect(screen.getByText(/user\.email/)).toBeTruthy(); // the remediation
+    expect(screen.getByText(/Author identity unknown/)).toBeTruthy(); // the git message
+  });
+
+  test("an invalid version label is refused client-side before any round-trip", async () => {
+    mockValidLibrary(VERSIONED);
+    const pubSpy = vi.spyOn(api, "publishVersion").mockResolvedValue({ committed: true, commit_error: null });
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(screen.getByRole("button", { name: "Publish version" }));
+    await fireEvent.input(screen.getByPlaceholderText("v1"), { target: { value: "1.0" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+    expect(screen.getByText(/looks like v1/)).toBeTruthy();
+    expect(pubSpy).not.toHaveBeenCalled();
+  });
+
+  test("publish refuses while the editor has unsaved edits (no stale snapshot)", async () => {
+    mockValidLibrary(VERSIONED);
+    const pubSpy = vi.spyOn(api, "publishVersion").mockResolvedValue({ committed: true, commit_error: null });
+    render(Library);
+    await selectDiagnose();
+    // Dirty the editor buffer (the textarea is the live working-copy editor).
+    const editor = (await screen.findByLabelText("file contents")) as HTMLTextAreaElement;
+    await fireEvent.input(editor, { target: { value: "---\n---\nuncommitted edit\n" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Publish version" }));
+    await fireEvent.input(screen.getByPlaceholderText("v1"), { target: { value: "v3" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+    expect(screen.getByText(/Save your edits/)).toBeTruthy();
+    expect(pubSpy).not.toHaveBeenCalled();
+  });
+
+  test("clicking a version opens the inspector with frozen content + the two distinct actions", async () => {
+    mockValidLibrary(VERSIONED);
+    vi.spyOn(api, "readPrimitiveVersion").mockResolvedValue(FROZEN_V1);
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(screen.getByRole("button", { name: /^v1/ })); // the past version chip
+    expect(await screen.findByText(/frozen v1 body/)).toBeTruthy();
+    expect(screen.getByText(/first cut/)).toBeTruthy(); // the notes
+    // The two actions are distinct + distinctly labelled (not color-coded only).
+    expect(screen.getByRole("button", { name: "Set as current" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Restore working copy" })).toBeTruthy();
+  });
+
+  test("'Set as current' on a past version calls setCurrentVersion (not a revert)", async () => {
+    mockValidLibrary(VERSIONED);
+    vi.spyOn(api, "readPrimitiveVersion").mockResolvedValue(FROZEN_V1);
+    const setSpy = vi.spyOn(api, "setCurrentVersion").mockResolvedValue({ committed: true, commit_error: null });
+    const revSpy = vi.spyOn(api, "revertToVersion").mockResolvedValue({} as any);
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(screen.getByRole("button", { name: /^v1/ }));
+    await fireEvent.click(await screen.findByRole("button", { name: "Set as current" }));
+    expect(setSpy).toHaveBeenCalledWith("skill", "diagnose", "v1");
+    expect(revSpy).not.toHaveBeenCalled(); // distinct op — set-current never reverts the working copy
+  });
+
+  test("'Restore working copy' is two-phase; only confirming calls revertToVersion", async () => {
+    mockValidLibrary(VERSIONED);
+    vi.spyOn(api, "readPrimitiveVersion").mockResolvedValue(FROZEN_V1);
+    const revSpy = vi.spyOn(api, "revertToVersion").mockResolvedValue({} as any);
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(screen.getByRole("button", { name: /^v1/ }));
+    await fireEvent.click(await screen.findByRole("button", { name: "Restore working copy" }));
+    // The confirm dialog is up; NO write has fired yet.
+    expect(revSpy).not.toHaveBeenCalled();
+    const dlg = await screen.findByRole("dialog");
+    await fireEvent.click(within(dlg).getByRole("button", { name: /Restore from v1/ }));
+    expect(revSpy).toHaveBeenCalledWith("skill", "diagnose", "v1");
+  });
+});

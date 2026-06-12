@@ -25,6 +25,8 @@ import {
   parseInstalledTargets,
   parseWorkingFileEntries,
   parseWorkingFileBytes,
+  parsePrimitiveVersionView,
+  parsePublishResult,
   type LibraryStatus,
 } from "./library_models.ts";
 import { importInstalls } from "./library_migration.ts";
@@ -86,6 +88,7 @@ export function statusForCode(code: string): HttpStatus {
     // file is in a state the command can't act on.
     case "working_file_exists": // create over an existing ref file — use Save
     case "working_file_refuse_primary": // rename/delete the primary file (refused in-core)
+    case "library_version_exists": // re-publish an existing label — immutable; use a new label
       return 409;
     // Bad client input (the :kind / :name segment, or a non-UTF-8 path).
     case "library_invalid_name":
@@ -105,6 +108,7 @@ export function statusForCode(code: string): HttpStatus {
       return 422;
     case "primitive_not_found":
     case "working_file_not_found": // save/rename a ref file that doesn't exist — use Create
+    case "library_version_not_found": // set-current/inspect/revert a label that isn't on disk
       return 404;
     // Everything else — transport faults and read/parse faults — is a 502: the
     // dashboard reached for the library and the bridge couldn't deliver.
@@ -515,6 +519,120 @@ export async function buildDeleteWorkingFile(
 }
 
 // ---------------------------------------------------------------------------
+// Versioning / publishing handlers (versioning slice)
+//
+// The library ROOT is always `config.libraryPath` (never the body) — every
+// command needs the layout, so each refuses early when unconfigured. The body
+// supplies only `version_label` (+ optional `notes` for publish). Writes get
+// WRITE_TIMEOUT_MS + SIGKILL but SKIP the ledger mutex (Decision 4): versioning
+// touches `versions/<label>/` + `current.txt` + the git index, NEVER
+// `installs.json`, so there is no load→mutate→save ledger cycle to serialize;
+// git's own `index.lock` serializes concurrent commits, and a lock collision
+// surfaces as a NON-fatal `commit_error` in the PublishResult, not corruption.
+//
+// publish/set-current return a `PublishResult` ({committed, commit_error}) at
+// HTTP 200 even when the git commit failed (Decision 1+3): the version mutation
+// already succeeded; the commit is advisory. The UI renders the commit state as
+// a cue, never an error toast. `read` is a pure read (no lock, default 10s
+// timeout); `revert` rewrites only gitignored `working/` and never commits
+// (Decision 2), returning `{}`.
+// ---------------------------------------------------------------------------
+
+interface VersionWriteBody {
+  version_label?: unknown;
+  notes?: unknown;
+}
+
+/** Write: snapshot the working copy as a new immutable version, then commit.
+ *  Re-publishing an existing label → library_version_exists (409). The publish
+ *  timestamp is server-stamped (config/clock owned by the route, like install),
+ *  never body-derived. */
+export async function buildPublish(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  body: VersionWriteBody,
+  run: Run = runBridge,
+  now: string = new Date().toISOString(),
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "publish",
+    {
+      path: config.libraryPath,
+      kind,
+      name,
+      version_label: body.version_label,
+      notes: typeof body.notes === "string" ? body.notes : null,
+      created_at: now,
+    },
+    { validate: parsePublishResult, timeoutMs: WRITE_TIMEOUT_MS },
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** Write: move `current.txt` (the pointer a FUTURE install reads) to a version,
+ *  then commit. Unknown label → library_version_not_found (404). Working copy
+ *  untouched (this is NOT a revert). */
+export async function buildSetCurrentVersion(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  body: VersionWriteBody,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "set_current_version",
+    { path: config.libraryPath, kind, name, version_label: body.version_label },
+    { validate: parsePublishResult, timeoutMs: WRITE_TIMEOUT_MS },
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** Read: a frozen version's primary content + metadata for the inspector. The
+ *  label rides a `:label` path segment (a version label has no `/`). No lock,
+ *  default read timeout. Unknown label → library_version_not_found (404). */
+export async function buildReadPrimitiveVersion(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  label: string,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "read_primitive_version",
+    { path: config.libraryPath, kind, name, version_label: label },
+    { validate: parsePrimitiveVersionView },
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** Write: rewind `working/` to a frozen version (overwrite + delete orphans). A
+ *  LIBRARY-CONTENT op, distinct from install pinning — it does NOT commit
+ *  (working/ is gitignored) and touches no install record. Unknown label → 404. */
+export async function buildRevertToVersion(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  body: VersionWriteBody,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "revert_to_version",
+    { path: config.libraryPath, kind, name, version_label: body.version_label },
+    { timeoutMs: WRITE_TIMEOUT_MS },
+  );
+  return r.ok ? { status: 200, body: {} } : errorResult(r.error);
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -612,5 +730,34 @@ export function registerLibraryRoutes(
   );
   app.delete("/api/library/primitives/:kind/:name/working-files", async (c) =>
     json(c, await buildDeleteWorkingFile(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
+  );
+  // Versioning / publishing reads + writes. The read (`GET …/versions/:label`)
+  // carries the label as a path segment (a version label has no `/`); it skips
+  // the write lock. The writes (publish / set-current / revert) get
+  // WRITE_TIMEOUT + SIGKILL but no ledger mutex (Decision 4 — they never touch
+  // installs.json). publish/set-current return a PublishResult ({committed,
+  // commit_error}) at 200 even on a commit failure (Decision 1+3). Each inherits
+  // server.ts's loopback Host + Origin guard. Mounted AFTER the more specific
+  // `/working-files*` routes; `/versions` and `/versions/:label` don't collide
+  // with them (distinct path prefix).
+  app.get("/api/library/primitives/:kind/:name/versions/:label", async (c) =>
+    json(
+      c,
+      await buildReadPrimitiveVersion(
+        loadConfig(),
+        c.req.param("kind"),
+        c.req.param("name"),
+        c.req.param("label"),
+      ),
+    ),
+  );
+  app.post("/api/library/primitives/:kind/:name/versions", async (c) =>
+    json(c, await buildPublish(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
+  );
+  app.post("/api/library/primitives/:kind/:name/current-version", async (c) =>
+    json(c, await buildSetCurrentVersion(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
+  );
+  app.post("/api/library/primitives/:kind/:name/revert", async (c) =>
+    json(c, await buildRevertToVersion(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
   );
 }
