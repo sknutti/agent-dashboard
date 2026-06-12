@@ -47,6 +47,17 @@ export type WorkingContent =
   | { kind: "md"; frontmatter: string; body: string }
   | { kind: "toml"; text: string };
 
+/** One content-search match — mirrors core's `find::FindHit` exactly. Each hit
+ *  is one matching line in one primitive's working-copy PRIMARY file (ref files
+ *  are excluded in-core). `line_number` is 1-based; `line_text` is truncated
+ *  with `…` past 500 chars in-core. (search slice) */
+export interface SearchResult {
+  kind: Kind;
+  name: string;
+  line_number: number;
+  line_text: string;
+}
+
 // ---------------------------------------------------------------------------
 // Working-file (editor) wire models (working-copy slice)
 //
@@ -390,6 +401,21 @@ function parsePrimitiveSummary(v: unknown): PrimitiveSummary {
 export function parsePrimitiveSummaries(v: unknown): PrimitiveSummary[] {
   if (!Array.isArray(v)) fail("PrimitiveSummary[]");
   return v.map(parsePrimitiveSummary);
+}
+
+function parseSearchResult(v: unknown): SearchResult {
+  if (!isObject(v) || !isKind(v.kind)) fail("SearchResult");
+  return {
+    kind: v.kind,
+    name: asString(v.name, "SearchResult.name"),
+    line_number: asNumber(v.line_number, "SearchResult.line_number"),
+    line_text: asString(v.line_text, "SearchResult.line_text"),
+  };
+}
+
+export function parseSearchResults(v: unknown): SearchResult[] {
+  if (!Array.isArray(v)) fail("SearchResult[]");
+  return v.map(parseSearchResult);
 }
 
 function parseWorkingContent(v: unknown): WorkingContent {

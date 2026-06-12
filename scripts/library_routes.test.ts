@@ -7,6 +7,7 @@ import {
   buildKindInfo,
   buildTargetInfo,
   buildLibraryPrimitives,
+  buildSearch,
   buildPrimitiveDetail,
   buildInstall,
   buildUninstall,
@@ -122,6 +123,46 @@ describe("buildLibraryPrimitives", () => {
   test("a marker-missing error maps to 409", async () => {
     const r = await buildLibraryPrimitives(CONFIGURED, errRun(libErr("library_marker_missing")));
     expect(r.status).toBe(409);
+  });
+});
+
+describe("buildSearch (content search — read, no write lock)", () => {
+  test("unconfigured → library_unconfigured WITHOUT calling the bridge", async () => {
+    let called = false;
+    const spy: typeof runBridge = (async () => {
+      called = true;
+      return { ok: true, data: [] };
+    }) as any;
+    const r = await buildSearch(UNCONFIGURED, "needle", spy);
+    expect((r.body as any).code).toBe("library_unconfigured");
+    expect(called).toBe(false);
+  });
+  test("configured → 200 with the parsed SearchResult array", async () => {
+    const hits = [{ kind: "skill", name: "diagnose", line_number: 4, line_text: "needle here" }];
+    const r = await buildSearch(CONFIGURED, "needle", okRun(hits));
+    expect(r.status).toBe(200);
+    expect(r.body as any[]).toHaveLength(1);
+    expect((r.body as any)[0]).toEqual(hits[0]);
+  });
+  test("an empty result set → 200 with []", async () => {
+    const r = await buildSearch(CONFIGURED, "", okRun([]));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual([]);
+  });
+  test("a bridge read fault maps to 502 with only {code,message} (detail withheld, m4)", async () => {
+    const r = await buildSearch(CONFIGURED, "needle", errRun(libErr("library_unreadable")));
+    expect(r.status).toBe(502);
+    expect(r.body).toEqual({ code: "library_unreadable", message: "msg:library_unreadable" });
+    expect(JSON.stringify(r.body)).not.toContain("/Users/");
+  });
+  test("the query is threaded to the bridge as args.query", async () => {
+    let seen: Record<string, unknown> | undefined;
+    const spy: typeof runBridge = (async (_bridge: string, _cmd: string, args: Record<string, unknown>) => {
+      seen = args;
+      return { ok: true, data: [] };
+    }) as any;
+    await buildSearch(CONFIGURED, "find me", spy);
+    expect(seen).toEqual({ path: "/libs/x", query: "find me" });
   });
 });
 
@@ -1039,6 +1080,27 @@ describe("registerLibraryRoutes — HTTP wiring + Observability isolation", () =
       body: JSON.stringify({ targets: ["claude"], force: false }),
     });
     expect(del.status).not.toBe(404);
+  });
+
+  test("the search route is wired (GET, no write lock) and is distinct from :kind/:name", async () => {
+    const app = new Hono();
+    registerLibraryRoutes(app, () => CONFIGURED);
+    // The route must EXIST (not 404). A bare /search and a ?q= both resolve to
+    // buildSearch, never to the /primitives/:kind/:name detail handler.
+    expect((await app.request("/api/library/search")).status).not.toBe(404);
+    expect((await app.request("/api/library/search?q=needle")).status).not.toBe(404);
+  });
+
+  test("a failing search is route-local: a sibling Observability route stays 200", async () => {
+    const app = new Hono();
+    app.get("/api/summary", (c) => c.json({ ok: true }));
+    registerLibraryRoutes(app, () => ({ ...CONFIGURED, bridgePath: "/no/such/bridge" }));
+
+    const search = await app.request("/api/library/search?q=needle");
+    expect([409, 422, 502]).toContain(search.status); // a library-local failure status
+
+    const summary = await app.request("/api/summary");
+    expect(summary.status).toBe(200); // Observability untouched
   });
 
   test("the working-file read + write routes are wired (list/read/save/create/update/rename/delete)", async () => {

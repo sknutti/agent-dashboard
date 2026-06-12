@@ -31,6 +31,7 @@ import {
   parseOverlayLists,
   parseMetadataUpdateResult,
   parseReimportResult,
+  parseSearchResults,
   type LibraryStatus,
 } from "./library_models.ts";
 import { importInstalls } from "./library_migration.ts";
@@ -160,6 +161,25 @@ export async function buildLibraryPrimitives(config: LibraryConfig, run: Run = r
     "list_primitives",
     { path: config.libraryPath },
     { validate: parsePrimitiveSummaries },
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** Library-wide content search (search slice). A READ — no write lock, no
+ *  WRITE_TIMEOUT; it uses the default read timeout exactly like
+ *  buildLibraryPrimitives. An absent/empty `query` forwards `""` → the bridge
+ *  returns `[]` (200), never an error. */
+export async function buildSearch(
+  config: LibraryConfig,
+  query: string,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "find_in_library",
+    { path: config.libraryPath, query },
+    { validate: parseSearchResults },
   );
   return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
 }
@@ -883,6 +903,10 @@ export function registerLibraryRoutes(
   app.get("/api/library/kind-info", async (c) => json(c, await buildKindInfo(loadConfig())));
   app.get("/api/library/target-info", async (c) => json(c, await buildTargetInfo(loadConfig())));
   app.get("/api/library/primitives", async (c) => json(c, await buildLibraryPrimitives(loadConfig())));
+  // Content search (read, no write lock). Distinct `/search` prefix — no
+  // collision with `:kind/:name`. An absent `q` forwards `""` → bridge returns
+  // `[]` (200), so the route never errors on a blank query.
+  app.get("/api/library/search", async (c) => json(c, await buildSearch(loadConfig(), c.req.query("q") ?? "")));
   // Whole-ledger drift (feeds explorer badges + detail on the 30s poll). Mounted
   // before the :kind/:name routes — distinct path, but kept grouped with reads.
   app.get("/api/library/drift", async (c) => json(c, await buildDriftBatch(loadConfig())));

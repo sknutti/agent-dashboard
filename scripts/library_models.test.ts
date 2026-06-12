@@ -14,6 +14,7 @@ import {
   parseMetadataUpdateResult,
   parseTargetView,
   parseOverlayLists,
+  parseSearchResults,
 } from "./library_models.ts";
 
 // These parsers guard the WRITE-side process boundary. The load-bearing check
@@ -177,6 +178,42 @@ describe("parseImportResult", () => {
   test("rejects a non-number imported count", () => {
     expect(() => parseImportResult({ imported: "119" })).toThrow(BridgeShapeError);
     expect(() => parseImportResult({})).toThrow(BridgeShapeError);
+  });
+});
+
+describe("parseSearchResults", () => {
+  test("parses a FindHit array (mirrors core's find::FindHit)", () => {
+    const hits = [
+      { kind: "skill" as const, name: "diagnose", line_number: 4, line_text: "needle here" },
+      { kind: "command" as const, name: "review", line_number: 1, line_text: "find me" },
+    ];
+    expect(parseSearchResults(hits)).toEqual(hits);
+  });
+
+  test("an empty result set parses to an empty array", () => {
+    expect(parseSearchResults([])).toEqual([]);
+  });
+
+  test("rejects an element missing line_number", () => {
+    expect(() =>
+      parseSearchResults([{ kind: "skill", name: "diagnose", line_text: "x" }]),
+    ).toThrow(BridgeShapeError);
+  });
+
+  test("rejects a non-number line_number", () => {
+    expect(() =>
+      parseSearchResults([{ kind: "skill", name: "diagnose", line_number: "4", line_text: "x" }]),
+    ).toThrow(BridgeShapeError);
+  });
+
+  test("rejects an unknown kind discriminant", () => {
+    expect(() =>
+      parseSearchResults([{ kind: "widget", name: "diagnose", line_number: 4, line_text: "x" }]),
+    ).toThrow(BridgeShapeError);
+  });
+
+  test("rejects a non-array payload", () => {
+    expect(() => parseSearchResults({})).toThrow(BridgeShapeError);
   });
 });
 
