@@ -296,6 +296,70 @@ export type ReimportResult =
   | { kind: "install_missing" };
 
 // ---------------------------------------------------------------------------
+// Primitive-lifecycle wire models (lifecycle slice)
+//
+// Structural CRUD over the library. create/delete/rename/duplicate/import edit
+// the git-TRACKED library tree, so each carries the same non-fatal
+// `{committed, commit_error}` contract as publish (the library write already
+// landed by the time the result returns; the commit is advisory). `forget`
+// touches only the dashboard-owned installs.json (gitignored), so it has NO
+// commit fields. A `create` result is exactly a `PublishResult`
+// (`{committed, commit_error}`) — it's parsed with `parsePublishResult`, no
+// distinct type needed.
+// ---------------------------------------------------------------------------
+
+/** Outcome of a `delete_primitive`: the per-target force-uninstall summary the
+ *  UI inspects, plus whether the library dir was removed and the advisory
+ *  commit. A bail (uninstall `failures` non-empty) → `library_dir_removed:false`
+ *  + `committed:false`; the library tree survives. */
+export interface DeletePrimitiveResult {
+  uninstall: UninstallSummary;
+  library_dir_removed: boolean;
+  committed: boolean;
+  commit_error: string | null;
+}
+
+/** Outcome of a `rename_primitive`: how many installs.json records were
+ *  rewritten to the new name (the "N installed copies keep the old name until
+ *  reinstalled" UI caveat) + the advisory commit. */
+export interface RenamePrimitiveResult {
+  install_records_updated: number;
+  committed: boolean;
+  commit_error: string | null;
+}
+
+/** Outcome of a `duplicate_primitive`: the new primitive's name + the advisory
+ *  commit. Versions and install records are NOT carried (the duplicate starts
+ *  at "no published version, not installed"). */
+export interface DuplicatePrimitiveResult {
+  new_name: string;
+  committed: boolean;
+  commit_error: string | null;
+}
+
+/** Outcome of an `import_primitive_from_path` (the local-path classify flavor,
+ *  NOT url import). Tagged on `kind`, every variant a 200 the UI routes on. Only
+ *  `imported` wrote a git-tracked tree, so only it carries commit fields;
+ *  `not_classifiable` points the user at the bootstrap wizard. */
+export type ImportFromPathResult =
+  | {
+      kind: "imported";
+      primitive_kind: Kind;
+      name: string;
+      committed: boolean;
+      commit_error: string | null;
+    }
+  | { kind: "already_exists"; primitive_kind: Kind; name: string }
+  | { kind: "not_classifiable"; reason: string };
+
+/** Outcome of a `forget_primitive`: whether any installs.json record was
+ *  dropped (idempotent — `false` when nothing matched). No commit (the ledger is
+ *  not in the library repo). */
+export interface ForgetResult {
+  removed: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Runtime validators
 // ---------------------------------------------------------------------------
 
@@ -648,6 +712,68 @@ export function parseReimportResult(v: unknown): ReimportResult {
     default:
       return fail("ReimportResult (unknown kind)");
   }
+}
+
+export function parseDeletePrimitiveResult(v: unknown): DeletePrimitiveResult {
+  if (!isObject(v)) fail("DeletePrimitiveResult");
+  return {
+    uninstall: parseUninstallSummary(v.uninstall),
+    library_dir_removed: asBool(v.library_dir_removed, "DeletePrimitiveResult.library_dir_removed"),
+    committed: asBool(v.committed, "DeletePrimitiveResult.committed"),
+    commit_error: asNullableString(v.commit_error, "DeletePrimitiveResult.commit_error"),
+  };
+}
+
+export function parseRenamePrimitiveResult(v: unknown): RenamePrimitiveResult {
+  if (!isObject(v)) fail("RenamePrimitiveResult");
+  return {
+    install_records_updated: asNumber(
+      v.install_records_updated,
+      "RenamePrimitiveResult.install_records_updated",
+    ),
+    committed: asBool(v.committed, "RenamePrimitiveResult.committed"),
+    commit_error: asNullableString(v.commit_error, "RenamePrimitiveResult.commit_error"),
+  };
+}
+
+export function parseDuplicatePrimitiveResult(v: unknown): DuplicatePrimitiveResult {
+  if (!isObject(v)) fail("DuplicatePrimitiveResult");
+  return {
+    new_name: asString(v.new_name, "DuplicatePrimitiveResult.new_name"),
+    committed: asBool(v.committed, "DuplicatePrimitiveResult.committed"),
+    commit_error: asNullableString(v.commit_error, "DuplicatePrimitiveResult.commit_error"),
+  };
+}
+
+export function parseImportFromPathResult(v: unknown): ImportFromPathResult {
+  if (!isObject(v)) fail("ImportFromPathResult");
+  switch (v.kind) {
+    case "imported":
+      if (!isKind(v.primitive_kind)) fail("ImportFromPathResult.primitive_kind");
+      return {
+        kind: "imported",
+        primitive_kind: v.primitive_kind,
+        name: asString(v.name, "ImportFromPathResult.name"),
+        committed: asBool(v.committed, "ImportFromPathResult.committed"),
+        commit_error: asNullableString(v.commit_error, "ImportFromPathResult.commit_error"),
+      };
+    case "already_exists":
+      if (!isKind(v.primitive_kind)) fail("ImportFromPathResult.primitive_kind");
+      return {
+        kind: "already_exists",
+        primitive_kind: v.primitive_kind,
+        name: asString(v.name, "ImportFromPathResult.name"),
+      };
+    case "not_classifiable":
+      return { kind: "not_classifiable", reason: asString(v.reason, "ImportFromPathResult.reason") };
+    default:
+      return fail("ImportFromPathResult (unknown kind)");
+  }
+}
+
+export function parseForgetResult(v: unknown): ForgetResult {
+  if (!isObject(v)) fail("ForgetResult");
+  return { removed: asBool(v.removed, "ForgetResult.removed") };
 }
 
 function parseDriftReport(v: unknown): DriftReport {

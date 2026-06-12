@@ -33,6 +33,12 @@ import {
   buildRemoveOverlay,
   buildListOverlays,
   buildUpdateMetadata,
+  buildCreatePrimitive,
+  buildDeletePrimitive,
+  buildRenamePrimitive,
+  buildDuplicatePrimitive,
+  buildImportFromPath,
+  buildForgetPrimitive,
   withWriteLock,
   statusForCode,
   registerLibraryRoutes,
@@ -1377,5 +1383,300 @@ describe("registerLibraryRoutes — reimport HTTP wiring", () => {
 
     const summary = await app.request("/api/summary");
     expect(summary.status).toBe(200); // Observability untouched
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Primitive-lifecycle routes (lifecycle slice)
+//
+// Structural CRUD. The load-bearing checks: (1) the new library_primitive_exists
+// → 409 mapping (a name collision is a legible conflict, never a 502);
+// (2) home/installs_path are CONFIG-resolved, never body-derived (D7);
+// (3) the write-lock split — delete/rename/import/forget serialize (they mutate
+// installs.json), create/duplicate do NOT (publish posture); (4) the tagged
+// ImportFromPathResult variants all ride 200 as data the UI routes on;
+// (5) created_at is server-stamped; (6) route-local failure leaves Observability
+// at 200.
+// ---------------------------------------------------------------------------
+
+const DELETE_OK = { uninstall: { successes: [], failures: [] }, library_dir_removed: true, committed: true, commit_error: null };
+const DELETE_BAILED = {
+  uninstall: { successes: [], failures: [{ target: "claude", reason: { kind: "io", path: "x", message: "ENOTDIR" } }] },
+  library_dir_removed: false,
+  committed: false,
+  commit_error: null,
+};
+const RENAME_OK = { install_records_updated: 2, committed: true, commit_error: null };
+const DUPLICATE_OK = { new_name: "diagnose-copy", committed: true, commit_error: null };
+const IMPORT_OK = { kind: "imported", primitive_kind: "skill", name: "imported", committed: true, commit_error: null };
+const IMPORT_NOT_CLASSIFIABLE = { kind: "not_classifiable", reason: "path is not under a recognized install root" };
+const CREATE_OK = { committed: true, commit_error: null };
+const FORGET_OK = { removed: true };
+
+describe("statusForCode — lifecycle codes", () => {
+  test("a name collision is 409 (the create/rename/duplicate conflict)", () => {
+    expect(statusForCode("library_primitive_exists")).toBe(409);
+  });
+});
+
+describe("buildCreatePrimitive", () => {
+  test("a clean create → 200 with the commit result", async () => {
+    const r = await buildCreatePrimitive(CONFIGURED, { kind: "skill", name: "triage" }, okRun(CREATE_OK));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual(CREATE_OK);
+  });
+
+  test("a name collision → 409 (library_primitive_exists), never a 502", async () => {
+    const r = await buildCreatePrimitive(CONFIGURED, { kind: "skill", name: "diagnose" }, errRun(libErr("library_primitive_exists")));
+    expect(r.status).toBe(409);
+    expect((r.body as any).code).toBe("library_primitive_exists");
+    expect(JSON.stringify(r.body)).not.toContain("/Users/"); // m4: detail withheld
+  });
+
+  test("forwards kind/name from the body + a SERVER-stamped created_at; root stays config (no lock — publish posture)", async () => {
+    const { run, calls } = captureRun({ ok: true, data: CREATE_OK });
+    await buildCreatePrimitive(CONFIGURED, { kind: "skill", name: "triage", created_at: "1999-01-01T00:00:00Z" } as any, run, "2026-06-12T00:00:00Z");
+    expect(calls[0]!.command).toBe("create_primitive");
+    expect(calls[0]!.args).toMatchObject({
+      path: "/libs/x", // config root
+      kind: "skill",
+      name: "triage",
+      created_at: "2026-06-12T00:00:00Z", // injected now, NOT the body's 1999
+    });
+  });
+
+  test("unconfigured → 409 WITHOUT spawning (create needs the layout)", async () => {
+    const { run, calls } = captureRun({ ok: true, data: CREATE_OK });
+    const r = await buildCreatePrimitive(UNCONFIGURED, { kind: "skill", name: "triage" }, run);
+    expect(r.status).toBe(409);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("buildDeletePrimitive", () => {
+  test("a clean delete → 200 with the summary + commit fields", async () => {
+    const r = await buildDeletePrimitive(CONFIGURED, "skill", "diagnose", okRun(DELETE_OK));
+    expect(r.status).toBe(200);
+    expect((r.body as any).library_dir_removed).toBe(true);
+    expect((r.body as any).committed).toBe(true);
+  });
+
+  test("a bailed delete (uninstall failures, dir untouched) is a NORMAL 200 the UI inspects, not an error", async () => {
+    const r = await buildDeletePrimitive(CONFIGURED, "skill", "diagnose", okRun(DELETE_BAILED));
+    expect(r.status).toBe(200);
+    expect((r.body as any).library_dir_removed).toBe(false);
+    expect((r.body as any).committed).toBe(false);
+    expect((r.body as any).uninstall.failures).toHaveLength(1);
+  });
+
+  test("D7 tripwire: home/installs_path are config-resolved; a hostile body is ignored", async () => {
+    const { run, calls } = captureRun({ ok: true, data: DELETE_OK });
+    await buildDeletePrimitive(CONFIGURED, "skill", "diagnose", run);
+    expect(calls[0]!.command).toBe("delete_primitive");
+    expect(calls[0]!.args).toMatchObject({
+      path: "/libs/x",
+      home: "/home/test",
+      installs_path: "/data/installs.json",
+      kind: "skill",
+      name: "diagnose",
+    });
+  });
+
+  test("unconfigured → 409 WITHOUT spawning (delete needs the layout to rm the dir)", async () => {
+    const { run, calls } = captureRun({ ok: true, data: DELETE_OK });
+    const r = await buildDeletePrimitive(UNCONFIGURED, "skill", "diagnose", run);
+    expect(r.status).toBe(409);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("buildRenamePrimitive", () => {
+  test("a clean rename → 200 with the install-records-updated count", async () => {
+    const r = await buildRenamePrimitive(CONFIGURED, "skill", "diagnose", { new_name: "triage" }, okRun(RENAME_OK));
+    expect(r.status).toBe(200);
+    expect((r.body as any).install_records_updated).toBe(2);
+  });
+
+  test("a new_name collision → 409; a missing source → 404", async () => {
+    expect((await buildRenamePrimitive(CONFIGURED, "skill", "diagnose", { new_name: "taken" }, errRun(libErr("library_primitive_exists")))).status).toBe(409);
+    expect((await buildRenamePrimitive(CONFIGURED, "skill", "ghost", { new_name: "triage" }, errRun(libErr("primitive_not_found")))).status).toBe(404);
+  });
+
+  test("a malformed new_name → 422 (library_invalid_name at the boundary)", async () => {
+    const r = await buildRenamePrimitive(CONFIGURED, "skill", "diagnose", { new_name: "../evil" }, errRun(libErr("library_invalid_name")));
+    expect(r.status).toBe(422);
+  });
+
+  test("forwards new_name + config-resolved home/installs_path (D7)", async () => {
+    const { run, calls } = captureRun({ ok: true, data: RENAME_OK });
+    await buildRenamePrimitive(CONFIGURED, "skill", "diagnose", { new_name: "triage", home: "/etc", installs_path: "/etc/x" } as any, run);
+    expect(calls[0]!.command).toBe("rename_primitive");
+    expect(calls[0]!.args).toMatchObject({ path: "/libs/x", home: "/home/test", installs_path: "/data/installs.json", new_name: "triage" });
+  });
+});
+
+describe("buildDuplicatePrimitive", () => {
+  test("a clean duplicate → 200 with the new name + commit fields", async () => {
+    const r = await buildDuplicatePrimitive(CONFIGURED, "skill", "diagnose", { new_name: "diagnose-copy" }, okRun(DUPLICATE_OK));
+    expect(r.status).toBe(200);
+    expect((r.body as any).new_name).toBe("diagnose-copy");
+  });
+
+  test("forwards new_name + a SERVER-stamped created_at; sends NO installs_path (touches no ledger — publish posture)", async () => {
+    const { run, calls } = captureRun({ ok: true, data: DUPLICATE_OK });
+    await buildDuplicatePrimitive(CONFIGURED, "skill", "diagnose", { new_name: "diagnose-copy" }, run, "2026-06-12T00:00:00Z");
+    expect(calls[0]!.command).toBe("duplicate_primitive");
+    expect(calls[0]!.args).toMatchObject({ path: "/libs/x", kind: "skill", name: "diagnose", new_name: "diagnose-copy", created_at: "2026-06-12T00:00:00Z" });
+    expect(calls[0]!.args.installs_path).toBeUndefined(); // duplicate carries no install records
+  });
+
+  test("a new_name collision → 409", async () => {
+    expect((await buildDuplicatePrimitive(CONFIGURED, "skill", "diagnose", { new_name: "taken" }, errRun(libErr("library_primitive_exists")))).status).toBe(409);
+  });
+});
+
+describe("buildImportFromPath", () => {
+  test("an Imported result → 200 with the tagged result + commit fields", async () => {
+    const r = await buildImportFromPath(CONFIGURED, { source_path: "/home/test/.claude/skills/imported" }, okRun(IMPORT_OK));
+    expect(r.status).toBe(200);
+    expect((r.body as any).kind).toBe("imported");
+    expect((r.body as any).committed).toBe(true);
+  });
+
+  test("NotClassifiable rides 200 as DATA the UI routes on (→ bootstrap), not an error", async () => {
+    const r = await buildImportFromPath(CONFIGURED, { source_path: "../../etc/passwd" }, okRun(IMPORT_NOT_CLASSIFIABLE));
+    expect(r.status).toBe(200);
+    expect((r.body as any).kind).toBe("not_classifiable");
+  });
+
+  test("D7 tripwire: home/installs_path are config-resolved; only source_path rides the body", async () => {
+    const { run, calls } = captureRun({ ok: true, data: IMPORT_OK });
+    await buildImportFromPath(CONFIGURED, { source_path: "/home/test/.claude/skills/imported", home: "/etc", installs_path: "/etc/x" } as any, run, "2026-06-12T00:00:00Z");
+    expect(calls[0]!.command).toBe("import_primitive_from_path");
+    expect(calls[0]!.args).toMatchObject({
+      path: "/libs/x",
+      home: "/home/test", // config, NOT body
+      installs_path: "/data/installs.json", // config, NOT body
+      source_path: "/home/test/.claude/skills/imported",
+      created_at: "2026-06-12T00:00:00Z",
+    });
+  });
+
+  test("unconfigured → 409 WITHOUT spawning (import needs the layout)", async () => {
+    const { run, calls } = captureRun({ ok: true, data: IMPORT_OK });
+    const r = await buildImportFromPath(UNCONFIGURED, { source_path: "/x" }, run);
+    expect(r.status).toBe(409);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("buildForgetPrimitive", () => {
+  test("success → 200 with {removed}", async () => {
+    const r = await buildForgetPrimitive(CONFIGURED, "skill", "diagnose", okRun(FORGET_OK));
+    expect(r.status).toBe(200);
+    expect((r.body as any).removed).toBe(true);
+  });
+
+  test("works while unconfigured (installs.json only — uninstall posture); home/installs_path config-resolved", async () => {
+    const { run, calls } = captureRun({ ok: true, data: FORGET_OK });
+    const r = await buildForgetPrimitive(UNCONFIGURED, "skill", "diagnose", run);
+    expect(r.status).toBe(200);
+    expect(calls[0]!.args).toMatchObject({ home: "/home/test", installs_path: "/data/installs.json", kind: "skill", name: "diagnose" });
+    expect(calls[0]!.args.path).toBeUndefined(); // forget needs no library root
+  });
+});
+
+describe("lifecycle write-lock split (D1)", () => {
+  // delete/rename/import/forget mutate installs.json → must serialize. create/
+  // duplicate touch no ledger (publish posture) → must NOT block a ledger writer.
+  const slowRun = (maxRef: { active: number; max: number }): typeof runBridge =>
+    (async () => {
+      maxRef.active += 1;
+      maxRef.max = Math.max(maxRef.max, maxRef.active);
+      await new Promise((res) => setTimeout(res, 5));
+      maxRef.active -= 1;
+      return { ok: true, data: DELETE_OK };
+    }) as any;
+
+  test("delete serializes against a concurrent acknowledge (both ledger writers)", async () => {
+    const ref = { active: 0, max: 0 };
+    await Promise.all([
+      buildDeletePrimitive(CONFIGURED, "skill", "a", slowRun(ref)),
+      buildAcknowledgeDrift(CONFIGURED, "skill", "b", { target: "claude" }, slowRun(ref)),
+    ]);
+    expect(ref.max).toBe(1); // never two ledger writers in flight
+  });
+
+  test("rename, import, and forget each serialize against a ledger writer", async () => {
+    for (const op of [
+      (r: typeof runBridge) => buildRenamePrimitive(CONFIGURED, "skill", "a", { new_name: "b" }, r),
+      (r: typeof runBridge) => buildImportFromPath(CONFIGURED, { source_path: "/x" }, r),
+      (r: typeof runBridge) => buildForgetPrimitive(CONFIGURED, "skill", "a", r),
+    ]) {
+      const ref = { active: 0, max: 0 };
+      await Promise.all([op(slowRun(ref)), buildAcknowledgeDrift(CONFIGURED, "skill", "b", { target: "claude" }, slowRun(ref))]);
+      expect(ref.max).toBe(1);
+    }
+  });
+
+  test("create and duplicate do NOT take the write lock (publish posture — they never touch installs.json)", async () => {
+    // A create + duplicate dispatched concurrently must be able to overlap; if
+    // either grabbed the ledger mutex they'd serialize to max 1.
+    const ref = { active: 0, max: 0 };
+    await Promise.all([
+      buildCreatePrimitive(CONFIGURED, { kind: "skill", name: "a" }, slowRun(ref)),
+      buildDuplicatePrimitive(CONFIGURED, "skill", "a", { new_name: "b" }, slowRun(ref)),
+    ]);
+    expect(ref.max).toBe(2); // both run in parallel — neither is lock-gated
+  });
+});
+
+describe("registerLibraryRoutes — lifecycle HTTP wiring", () => {
+  test("the lifecycle routes are wired (create / delete / rename / duplicate / forget / import-from-path)", async () => {
+    const app = new Hono();
+    registerLibraryRoutes(app, () => CONFIGURED);
+    const post = (p: string, body: object) =>
+      app.request(p, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+        body: JSON.stringify(body),
+      });
+    expect((await post("/api/library/primitives", { kind: "skill", name: "triage" })).status).not.toBe(404);
+    expect((await post("/api/library/import-from-path", { source_path: "/x" })).status).not.toBe(404);
+    expect((await post("/api/library/primitives/skill/diagnose/rename", { new_name: "triage" })).status).not.toBe(404);
+    expect((await post("/api/library/primitives/skill/diagnose/duplicate", { new_name: "copy" })).status).not.toBe(404);
+    expect((await post("/api/library/primitives/skill/diagnose/forget", {})).status).not.toBe(404);
+    const del = await app.request("/api/library/primitives/skill/diagnose", {
+      method: "DELETE",
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+    });
+    expect(del.status).not.toBe(404);
+  });
+
+  test("the bare DELETE …/:kind/:name does not shadow …/install (uninstall) or …/working-files", async () => {
+    // Both more-specific DELETEs must still resolve to their own handlers, not
+    // the new bare delete — distinct suffixes.
+    const app = new Hono();
+    registerLibraryRoutes(app, () => CONFIGURED);
+    const del = (p: string) =>
+      app.request(p, {
+        method: "DELETE",
+        headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+        body: JSON.stringify({ targets: ["claude"], path: "notes.md" }),
+      });
+    expect((await del("/api/library/primitives/skill/diagnose/install")).status).not.toBe(404);
+    expect((await del("/api/library/primitives/skill/diagnose/working-files")).status).not.toBe(404);
+  });
+
+  test("a failing delete is route-local: a sibling Observability route stays 200", async () => {
+    const app = new Hono();
+    app.get("/api/summary", (c) => c.json({ ok: true }));
+    registerLibraryRoutes(app, () => ({ ...CONFIGURED, bridgePath: "/no/such/bridge" }));
+    const del = await app.request("/api/library/primitives/skill/diagnose", {
+      method: "DELETE",
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+    });
+    expect([409, 422, 502]).toContain(del.status);
+    expect((await app.request("/api/summary")).status).toBe(200);
   });
 });

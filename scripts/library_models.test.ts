@@ -15,6 +15,11 @@ import {
   parseTargetView,
   parseOverlayLists,
   parseSearchResults,
+  parseDeletePrimitiveResult,
+  parseRenamePrimitiveResult,
+  parseDuplicatePrimitiveResult,
+  parseImportFromPathResult,
+  parseForgetResult,
 } from "./library_models.ts";
 
 // These parsers guard the WRITE-side process boundary. The load-bearing check
@@ -514,5 +519,113 @@ describe("parseReimportResult (tagged union — every variant rides the ok envel
     expect(() =>
       parseReimportResult({ kind: "broken_source", primary_path: "SKILL.md", raw_bytes: ["x"], parse_error: "e" }),
     ).toThrow(BridgeShapeError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Primitive-lifecycle parsers (lifecycle slice)
+// ---------------------------------------------------------------------------
+
+describe("parseDeletePrimitiveResult", () => {
+  test("round-trips the nested uninstall summary + dir-removed + commit fields", () => {
+    const v = {
+      uninstall: { successes: [{ target: "claude", outcome: { kind: "removed" } }], failures: [] },
+      library_dir_removed: true,
+      committed: true,
+      commit_error: null,
+    };
+    const r = parseDeletePrimitiveResult(v);
+    expect(r.library_dir_removed).toBe(true);
+    expect(r.uninstall.successes[0]!.outcome.kind).toBe("removed");
+    expect(r.committed).toBe(true);
+  });
+
+  test("a bailed delete carries the failures + library_dir_removed:false", () => {
+    const r = parseDeletePrimitiveResult({
+      uninstall: { successes: [], failures: [{ target: "claude", reason: { kind: "io", path: "p", message: "ENOTDIR" } }] },
+      library_dir_removed: false,
+      committed: false,
+      commit_error: null,
+    });
+    expect(r.library_dir_removed).toBe(false);
+    expect(r.uninstall.failures).toHaveLength(1);
+  });
+
+  test("rejects a non-boolean library_dir_removed or a missing uninstall block", () => {
+    expect(() =>
+      parseDeletePrimitiveResult({ uninstall: { successes: [], failures: [] }, library_dir_removed: "yes", committed: true, commit_error: null }),
+    ).toThrow(BridgeShapeError);
+    expect(() => parseDeletePrimitiveResult({ library_dir_removed: true, committed: true, commit_error: null })).toThrow(BridgeShapeError);
+    expect(() => parseDeletePrimitiveResult(null)).toThrow(BridgeShapeError);
+  });
+});
+
+describe("parseRenamePrimitiveResult", () => {
+  test("round-trips the install-records-updated count + commit fields", () => {
+    expect(parseRenamePrimitiveResult({ install_records_updated: 3, committed: true, commit_error: null })).toEqual({
+      install_records_updated: 3,
+      committed: true,
+      commit_error: null,
+    });
+  });
+
+  test("rejects a non-numeric count", () => {
+    expect(() => parseRenamePrimitiveResult({ install_records_updated: "3", committed: true, commit_error: null })).toThrow(BridgeShapeError);
+    expect(() => parseRenamePrimitiveResult({})).toThrow(BridgeShapeError);
+  });
+});
+
+describe("parseDuplicatePrimitiveResult", () => {
+  test("round-trips the new name + commit fields", () => {
+    expect(parseDuplicatePrimitiveResult({ new_name: "diagnose-copy", committed: false, commit_error: "no identity" })).toEqual({
+      new_name: "diagnose-copy",
+      committed: false,
+      commit_error: "no identity",
+    });
+  });
+
+  test("rejects a missing new_name", () => {
+    expect(() => parseDuplicatePrimitiveResult({ committed: true, commit_error: null })).toThrow(BridgeShapeError);
+  });
+});
+
+describe("parseImportFromPathResult (tagged union — every variant rides the ok envelope)", () => {
+  test("imported carries kind + name + the commit contract", () => {
+    expect(
+      parseImportFromPathResult({ kind: "imported", primitive_kind: "skill", name: "diagnose", committed: true, commit_error: null }),
+    ).toEqual({ kind: "imported", primitive_kind: "skill", name: "diagnose", committed: true, commit_error: null });
+  });
+
+  test("already_exists carries kind + name, no commit fields", () => {
+    expect(parseImportFromPathResult({ kind: "already_exists", primitive_kind: "command", name: "review" })).toEqual({
+      kind: "already_exists",
+      primitive_kind: "command",
+      name: "review",
+    });
+  });
+
+  test("not_classifiable carries the reason", () => {
+    expect(parseImportFromPathResult({ kind: "not_classifiable", reason: "not under a known root" })).toEqual({
+      kind: "not_classifiable",
+      reason: "not under a known root",
+    });
+  });
+
+  test("an unknown discriminant or a bad primitive_kind throws", () => {
+    expect(() => parseImportFromPathResult({ kind: "teleported" })).toThrow(BridgeShapeError);
+    expect(() => parseImportFromPathResult({ kind: "imported", primitive_kind: "wizard", name: "x", committed: true, commit_error: null })).toThrow(BridgeShapeError);
+    expect(() => parseImportFromPathResult(null)).toThrow(BridgeShapeError);
+  });
+});
+
+describe("parseForgetResult", () => {
+  test("round-trips the removed flag", () => {
+    expect(parseForgetResult({ removed: true })).toEqual({ removed: true });
+    expect(parseForgetResult({ removed: false })).toEqual({ removed: false });
+  });
+
+  test("rejects a non-boolean removed", () => {
+    expect(() => parseForgetResult({ removed: "yes" })).toThrow(BridgeShapeError);
+    expect(() => parseForgetResult({})).toThrow(BridgeShapeError);
   });
 });

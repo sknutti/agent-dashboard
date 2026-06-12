@@ -32,6 +32,11 @@ import {
   parseMetadataUpdateResult,
   parseReimportResult,
   parseSearchResults,
+  parseDeletePrimitiveResult,
+  parseRenamePrimitiveResult,
+  parseDuplicatePrimitiveResult,
+  parseImportFromPathResult,
+  parseForgetResult,
   type LibraryStatus,
 } from "./library_models.ts";
 import { importInstalls } from "./library_migration.ts";
@@ -94,6 +99,7 @@ export function statusForCode(code: string): HttpStatus {
     case "working_file_exists": // create over an existing ref file — use Save
     case "working_file_refuse_primary": // rename/delete the primary file (refused in-core)
     case "library_version_exists": // re-publish an existing label — immutable; use a new label
+    case "library_primitive_exists": // create/rename/duplicate onto a taken name — pick another
     // Metadata edit dropped a target that still has overlay files. Like the
     // install `colliding_content`/`force` two-phase-confirm: recoverable by
     // re-issuing with `discard_orphan_overlays: true`, so it's a 409 conflict
@@ -876,6 +882,194 @@ export async function buildUpdateMetadata(
 }
 
 // ---------------------------------------------------------------------------
+// Primitive-lifecycle handlers (lifecycle slice)
+//
+// Structural CRUD over the library. The library ROOT is always
+// `config.libraryPath`; `home`/`installs_path` are CONFIG-injected, NEVER
+// body-derived (D7) — only `kind`/`name`/`new_name`/`source_path` ride the body.
+// The write-lock split follows the publish-vs-reimport precedent: a command
+// takes `withWriteLock` IFF it load→mutate→saves installs.json.
+//   - create / duplicate → NO lock (publish posture): they edit only the
+//     library tree + git, never installs.json. A concurrent commit race is
+//     non-fatal (git's own index.lock + the {committed, commit_error} contract),
+//     exactly as concurrent publishes already are.
+//   - delete / rename / import / forget → withWriteLock: each mutates
+//     installs.json — the D1 lost-update hazard reimport documents.
+// create/duplicate/delete/rename/import need the layout → refuse early when
+// unconfigured. `forget` works off installs.json only, so it runs even
+// unconfigured (the uninstall posture). The server-stamped `created_at` (route
+// owns the clock, like publish/install) seeds new metadata; it is never
+// body-derived.
+// ---------------------------------------------------------------------------
+
+interface CreateBody {
+  kind?: unknown;
+  name?: unknown;
+}
+
+interface NewNameBody {
+  new_name?: unknown;
+}
+
+interface ImportFromPathBody {
+  source_path?: unknown;
+}
+
+/** Write: scaffold a new primitive, then commit. `kind`/`name` ride the body
+ *  (collection-level POST). A name collision → library_primitive_exists (409); a
+ *  malformed name → library_invalid_name (422). No write lock (touches no
+ *  installs.json — publish posture). Returns a PublishResult shape. */
+export async function buildCreatePrimitive(
+  config: LibraryConfig,
+  body: CreateBody,
+  run: Run = runBridge,
+  now: string = new Date().toISOString(),
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "create_primitive",
+    {
+      path: config.libraryPath,
+      kind: typeof body.kind === "string" ? body.kind : "",
+      name: typeof body.name === "string" ? body.name : "",
+      created_at: now,
+    },
+    { validate: parsePublishResult, timeoutMs: WRITE_TIMEOUT_MS },
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** Write: wipe a primitive — force-uninstall every target, rm -rf the dir, drop
+ *  records, then commit (ONLY when the dir was actually removed). Takes the write
+ *  lock (it mutates installs.json). A DeletePrimitiveResult rides 200 as data the
+ *  UI inspects — a bail (uninstall `failures` non-empty, dir untouched) is NOT an
+ *  error. */
+export async function buildDeletePrimitive(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const args = { path: config.libraryPath, home: config.home, installs_path: config.installsPath, kind, name };
+  const r = await withWriteLock(() =>
+    run(config.bridgePath, "delete_primitive", args, {
+      validate: parseDeletePrimitiveResult,
+      timeoutMs: WRITE_TIMEOUT_MS,
+    }),
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** Write: fs::rename the library dir + rewrite installs.json records, then
+ *  commit. A `new_name` collision → 409; a missing source → 404. Takes the write
+ *  lock (it rewrites installs.json). The `install_records_updated` count rides
+ *  back for the UI's "N installed copies keep the old name" caveat. */
+export async function buildRenamePrimitive(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  body: NewNameBody,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const args = {
+    path: config.libraryPath,
+    home: config.home,
+    installs_path: config.installsPath,
+    kind,
+    name,
+    new_name: typeof body.new_name === "string" ? body.new_name : "",
+  };
+  const r = await withWriteLock(() =>
+    run(config.bridgePath, "rename_primitive", args, {
+      validate: parseRenamePrimitiveResult,
+      timeoutMs: WRITE_TIMEOUT_MS,
+    }),
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** Write: copy working/ + a freshly-stamped metadata.yaml to `new_name`, then
+ *  commit. Versions and install records are NOT carried. No write lock (touches
+ *  no installs.json — publish posture). A `new_name` collision → 409; a missing
+ *  source → 404. */
+export async function buildDuplicatePrimitive(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  body: NewNameBody,
+  run: Run = runBridge,
+  now: string = new Date().toISOString(),
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "duplicate_primitive",
+    {
+      path: config.libraryPath,
+      kind,
+      name,
+      new_name: typeof body.new_name === "string" ? body.new_name : "",
+      created_at: now,
+    },
+    { validate: parseDuplicatePrimitiveResult, timeoutMs: WRITE_TIMEOUT_MS },
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** Write: import a primitive from a local path ALREADY under a recognized
+ *  install root (the drag-drop fast path, NOT url import — that's Slice 10b).
+ *  `home`/`installs_path` are config-injected (D7); only `source_path` rides the
+ *  body. Takes the write lock (execute_creates writes installs.json). Every
+ *  ImportFromPathResult variant rides 200 as data the UI routes on
+ *  (imported / already_exists / not_classifiable); only `imported` committed. */
+export async function buildImportFromPath(
+  config: LibraryConfig,
+  body: ImportFromPathBody,
+  run: Run = runBridge,
+  now: string = new Date().toISOString(),
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const args = {
+    path: config.libraryPath,
+    home: config.home,
+    installs_path: config.installsPath,
+    source_path: typeof body.source_path === "string" ? body.source_path : "",
+    created_at: now,
+  };
+  const r = await withWriteLock(() =>
+    run(config.bridgePath, "import_primitive_from_path", args, {
+      validate: parseImportFromPathResult,
+      timeoutMs: WRITE_TIMEOUT_MS,
+    }),
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** Write: drop a primitive's installs.json records (the Reconcile "mark removed"
+ *  action for a primitive whose library dir is already gone). Works off
+ *  installs.json only — no layout, so it runs even when the library is
+ *  unconfigured (uninstall posture). Takes the write lock (it mutates
+ *  installs.json). NO commit (the ledger is not in the library repo). */
+export async function buildForgetPrimitive(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  const args = { home: config.home, installs_path: config.installsPath, kind, name };
+  const r = await withWriteLock(() =>
+    run(config.bridgePath, "forget_primitive", args, {
+      validate: parseForgetResult,
+      timeoutMs: WRITE_TIMEOUT_MS,
+    }),
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -1068,5 +1262,32 @@ export function registerLibraryRoutes(
   // /overlays — no collision. Inherits server.ts's loopback Host + Origin guard.
   app.put("/api/library/primitives/:kind/:name/metadata", async (c) =>
     json(c, await buildUpdateMetadata(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
+  );
+  // Primitive-lifecycle writes (structural CRUD). create is collection-level
+  // (`POST …/primitives`, body {kind,name}); delete is the bare-resource DELETE
+  // (distinct from `…/install` uninstall, `…/working-files` — different suffix,
+  // no collision); rename/duplicate/forget are POST sub-actions (matching the
+  // working-file `…/rename` precedent — a POST verb, not a PATCH on the
+  // resource); import is collection-level (`POST …/import-from-path`, mirrors
+  // import-installs). The write-lock + commit posture lives in each handler
+  // (create/duplicate unlocked = publish posture; delete/rename/import/forget
+  // locked = installs.json writers). Each inherits server.ts's loopback Host +
+  // Origin guard. Mounted AFTER the more specific `…/:kind/:name/<suffix>` routes
+  // so the bare DELETE doesn't shadow them.
+  app.post("/api/library/primitives", async (c) => json(c, await buildCreatePrimitive(loadConfig(), await readJson(c))));
+  app.post("/api/library/import-from-path", async (c) =>
+    json(c, await buildImportFromPath(loadConfig(), await readJson(c))),
+  );
+  app.delete("/api/library/primitives/:kind/:name", async (c) =>
+    json(c, await buildDeletePrimitive(loadConfig(), c.req.param("kind"), c.req.param("name"))),
+  );
+  app.post("/api/library/primitives/:kind/:name/rename", async (c) =>
+    json(c, await buildRenamePrimitive(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
+  );
+  app.post("/api/library/primitives/:kind/:name/duplicate", async (c) =>
+    json(c, await buildDuplicatePrimitive(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
+  );
+  app.post("/api/library/primitives/:kind/:name/forget", async (c) =>
+    json(c, await buildForgetPrimitive(loadConfig(), c.req.param("kind"), c.req.param("name"))),
   );
 }
