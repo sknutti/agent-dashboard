@@ -521,3 +521,124 @@ describe("Library route — versioning / publishing", () => {
     expect(revSpy).toHaveBeenCalledWith("skill", "diagnose", "v1");
   });
 });
+
+// ── reimport-from-drift (reimport slice) ────────────────────────────────────
+// The deliverable: a Modified drift row offers THREE distinguishable actions
+// (Acknowledge / Reinstall / Reimport), and the two interactive results
+// (working_copy_dirty / broken_source) are handled, not dropped.
+
+const DRIFTED_CLAUDE: LibraryDriftReport = {
+  kind: "skill", name: "diagnose", target: "claude", status: { kind: "modified", conflicts: ["SKILL.md"] },
+};
+
+/** Render with diagnose installed + drifted on claude, then select it. */
+async function selectDriftedDiagnose() {
+  mockValidLibrary(INSTALLABLE, { installs: [INSTALLED_CLAUDE], drift: [DRIFTED_CLAUDE] });
+  render(Library);
+  await selectDiagnose();
+}
+
+describe("Library route — reimport-from-drift", () => {
+  test("a Modified row offers THREE distinguishable actions: Acknowledge / Reinstall / Reimport", async () => {
+    await selectDriftedDiagnose();
+    // All three present, and distinguishable by LABEL (not color — Scott is CVD).
+    const ack = screen.getByRole("button", { name: "Acknowledge" });
+    const reinstall = screen.getByRole("button", { name: "Reinstall" });
+    const reimport = screen.getByRole("button", { name: "Reimport" });
+    expect(ack).toBeTruthy();
+    expect(reinstall).toBeTruthy();
+    expect(reimport).toBeTruthy();
+    // The two destructive actions name their OPPOSITE directions in the tooltip.
+    expect(reinstall.getAttribute("title")).toMatch(/overwrite the installed copy on disk/i);
+    expect(reimport.getAttribute("title")).toMatch(/pull the on-disk edits back into the library/i);
+  });
+
+  test("Reimport is offered ONLY on a Modified row, never on clean / missing / not-installed", async () => {
+    // clean install → no Reimport (and the update button reads 'Update', not 'Reinstall')
+    mockValidLibrary(INSTALLABLE, {
+      installs: [INSTALLED_CLAUDE],
+      drift: [{ kind: "skill", name: "diagnose", target: "claude", status: { kind: "clean" } }],
+    });
+    render(Library);
+    await selectDiagnose();
+    expect(screen.queryByRole("button", { name: "Reimport" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reinstall" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Update" })).toBeTruthy();
+  });
+
+  test("missing-externally offers neither Reimport nor Reinstall (only Uninstall)", async () => {
+    mockValidLibrary(INSTALLABLE, {
+      installs: [INSTALLED_CLAUDE],
+      drift: [{ kind: "skill", name: "diagnose", target: "claude", status: { kind: "missing", missing: ["SKILL.md"] } }],
+    });
+    render(Library);
+    await selectDiagnose();
+    expect(screen.queryByRole("button", { name: "Reimport" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reinstall" })).toBeNull();
+  });
+
+  test("a clean reimport calls reimportInstall with the captured target + label and shows the cue", async () => {
+    await selectDriftedDiagnose();
+    const spy = vi.spyOn(api, "reimportInstall").mockResolvedValue({
+      kind: "reimported", new_version: "v2", committed: true, commit_error: null,
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Reimport" }));
+    const dlg = await screen.findByRole("dialog");
+    await fireEvent.input(within(dlg).getByPlaceholderText("v1"), { target: { value: "v2" } });
+    await fireEvent.click(within(dlg).getByRole("button", { name: "Reimport" }));
+    expect(spy).toHaveBeenCalledWith("skill", "diagnose", expect.objectContaining({
+      source_target: "claude", version_label: "v2", discard_working: false,
+    }));
+    expect(await screen.findByText(/reimported.*as v2/)).toBeTruthy();
+  });
+
+  test("an invalid version label is refused client-side; no reimport fires", async () => {
+    await selectDriftedDiagnose();
+    const spy = vi.spyOn(api, "reimportInstall").mockResolvedValue({ kind: "reimported", new_version: "v2", committed: true, commit_error: null });
+    await fireEvent.click(screen.getByRole("button", { name: "Reimport" }));
+    const dlg = await screen.findByRole("dialog");
+    await fireEvent.input(within(dlg).getByPlaceholderText("v1"), { target: { value: "nope" } });
+    await fireEvent.click(within(dlg).getByRole("button", { name: "Reimport" }));
+    expect(within(dlg).getByText(/looks like v1/)).toBeTruthy();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("working_copy_dirty opens a discard confirm; confirming re-issues with discard_working:true", async () => {
+    await selectDriftedDiagnose();
+    const spy = vi.spyOn(api, "reimportInstall")
+      .mockResolvedValueOnce({ kind: "working_copy_dirty" })
+      .mockResolvedValueOnce({ kind: "reimported", new_version: "v2", committed: true, commit_error: null });
+    await fireEvent.click(screen.getByRole("button", { name: "Reimport" }));
+    const form = await screen.findByRole("dialog");
+    await fireEvent.input(within(form).getByPlaceholderText("v1"), { target: { value: "v2" } });
+    await fireEvent.click(within(form).getByRole("button", { name: "Reimport" }));
+    // The first call was discard:false; the discard confirm appears naming the direction.
+    expect(spy).toHaveBeenCalledWith("skill", "diagnose", expect.objectContaining({ discard_working: false }));
+    expect(await screen.findByText(/Discard working-copy edits/)).toBeTruthy();
+    // Confirm → retry with discard_working:true.
+    await fireEvent.click(screen.getByRole("button", { name: /Discard & reimport as v2/ }));
+    expect(spy).toHaveBeenCalledWith("skill", "diagnose", expect.objectContaining({ discard_working: true, version_label: "v2" }));
+  });
+
+  test("broken_source shows the parse error + an editable buffer; save retries with fixed_primary_text", async () => {
+    await selectDriftedDiagnose();
+    const spy = vi.spyOn(api, "reimportInstall")
+      .mockResolvedValueOnce({
+        kind: "broken_source", primary_path: "SKILL.md",
+        raw_bytes: Array.from(new TextEncoder().encode("broken frontmatter")), parse_error: "missing ---",
+      })
+      .mockResolvedValueOnce({ kind: "reimported", new_version: "v2", committed: true, commit_error: null });
+    await fireEvent.click(screen.getByRole("button", { name: "Reimport" }));
+    const form = await screen.findByRole("dialog");
+    await fireEvent.input(within(form).getByPlaceholderText("v1"), { target: { value: "v2" } });
+    await fireEvent.click(within(form).getByRole("button", { name: "Reimport" }));
+    // The fix sheet shows the parse error + the raw bytes decoded into the buffer.
+    expect(await screen.findByText(/missing ---/)).toBeTruthy();
+    const buffer = screen.getByDisplayValue("broken frontmatter");
+    await fireEvent.input(buffer, { target: { value: "---\n---\nfixed\n" } });
+    await fireEvent.click(screen.getByRole("button", { name: /Fix & reimport as v2/ }));
+    expect(spy).toHaveBeenLastCalledWith("skill", "diagnose", expect.objectContaining({
+      fixed_primary_text: "---\n---\nfixed\n", version_label: "v2",
+    }));
+  });
+});

@@ -23,6 +23,7 @@
     installPrimitive,
     uninstallPrimitive,
     acknowledgeDrift,
+    reimportInstall,
     importInstalls,
     publishVersion,
     setCurrentVersion,
@@ -34,6 +35,7 @@
     type LibraryInstallSummary,
     type LibraryUninstallSummary,
     type LibraryPublishResult,
+    type LibraryReimportResult,
     type WorkingContent,
   } from "../lib/api";
   import {
@@ -48,6 +50,7 @@
     stateCue,
     outcomeCue,
     uninstallCue,
+    reimportResultCue,
     anyDrift,
     publishStateCue,
     currentVersionCue,
@@ -291,6 +294,12 @@
     publishResult = null;
     versionNotice = null;
     overlayEditedTargets = new Set(); // the reinstall note is scoped to the open primitive
+    // Reimport surfaces are scoped to the open primitive too — never leak a form,
+    // a pending confirm/fix sheet, or a notice across a selection change.
+    reimportForm = null;
+    reimportDirty = null;
+    reimportBroken = null;
+    reimportNotice = null;
   }
 
   /** Publish the SAVED working copy as a new immutable version. Refuses while the
@@ -517,6 +526,164 @@
       setPending(key, false);
       reloadInstallState();
     }
+  }
+
+  // ── reimport-from-drift (reimport slice) ──────────────────────────────────
+  // Reimport is the THIRD drift-row action (beside Acknowledge + Reinstall): it
+  // pulls the on-disk drifted bytes back into the library as a new version — the
+  // INVERSE of Reinstall. Reinstall overwrites the disk with the library;
+  // Reimport-with-discard overwrites the working copy with the disk. Both name
+  // their direction in the confirm copy so the two destructive actions can't be
+  // confused (CVD-safe: distinguished by label + glyph + words, never color).
+  interface ReimportIntent {
+    kind: LibraryKind;
+    name: string;
+    target: LibraryTarget;
+    label: string;
+    notes: string;
+  }
+  // The open reimport form (which target it captures). Null = closed. A small
+  // form like publish — reimport IS a publish of foreign bytes, so it needs a
+  // version label.
+  let reimportForm = $state<{ kind: LibraryKind; name: string; target: LibraryTarget } | null>(null);
+  let reimportLabel = $state("");
+  let reimportNotes = $state("");
+  // The discard-working confirm (captured intent, D2): working/ has unpublished
+  // edits; confirming retries with discard_working:true.
+  let reimportDirty = $state<ReimportIntent | null>(null);
+  // The broken-source fix sheet: a LOCAL editable buffer seeded from the on-disk
+  // bytes (never resource-bound — the Slice 3 editor-buffer lesson). `discard` is
+  // threaded so a dirty→discard→broken chain retries with discard still set.
+  let reimportBroken = $state<{
+    intent: ReimportIntent;
+    discard: boolean;
+    primaryPath: string;
+    parseError: string;
+    text: string;
+  } | null>(null);
+  let reimportNotice = $state<{ tone: "default" | "amber" | "cyan"; text: string } | null>(null);
+
+  /** Lossy UTF-8 decode of the on-disk primary bytes for the fix buffer. A
+   *  non-UTF-8 byte shows as the replacement char; the retry re-encodes and core
+   *  re-validates (Open Q2). */
+  function decodeBytes(bytes: number[]): string {
+    return new TextDecoder().decode(new Uint8Array(bytes));
+  }
+
+  /** Open the reimport form for one drifted target. */
+  function openReimport(target: LibraryTarget): void {
+    if (!detail) return;
+    reimportForm = { kind: detail.kind, name: detail.name, target };
+    reimportLabel = "";
+    reimportNotes = "";
+    reimportNotice = null;
+  }
+  function closeReimport(): void {
+    reimportForm = null;
+    reimportLabel = "";
+    reimportNotes = "";
+  }
+
+  /** Validate the label client-side (the publish-form `^v\d` hint), capture the
+   *  intent, and dispatch the first attempt. */
+  async function submitReimport(): Promise<void> {
+    if (!reimportForm) return;
+    const label = reimportLabel.trim();
+    if (!/^v\d/.test(label)) {
+      reimportNotice = {
+        tone: "amber",
+        text: "A version label looks like v1, v2, or v1.0 — start with “v” and a number.",
+      };
+      return;
+    }
+    await doReimport({ ...reimportForm, label, notes: reimportNotes.trim() });
+  }
+
+  /** Issue a reimport and route on the result. `discard` confirms blowing away
+   *  unpublished working edits; `fixedText` is the broken-source retry payload.
+   *  Keyed pending-write lock (D2) so a row's reimport can't double-fire. */
+  async function doReimport(
+    intent: ReimportIntent,
+    discard = false,
+    fixedText: string | null = null,
+  ): Promise<void> {
+    const key = writeKey(intent.kind, intent.name, intent.target);
+    if (pending.has(key)) return;
+    setPending(key, true);
+    reimportNotice = null;
+    try {
+      const result = await reimportInstall(intent.kind, intent.name, {
+        source_target: intent.target,
+        version_label: intent.label,
+        notes: intent.notes || undefined,
+        discard_working: discard,
+        fixed_primary_text: fixedText ?? undefined,
+      });
+      applyReimportResult(intent, result, discard);
+    } catch (e) {
+      reimportNotice = { tone: "amber", text: noticeFor(e, "Couldn’t reimport these edits.") };
+    } finally {
+      setPending(key, false);
+      reloadInstallState();
+    }
+  }
+
+  function applyReimportResult(
+    intent: ReimportIntent,
+    result: LibraryReimportResult,
+    discard: boolean,
+  ): void {
+    const cue = reimportResultCue(result);
+    switch (result.kind) {
+      case "reimported":
+        // The drifted edits are now a library version. Clear every reimport
+        // surface and reload the detail (versions grew + current advanced + the
+        // dirty badge) and the list.
+        reimportForm = null;
+        reimportDirty = null;
+        reimportBroken = null;
+        reimportNotice = { tone: cue.tone, text: `${intent.target}: ${cue.label} as ${result.new_version}` };
+        detailRes.reload();
+        primitivesRes.reload();
+        break;
+      case "working_copy_dirty":
+        // Hand off to the discard confirm (captured intent).
+        reimportDirty = intent;
+        break;
+      case "broken_source":
+        // Hand off to the fix sheet with a LOCAL buffer; preserve `discard` so a
+        // dirty→discard→broken chain retries with discard still set.
+        reimportBroken = {
+          intent,
+          discard,
+          primaryPath: result.primary_path,
+          parseError: result.parse_error,
+          text: decodeBytes(result.raw_bytes),
+        };
+        break;
+      case "not_installed":
+      case "install_missing":
+        // Shouldn't reach a Modified row, but a stale UI mustn't dead-end.
+        reimportForm = null;
+        reimportNotice = { tone: cue.tone, text: `${intent.target}: ${cue.label}` };
+        break;
+    }
+  }
+
+  function confirmReimportDiscard(): void {
+    const intent = reimportDirty;
+    if (!intent) return;
+    reimportDirty = null;
+    void doReimport(intent, true);
+  }
+
+  function saveReimportFix(): void {
+    const sheet = reimportBroken;
+    if (!sheet) return;
+    const text = sheet.text;
+    const { intent, discard } = sheet;
+    reimportBroken = null;
+    void doReimport(intent, discard, text);
   }
 
   async function doImport(): Promise<void> {
@@ -880,11 +1047,35 @@
                     <div class="row-actions">
                       {#if row.state === "not_installed"}
                         <button type="button" class="act" disabled={busy} onclick={() => doInstall(detail.kind, detail.name, row.target)}>Install</button>
+                      {:else if row.state === "modified"}
+                        <!-- Three drift actions, distinguishable by LABEL (not color — Scott is
+                             red/green CVD). Two are destructive in OPPOSITE directions, named in
+                             each tooltip + confirm copy: Reinstall → disk, Reimport(+discard) →
+                             working copy. Acknowledge is non-destructive. -->
+                        <button
+                          type="button"
+                          class="act"
+                          disabled={busy}
+                          title="Overwrite the installed copy on disk with the library’s current version (discards the on-disk edits)"
+                          onclick={() => doInstall(detail.kind, detail.name, row.target)}
+                        >Reinstall</button>
+                        <button
+                          type="button"
+                          class="act"
+                          disabled={busy}
+                          title="Adopt the current on-disk contents as the install baseline; the library is unchanged"
+                          onclick={() => doAcknowledge(detail.kind, detail.name, row.target)}
+                        >Acknowledge</button>
+                        <button
+                          type="button"
+                          class="act"
+                          disabled={busy}
+                          title="Pull the on-disk edits back into the library as a new version (the inverse of Reinstall)"
+                          onclick={() => openReimport(row.target)}
+                        >Reimport</button>
+                        <button type="button" class="act danger" disabled={busy} onclick={() => doUninstall(detail.kind, detail.name, row.target)}>Uninstall</button>
                       {:else}
                         <button type="button" class="act" disabled={busy} onclick={() => doInstall(detail.kind, detail.name, row.target)}>Update</button>
-                        {#if row.state === "modified"}
-                          <button type="button" class="act" disabled={busy} onclick={() => doAcknowledge(detail.kind, detail.name, row.target)}>Acknowledge</button>
-                        {/if}
                         <button type="button" class="act danger" disabled={busy} onclick={() => doUninstall(detail.kind, detail.name, row.target)}>Uninstall</button>
                       {/if}
                     </div>
@@ -903,6 +1094,9 @@
             {/if}
             {#if notice}
               <div class="route-notice" class:warn={notice.tone === "amber"} role="status">{notice.text}</div>
+            {/if}
+            {#if reimportNotice}
+              <div class="route-notice" class:warn={reimportNotice.tone === "amber"} role="status">{reimportNotice.text}</div>
             {/if}
             {#if failures.length}
               <ul class="failure-list">
@@ -1003,6 +1197,88 @@
           <button type="button" class="act" onclick={() => (revertDialog = null)}>Cancel</button>
           <button type="button" class="act danger" disabled={versionBusy} onclick={confirmRevert}>
             Restore from {revertDialog.label}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Reimport form: reimport IS a publish of foreign (drifted) bytes, so it
+       needs a version label + optional notes (mirrors the publish form). Captured
+       target via reimportForm; the intent is snapshotted at submit. -->
+  {#if reimportForm}
+    {@const busy = isPending(reimportForm.kind, reimportForm.name, reimportForm.target)}
+    <div class="dialog-scrim" role="dialog" aria-modal="true" aria-labelledby="reimport-title">
+      <div class="dialog">
+        <h3 id="reimport-title">Reimport on-disk edits</h3>
+        <p>
+          Capture the on-disk edits of <strong>{reimportForm.name}</strong> →
+          <strong class="mono">{reimportForm.target}</strong> as a new library version. This pulls the
+          installed copy <em>into</em> the library — it doesn’t change anything on disk.
+        </p>
+        <label class="dialog-field">
+          <span>Version label</span>
+          <input class="mono" type="text" placeholder="v1" bind:value={reimportLabel} disabled={busy} />
+        </label>
+        <label class="dialog-field">
+          <span>Notes <em>(optional)</em></span>
+          <textarea rows="2" bind:value={reimportNotes} disabled={busy}></textarea>
+        </label>
+        {#if reimportNotice}
+          <div class="route-notice" class:warn={reimportNotice.tone === "amber"} role="status">{reimportNotice.text}</div>
+        {/if}
+        <div class="dialog-actions">
+          <button type="button" class="act" onclick={closeReimport}>Cancel</button>
+          <button type="button" class="act primary" disabled={busy} onclick={submitReimport}>
+            {busy ? "Reimporting…" : "Reimport"}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- working_copy_dirty confirm: the working copy has unpublished edits reimport
+       would discard. Names the direction explicitly (DISCARD the working copy),
+       the opposite of Reinstall's "overwrite the disk". Captured intent (D2). -->
+  {#if reimportDirty}
+    <div class="dialog-scrim" role="dialog" aria-modal="true" aria-labelledby="reimport-dirty-title">
+      <div class="dialog">
+        <h3 id="reimport-dirty-title">Discard working-copy edits?</h3>
+        <p>
+          The working copy of <strong>{reimportDirty.name}</strong> has unpublished edits. Reimporting the
+          <strong class="mono">{reimportDirty.target}</strong> on-disk copy as
+          <strong class="mono">{reimportDirty.label}</strong> will <strong>discard</strong> those edits and
+          capture the installed bytes instead.
+        </p>
+        <p class="dialog-warn">The unpublished working-copy edits are discarded. There is no backup.</p>
+        <div class="dialog-actions">
+          <button type="button" class="act" onclick={() => (reimportDirty = null)}>Cancel</button>
+          <button type="button" class="act danger" onclick={confirmReimportDiscard}>
+            Discard &amp; reimport as {reimportDirty.label}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- broken_source fix sheet: the on-disk primary file won't parse. The textarea
+       is a LOCAL buffer seeded from the raw bytes (never resource-bound). Save
+       retries with fixed_primary_text; core re-validates. -->
+  {#if reimportBroken}
+    <div class="dialog-scrim" role="dialog" aria-modal="true" aria-labelledby="reimport-broken-title">
+      <div class="dialog dialog-wide">
+        <h3 id="reimport-broken-title">Fix the on-disk file to reimport</h3>
+        <p>
+          The installed <strong class="mono">{reimportBroken.primaryPath}</strong> for
+          <strong>{reimportBroken.intent.name}</strong> → <strong class="mono">{reimportBroken.intent.target}</strong>
+          doesn’t parse, so it can’t be captured as-is. Fix the frontmatter below and retry.
+        </p>
+        <pre class="commit-error-detail">{reimportBroken.parseError}</pre>
+        <textarea class="mono fix-buffer" rows="14" bind:value={reimportBroken.text}></textarea>
+        <div class="dialog-actions">
+          <button type="button" class="act" onclick={() => (reimportBroken = null)}>Cancel</button>
+          <button type="button" class="act primary" onclick={saveReimportFix}>
+            Fix &amp; reimport as {reimportBroken.intent.label}
           </button>
         </div>
       </div>
@@ -1603,6 +1879,47 @@
   .dialog-warn {
     color: var(--amber);
     font-size: 12px;
+  }
+  /* Wider dialog for the broken-source fix sheet (it holds a full file editor). */
+  .dialog-wide {
+    width: min(680px, 100%);
+  }
+  /* Reimport-form fields — same chrome as the publish form, scoped to the dialog. */
+  .dialog-field {
+    display: grid;
+    gap: 4px;
+    margin: 0 0 10px;
+    font-size: 11.5px;
+    color: var(--text-subtle);
+  }
+  .dialog-field em {
+    color: var(--text-dim);
+    font-style: normal;
+  }
+  .dialog-field input,
+  .dialog-field textarea {
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-inset, transparent);
+    color: var(--text);
+    font-size: 12px;
+  }
+  .dialog-field textarea {
+    resize: vertical;
+    font-family: inherit;
+  }
+  .fix-buffer {
+    width: 100%;
+    box-sizing: border-box;
+    margin: 0 0 12px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 12px;
+    resize: vertical;
   }
   .dialog-actions {
     display: flex;

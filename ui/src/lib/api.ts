@@ -551,6 +551,17 @@ export interface LibraryInstalledTarget {
   installed_at: string;
 }
 
+/** Outcome of a reimport-from-drift: pull a drifted install's on-disk bytes back
+ *  into the library as a new version. Every variant is a RESULT the UI routes on
+ *  (it rides HTTP 200 as data, not an error). Only `reimported` carries the
+ *  non-fatal commit contract (the new version tree is git-tracked). */
+export type LibraryReimportResult =
+  | { kind: "reimported"; new_version: string; committed: boolean; commit_error: string | null }
+  | { kind: "working_copy_dirty" }
+  | { kind: "broken_source"; primary_path: string; raw_bytes: number[]; parse_error: string }
+  | { kind: "not_installed" }
+  | { kind: "install_missing" };
+
 export interface LibraryImportResult {
   imported: number;
 }
@@ -607,6 +618,22 @@ export const uninstallPrimitive = (
 
 export const acknowledgeDrift = (kind: string, name: string, target: LibraryTarget) =>
   sendJson<Record<string, never>>(`${primPath(kind, name)}/acknowledge-drift`, "POST", { target });
+
+/** Reimport a drifted install's on-disk bytes into the library as a new version
+ *  (the INVERSE of install). All five LibraryReimportResult variants ride 200 as
+ *  data the caller routes on: `working_copy_dirty` → confirm + retry with
+ *  `discard_working`; `broken_source` → fix sheet + retry with `fixed_primary_text`. */
+export const reimportInstall = (
+  kind: string,
+  name: string,
+  opts: {
+    source_target: LibraryTarget;
+    version_label: string;
+    notes?: string;
+    discard_working?: boolean;
+    fixed_primary_text?: string;
+  },
+) => sendJson<LibraryReimportResult>(`${primPath(kind, name)}/reimport`, "POST", opts);
 
 export const importInstalls = () =>
   sendJson<LibraryImportResult>("/api/library/import-installs", "POST", {});

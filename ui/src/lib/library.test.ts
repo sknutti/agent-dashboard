@@ -16,6 +16,7 @@ import {
   stateCue,
   outcomeCue,
   uninstallCue,
+  reimportResultCue,
   anyDrift,
   KIND_ORDER,
 } from "./library";
@@ -179,6 +180,45 @@ describe("overlayCue (delta vs. base passthrough; colorblind-safe)", () => {
     // CVD-safe accent, never a bare red/green.
     expect(overlay.tone).toBe("cyan");
     expect(["amber", "cyan", "default"]).toContain(base.tone);
+  });
+});
+
+describe("reimportResultCue (every variant visible + CVD-safe)", () => {
+  test("reimported commit nuance: committed vs not-committed vs no-commit, none green", () => {
+    const committed = reimportResultCue({ kind: "reimported", new_version: "v2", committed: true, commit_error: null });
+    const failed = reimportResultCue({ kind: "reimported", new_version: "v2", committed: false, commit_error: "Author identity unknown" });
+    const noCommit = reimportResultCue({ kind: "reimported", new_version: "v2", committed: false, commit_error: null });
+    // Only the failed-commit case warns (amber); the others are plain success.
+    expect(failed.tone).toBe("amber");
+    expect(committed.tone).not.toBe("amber");
+    expect(noCommit.tone).not.toBe("amber");
+    for (const c of [committed, failed, noCommit]) {
+      expect(c.glyph.length).toBeGreaterThan(0);
+      expect(["amber", "cyan", "default"]).toContain(c.tone);
+    }
+  });
+
+  test("every variant carries a non-empty label + glyph and a CVD-safe tone", () => {
+    const cues = [
+      reimportResultCue({ kind: "reimported", new_version: "v2", committed: true, commit_error: null }),
+      reimportResultCue({ kind: "working_copy_dirty" }),
+      reimportResultCue({ kind: "broken_source", primary_path: "SKILL.md", raw_bytes: [1], parse_error: "x" }),
+      reimportResultCue({ kind: "not_installed" }),
+      reimportResultCue({ kind: "install_missing" }),
+    ];
+    for (const c of cues) {
+      expect(c.label.length).toBeGreaterThan(0);
+      expect(c.glyph.length).toBeGreaterThan(0);
+      expect(["amber", "cyan", "default"]).toContain(c.tone); // never a bare red/green
+    }
+  });
+
+  test("the two interactive results are distinguishable by label (not color)", () => {
+    const dirty = reimportResultCue({ kind: "working_copy_dirty" });
+    const broken = reimportResultCue({ kind: "broken_source", primary_path: "SKILL.md", raw_bytes: [1], parse_error: "x" });
+    // Both warn (amber), so color CANNOT disambiguate them — the label + glyph must.
+    expect(dirty.label).not.toBe(broken.label);
+    expect(dirty.glyph).not.toBe(broken.glyph);
   });
 });
 
