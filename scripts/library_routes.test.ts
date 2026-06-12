@@ -15,6 +15,13 @@ import {
   buildDriftBatch,
   buildScanDrift,
   buildImportInstalls,
+  buildListWorkingFiles,
+  buildReadWorkingFile,
+  buildSaveWorking,
+  buildCreateWorkingFile,
+  buildSaveWorkingFile,
+  buildRenameWorkingFile,
+  buildDeleteWorkingFile,
   withWriteLock,
   statusForCode,
   registerLibraryRoutes,
@@ -410,6 +417,167 @@ describe("withWriteLock (D1 — serialize all ledger writers)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Working-file (editor) routes (working-copy slice)
+// ---------------------------------------------------------------------------
+
+describe("statusForCode — working-file codes", () => {
+  test("editor conflicts (exists / refuse-primary) are 409", () => {
+    for (const c of ["working_file_exists", "working_file_refuse_primary"])
+      expect(statusForCode(c)).toBe(409);
+  });
+  test("invalid working path + too-many are 422", () => {
+    for (const c of ["library_invalid_working_path", "working_file_too_many"])
+      expect(statusForCode(c)).toBe(422);
+  });
+  test("a missing working file is 404", () => {
+    expect(statusForCode("working_file_not_found")).toBe(404);
+  });
+});
+
+describe("buildListWorkingFiles (read — no write lock)", () => {
+  test("configured → 200 with primary-first entries", async () => {
+    const r = await buildListWorkingFiles(CONFIGURED, "skill", "diagnose", okRun(data("list_working_files")));
+    expect(r.status).toBe(200);
+    expect((r.body as any)[0]).toMatchObject({ path: "SKILL.md", role: "primary" });
+  });
+  test("unconfigured → 409 WITHOUT spawning (needs the layout)", async () => {
+    const { run, calls } = captureRun({ ok: true, data: [] });
+    const r = await buildListWorkingFiles(UNCONFIGURED, "skill", "diagnose", run);
+    expect(r.status).toBe(409);
+    expect((r.body as any).code).toBe("library_unconfigured");
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("buildReadWorkingFile", () => {
+  test("text → 200 tagged text bytes", async () => {
+    const r = await buildReadWorkingFile(CONFIGURED, "skill", "diagnose", "notes.md", okRun(data("read_working_file_text")));
+    expect(r.status).toBe(200);
+    expect((r.body as any).kind).toBe("text");
+  });
+  test("binary → 200 size-only (no bytes)", async () => {
+    const r = await buildReadWorkingFile(CONFIGURED, "skill", "diagnose", "logo.bin", okRun(data("read_working_file_binary")));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ kind: "binary", size: 4 });
+  });
+  test("the ref path reaches the bridge as `rel`; the root stays config `path`", async () => {
+    const { run, calls } = captureRun({ ok: true, data: data("read_working_file_text") });
+    await buildReadWorkingFile(CONFIGURED, "skill", "diagnose", "notes/intro.md", run);
+    expect(calls[0]!.command).toBe("read_working_file");
+    expect(calls[0]!.args).toMatchObject({ path: "/libs/x", kind: "skill", name: "diagnose", rel: "notes/intro.md" });
+  });
+  test("traversal tripwire (risk-a, route half): a ../ path maps library_invalid_working_path → 422", async () => {
+    const r = await buildReadWorkingFile(
+      CONFIGURED,
+      "skill",
+      "diagnose",
+      "../../etc/passwd",
+      errRun(libErr("library_invalid_working_path")),
+    );
+    expect(r.status).toBe(422);
+    expect((r.body as any).code).toBe("library_invalid_working_path");
+    expect(JSON.stringify(r.body)).not.toContain("/Users/"); // m4: detail withheld
+  });
+  test("unconfigured → 409 WITHOUT spawning", async () => {
+    const { run, calls } = captureRun({ ok: true, data: {} });
+    const r = await buildReadWorkingFile(UNCONFIGURED, "skill", "diagnose", "notes.md", run);
+    expect(r.status).toBe(409);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("buildSaveWorking (primary save)", () => {
+  test("success → 200 {}", async () => {
+    const r = await buildSaveWorking(CONFIGURED, "skill", "diagnose", { content: "---\n---\nbody\n" }, okRun({}));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({});
+  });
+  test("a malformed primary → library_parse_error → 502 (in-core: disk untouched)", async () => {
+    const r = await buildSaveWorking(CONFIGURED, "skill", "diagnose", { content: "no fences" }, errRun(libErr("library_parse_error")));
+    expect(r.status).toBe(502);
+    expect((r.body as any).code).toBe("library_parse_error");
+  });
+  test("content + config root reach the bridge; a body path cannot redirect the root", async () => {
+    const { run, calls } = captureRun({ ok: true, data: {} });
+    await buildSaveWorking(CONFIGURED, "skill", "diagnose", { content: "x", path: "/etc/evil" } as any, run);
+    expect(calls[0]!.command).toBe("save_working");
+    expect(calls[0]!.args).toMatchObject({ path: "/libs/x", kind: "skill", name: "diagnose", content: "x" });
+    expect(calls[0]!.args.rel).toBeUndefined(); // a primary save carries no ref path
+  });
+  test("unconfigured → 409 WITHOUT spawning", async () => {
+    const { run, calls } = captureRun({ ok: true, data: {} });
+    const r = await buildSaveWorking(UNCONFIGURED, "skill", "diagnose", { content: "x" }, run);
+    expect(r.status).toBe(409);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("buildCreateWorkingFile", () => {
+  test("success → 200 {}", async () => {
+    const r = await buildCreateWorkingFile(CONFIGURED, "skill", "diagnose", { path: "notes.md", content: "x" }, okRun({}));
+    expect(r.status).toBe(200);
+  });
+  test("create over an existing ref → 409 working_file_exists", async () => {
+    const r = await buildCreateWorkingFile(CONFIGURED, "skill", "diagnose", { path: "notes.md", content: "x" }, errRun(libErr("working_file_exists")));
+    expect(r.status).toBe(409);
+  });
+  test("traversal tripwire: path ../escape.md → 422 library_invalid_working_path", async () => {
+    const r = await buildCreateWorkingFile(CONFIGURED, "skill", "diagnose", { path: "../escape.md", content: "x" }, errRun(libErr("library_invalid_working_path")));
+    expect(r.status).toBe(422);
+  });
+  test("body.path → bridge `rel`, content forwarded, root stays config", async () => {
+    const { run, calls } = captureRun({ ok: true, data: {} });
+    await buildCreateWorkingFile(CONFIGURED, "skill", "diagnose", { path: "notes.md", content: "x" }, run);
+    expect(calls[0]!.command).toBe("create_working_file");
+    expect(calls[0]!.args).toMatchObject({ path: "/libs/x", kind: "skill", name: "diagnose", rel: "notes.md", content: "x" });
+  });
+});
+
+describe("buildSaveWorkingFile", () => {
+  test("save a missing ref → 404 working_file_not_found (use Create)", async () => {
+    const r = await buildSaveWorkingFile(CONFIGURED, "skill", "diagnose", { path: "absent.md", content: "x" }, errRun(libErr("working_file_not_found")));
+    expect(r.status).toBe(404);
+  });
+  test("success forwards rel + content", async () => {
+    const { run, calls } = captureRun({ ok: true, data: {} });
+    await buildSaveWorkingFile(CONFIGURED, "skill", "diagnose", { path: "notes.md", content: "v2" }, run);
+    expect(calls[0]!.command).toBe("save_working_file");
+    expect(calls[0]!.args).toMatchObject({ rel: "notes.md", content: "v2" });
+  });
+});
+
+describe("buildRenameWorkingFile", () => {
+  test("rename the primary → 409 working_file_refuse_primary", async () => {
+    const r = await buildRenameWorkingFile(CONFIGURED, "skill", "diagnose", { old_path: "SKILL.md", new_path: "x.md" }, errRun(libErr("working_file_refuse_primary")));
+    expect(r.status).toBe(409);
+  });
+  test("forwards old_rel/new_rel", async () => {
+    const { run, calls } = captureRun({ ok: true, data: {} });
+    await buildRenameWorkingFile(CONFIGURED, "skill", "diagnose", { old_path: "a.md", new_path: "docs/a.md" }, run);
+    expect(calls[0]!.command).toBe("rename_working_file");
+    expect(calls[0]!.args).toMatchObject({ old_rel: "a.md", new_rel: "docs/a.md" });
+  });
+});
+
+describe("buildDeleteWorkingFile", () => {
+  test("success → 200 {} (idempotent in-core)", async () => {
+    const r = await buildDeleteWorkingFile(CONFIGURED, "skill", "diagnose", { path: "notes.md" }, okRun({}));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({});
+  });
+  test("delete the primary → 409 working_file_refuse_primary", async () => {
+    const r = await buildDeleteWorkingFile(CONFIGURED, "skill", "diagnose", { path: "SKILL.md" }, errRun(libErr("working_file_refuse_primary")));
+    expect(r.status).toBe(409);
+  });
+  test("forwards rel; root stays config", async () => {
+    const { run, calls } = captureRun({ ok: true, data: {} });
+    await buildDeleteWorkingFile(CONFIGURED, "skill", "diagnose", { path: "notes.md" }, run);
+    expect(calls[0]!.command).toBe("delete_working_file");
+    expect(calls[0]!.args).toMatchObject({ path: "/libs/x", rel: "notes.md" });
+  });
+});
+
 // Route-local isolation: library routes mounted on a Hono app must not affect a
 // sibling Observability route, even with no library configured.
 describe("registerLibraryRoutes — HTTP wiring + Observability isolation", () => {
@@ -471,5 +639,43 @@ describe("registerLibraryRoutes — HTTP wiring + Observability isolation", () =
       body: JSON.stringify({ targets: ["claude"], force: false }),
     });
     expect(del.status).not.toBe(404);
+  });
+
+  test("the working-file read + write routes are wired (list/read/save/create/update/rename/delete)", async () => {
+    const app = new Hono();
+    registerLibraryRoutes(app, () => CONFIGURED);
+    const send = (p: string, method: string) =>
+      app.request(p, {
+        method,
+        headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+        body: JSON.stringify({ path: "notes.md", content: "x", old_path: "a.md", new_path: "b.md" }),
+      });
+    // Reads
+    expect((await app.request("/api/library/primitives/skill/diagnose/working-files")).status).not.toBe(404);
+    expect(
+      (await app.request("/api/library/primitives/skill/diagnose/working-files/content?path=notes.md")).status,
+    ).not.toBe(404);
+    // Writes
+    expect((await send("/api/library/primitives/skill/diagnose/working", "POST")).status).not.toBe(404);
+    expect((await send("/api/library/primitives/skill/diagnose/working-files", "POST")).status).not.toBe(404);
+    expect((await send("/api/library/primitives/skill/diagnose/working-files", "PUT")).status).not.toBe(404);
+    expect((await send("/api/library/primitives/skill/diagnose/working-files/rename", "PUT")).status).not.toBe(404);
+    expect((await send("/api/library/primitives/skill/diagnose/working-files", "DELETE")).status).not.toBe(404);
+  });
+
+  test("a failing working-file save is route-local: a sibling Observability route stays 200", async () => {
+    const app = new Hono();
+    app.get("/api/summary", (c) => c.json({ ok: true }));
+    registerLibraryRoutes(app, () => ({ ...CONFIGURED, bridgePath: "/no/such/bridge" }));
+
+    const save = await app.request("/api/library/primitives/skill/diagnose/working", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+      body: JSON.stringify({ content: "---\n---\nx\n" }),
+    });
+    expect([409, 422, 502]).toContain(save.status); // a library-local failure status
+
+    const summary = await app.request("/api/summary");
+    expect(summary.status).toBe(200); // Observability untouched
   });
 });

@@ -23,6 +23,8 @@ import {
   parseUninstallSummary,
   parseDriftReports,
   parseInstalledTargets,
+  parseWorkingFileEntries,
+  parseWorkingFileBytes,
   type LibraryStatus,
 } from "./library_models.ts";
 import { importInstalls } from "./library_migration.ts";
@@ -80,6 +82,10 @@ export function statusForCode(code: string): HttpStatus {
     case "installs_destination_corrupt": // dashboard's own ledger is unreadable
     case "drift_no_install_record": // acknowledge/scan with nothing recorded
     case "library_no_current_version": // install a primitive with no pinned version
+    // Working-file editor conflicts: the request is well-formed but the target
+    // file is in a state the command can't act on.
+    case "working_file_exists": // create over an existing ref file — use Save
+    case "working_file_refuse_primary": // rename/delete the primary file (refused in-core)
       return 409;
     // Bad client input (the :kind / :name segment, or a non-UTF-8 path).
     case "library_invalid_name":
@@ -93,8 +99,12 @@ export function statusForCode(code: string): HttpStatus {
     case "library_target_not_allowed": // target not in the primitive's allowed_targets
     case "library_target_not_allowed_for_kind":
     case "library_install_not_supported":
+    // Working-file editor unprocessable inputs.
+    case "library_invalid_working_path": // ../, absolute, NUL, primary-as-ref — the traversal tripwire
+    case "working_file_too_many": // bundle is at the 200-file cap
       return 422;
     case "primitive_not_found":
+    case "working_file_not_found": // save/rename a ref file that doesn't exist — use Create
       return 404;
     // Everything else — transport faults and read/parse faults — is a 502: the
     // dashboard reached for the library and the bridge couldn't deliver.
@@ -351,6 +361,160 @@ export async function buildImportInstalls(
 }
 
 // ---------------------------------------------------------------------------
+// Working-file (editor) handlers (working-copy slice)
+//
+// The library ROOT is always `config.libraryPath` (never the body) — every
+// working-file command needs the layout, so each refuses early when unconfigured.
+// The ref-file PATH rides the HTTP body/query as `path` and is forwarded to the
+// bridge as `rel`/`old_rel`/`new_rel` (the bridge reserves `path` for the library
+// root). It is NOT validated here: core's `validate_path_shape`/`validate_ref_path`
+// is the single containment boundary (the traversal tripwire) — the route must not
+// duplicate or weaken it, so a `../` path flows straight through and comes back as
+// `library_invalid_working_path` → 422.
+//
+// Reads (`list`/`read`) skip the write timeout AND the ledger mutex. Writes get
+// WRITE_TIMEOUT_MS + SIGKILL but ALSO skip the ledger mutex (D1): a working-file
+// write never load→mutate→saves `installs.json`, and core's `save_base_file` is a
+// single atomic temp-file+rename, so concurrent writes to the same file are
+// last-writer-wins with no torn file — the simplest atomicity case, no cross-step
+// partial-failure surface (stated per the roadmap's multi-write rule).
+// ---------------------------------------------------------------------------
+
+interface WorkingWriteBody {
+  content?: unknown;
+  path?: unknown;
+  old_path?: unknown;
+  new_path?: unknown;
+}
+
+/** Read: the primitive's `working/base/` bundle list (primary-first). No lock. */
+export async function buildListWorkingFiles(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "list_working_files",
+    { path: config.libraryPath, kind, name },
+    { validate: parseWorkingFileEntries },
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** Read: one ref file's tagged bytes (text/binary). The ref path rides a query
+ *  param (a `:path` segment can't carry `/` for nested refs). No lock. */
+export async function buildReadWorkingFile(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  relPath: string,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "read_working_file",
+    { path: config.libraryPath, kind, name, rel: relPath },
+    { validate: parseWorkingFileBytes },
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** Write: save the PRIMARY file (parse-validated in-core before the atomic
+ *  write; a malformed blob returns library_parse_error, disk unchanged). */
+export async function buildSaveWorking(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  body: WorkingWriteBody,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "save_working",
+    { path: config.libraryPath, kind, name, content: body.content },
+    { timeoutMs: WRITE_TIMEOUT_MS },
+  );
+  return r.ok ? { status: 200, body: {} } : errorResult(r.error);
+}
+
+/** Write: create a new ref file (errors working_file_exists if occupied). */
+export async function buildCreateWorkingFile(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  body: WorkingWriteBody,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "create_working_file",
+    { path: config.libraryPath, kind, name, rel: body.path, content: body.content },
+    { timeoutMs: WRITE_TIMEOUT_MS },
+  );
+  return r.ok ? { status: 200, body: {} } : errorResult(r.error);
+}
+
+/** Write: update an existing ref file (errors working_file_not_found if absent). */
+export async function buildSaveWorkingFile(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  body: WorkingWriteBody,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "save_working_file",
+    { path: config.libraryPath, kind, name, rel: body.path, content: body.content },
+    { timeoutMs: WRITE_TIMEOUT_MS },
+  );
+  return r.ok ? { status: 200, body: {} } : errorResult(r.error);
+}
+
+/** Write: rename/move a ref file (refuses the primary; non-destructive in-core). */
+export async function buildRenameWorkingFile(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  body: WorkingWriteBody,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "rename_working_file",
+    { path: config.libraryPath, kind, name, old_rel: body.old_path, new_rel: body.new_path },
+    { timeoutMs: WRITE_TIMEOUT_MS },
+  );
+  return r.ok ? { status: 200, body: {} } : errorResult(r.error);
+}
+
+/** Write: delete a ref file (idempotent on missing; refuses the primary). */
+export async function buildDeleteWorkingFile(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  body: WorkingWriteBody,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "delete_working_file",
+    { path: config.libraryPath, kind, name, rel: body.path },
+    { timeoutMs: WRITE_TIMEOUT_MS },
+  );
+  return r.ok ? { status: 200, body: {} } : errorResult(r.error);
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -363,10 +527,11 @@ export function registerLibraryRoutes(
   const json = (c: any, r: LibraryRouteResult) =>
     c.json(r.body as object, r.status as ContentfulStatusCode);
   // Tolerant body read: a missing/empty/invalid JSON body is an empty object
-  // (the handlers default targets/force/target), never a 500.
-  const readJson = async (c: any): Promise<WriteBody> => {
+  // (the handlers default their fields), never a 500. Returns a loose record so
+  // it serves both the install WriteBody and the editor WorkingWriteBody shapes.
+  const readJson = async (c: any): Promise<Record<string, unknown>> => {
     try {
-      return ((await c.req.json()) as WriteBody) ?? {};
+      return ((await c.req.json()) as Record<string, unknown>) ?? {};
     } catch {
       return {};
     }
@@ -389,6 +554,24 @@ export function registerLibraryRoutes(
   app.get("/api/library/primitives/:kind/:name/drift", async (c) =>
     json(c, await buildScanDrift(loadConfig(), c.req.param("kind"), c.req.param("name"))),
   );
+  // Working-file editor reads (no write lock). The ref path rides a `?path=`
+  // query param on the content read — a `:path` segment can't carry `/` for a
+  // nested ref like `notes/intro.md`. A missing param forwards "" → core rejects
+  // it as an invalid working path (422), never a silent miss.
+  app.get("/api/library/primitives/:kind/:name/working-files", async (c) =>
+    json(c, await buildListWorkingFiles(loadConfig(), c.req.param("kind"), c.req.param("name"))),
+  );
+  app.get("/api/library/primitives/:kind/:name/working-files/content", async (c) =>
+    json(
+      c,
+      await buildReadWorkingFile(
+        loadConfig(),
+        c.req.param("kind"),
+        c.req.param("name"),
+        c.req.query("path") ?? "",
+      ),
+    ),
+  );
   // Writes — POST install / DELETE uninstall / POST acknowledge-drift / POST
   // import. Each inherits server.ts's loopback Host + Origin guard; the write
   // lock (D1) lives in the handlers. D7 residual: server.ts allows an ABSENT
@@ -410,4 +593,24 @@ export function registerLibraryRoutes(
     json(c, await buildAcknowledgeDrift(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
   );
   app.post("/api/library/import-installs", async (c) => json(c, await buildImportInstalls(loadConfig())));
+  // Working-file editor writes (WRITE_TIMEOUT + SIGKILL; no ledger mutex — they
+  // never touch installs.json, and core's save_base_file is single-file-atomic).
+  // The primary save (`/working`) is parse-validated in-core before the atomic
+  // write; the ref-file verbs (`/working-files`) refuse the primary filename
+  // in-core. Each inherits server.ts's loopback Host + Origin guard.
+  app.post("/api/library/primitives/:kind/:name/working", async (c) =>
+    json(c, await buildSaveWorking(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
+  );
+  app.post("/api/library/primitives/:kind/:name/working-files", async (c) =>
+    json(c, await buildCreateWorkingFile(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
+  );
+  app.put("/api/library/primitives/:kind/:name/working-files", async (c) =>
+    json(c, await buildSaveWorkingFile(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
+  );
+  app.put("/api/library/primitives/:kind/:name/working-files/rename", async (c) =>
+    json(c, await buildRenameWorkingFile(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
+  );
+  app.delete("/api/library/primitives/:kind/:name/working-files", async (c) =>
+    json(c, await buildDeleteWorkingFile(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
+  );
 }
