@@ -39,6 +39,10 @@ import {
   buildDuplicatePrimitive,
   buildImportFromPath,
   buildForgetPrimitive,
+  buildBootstrapScan,
+  buildBootstrapExecute,
+  buildReadBootstrapSession,
+  buildClearBootstrapSession,
   withWriteLock,
   statusForCode,
   registerLibraryRoutes,
@@ -54,12 +58,16 @@ const CONFIGURED: LibraryConfig = {
   bridgePath: "/bin/bridge",
   installsPath: "/data/installs.json",
   home: "/home/test",
+  sessionPath: "/data/bootstrap-session.json",
+  backupDir: "/data/backups",
 };
 const UNCONFIGURED: LibraryConfig = {
   libraryPath: null,
   bridgePath: "/bin/bridge",
   installsPath: "/data/installs.json",
   home: "/home/test",
+  sessionPath: "/data/bootstrap-session.json",
+  backupDir: "/data/backups",
 };
 
 // Stubs standing in for runBridge — the route logic is tested with NO subprocess.
@@ -1677,6 +1685,256 @@ describe("registerLibraryRoutes — lifecycle HTTP wiring", () => {
       headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
     });
     expect([409, 422, 502]).toContain(del.status);
+    expect((await app.request("/api/summary")).status).toBe(200);
+  });
+});
+
+// ===========================================================================
+// Bootstrap-discovery routes (bootstrap slice)
+//   scan/session-read are reads (no lock; scan on a longer watchdog); execute/
+//   session-clear are writes under the ledger mutex. All five config paths are
+//   injected (D7), never body-derived; every execute outcome (incl. skips) rides
+//   200 as data; the execute clock is server-stamped.
+// ===========================================================================
+
+// Capture the 4th `opts` arg too (the base captureRun drops it) so the scan's
+// longer-than-read-default timeout is assertable.
+function captureRunOpts(result: BridgeResult<unknown>): {
+  run: typeof runBridge;
+  calls: { command: string; args: Record<string, unknown>; opts: any }[];
+} {
+  const calls: { command: string; args: Record<string, unknown>; opts: any }[] = [];
+  const run = (async (_bridgePath: string, command: string, args: Record<string, unknown>, opts: any) => {
+    calls.push({ command, args, opts });
+    return result;
+  }) as unknown as typeof runBridge;
+  return { run, calls };
+}
+
+const SCAN_RESULT = {
+  cross_referenced: {
+    groups: [
+      { kind: "skill", name: "newskill", classification: { New: { content: { hash: "h1" } } } },
+      { kind: "skill", name: "diagnose", classification: { Drifted: { content: { hash: "h2" } } } },
+      { kind: "agent", name: "old", classification: "AlreadyImported" },
+    ],
+    needs_manual_review: [{ kind: "command", name: "weird", members: [] }],
+    symlinked: [],
+    unclassified: [],
+  },
+  plan: {
+    creates: [{ kind: "skill", name: "newskill", base: { target: "claude" }, overlays: [] }],
+    reimports: [{ kind: "skill", name: "diagnose", base: { target: "claude" } }],
+  },
+};
+
+const EXECUTE_OK = {
+  backup_path: "/data/backups/2026-06-12T00-00-00Z.tar.gz",
+  created: 1,
+  reimported: 1,
+  skipped: 0,
+  skipped_items: [],
+  committed: true,
+  commit_error: null,
+};
+
+const EXECUTE_SKIPPED = {
+  backup_path: "/data/backups/2026-06-12T00-00-00Z.tar.gz",
+  created: 1,
+  reimported: 0,
+  skipped: 1,
+  skipped_items: [{ kind: "skill", name: "diagnose", source_target: "claude", reason: "WorkingCopyDirty" }],
+  committed: true,
+  commit_error: null,
+};
+
+const SESSION = {
+  format_version: 2,
+  started_at: "2026-06-12T00:00:00Z",
+  backup_taken: true,
+  excluded_ids: ["skill/foo"],
+  completed: [],
+};
+
+describe("statusForCode — bootstrap codes", () => {
+  test("a config-not-ready bootstrap fault is 409 (like installs_unconfigured)", () => {
+    expect(statusForCode("bootstrap_unconfigured")).toBe(409);
+  });
+});
+
+describe("buildBootstrapScan", () => {
+  test("returns 200 with the scan envelope (passed through to the parser)", async () => {
+    const r = await buildBootstrapScan(CONFIGURED, okRun(SCAN_RESULT));
+    expect(r.status).toBe(200);
+    expect((r.body as any).plan.creates).toHaveLength(1);
+  });
+
+  test("unconfigured library → 409 WITHOUT spawning (scan cross-references the library)", async () => {
+    const { run, calls } = captureRunOpts({ ok: true, data: SCAN_RESULT });
+    const r = await buildBootstrapScan(UNCONFIGURED, run);
+    expect(r.status).toBe(409);
+    expect((r.body as any).code).toBe("library_unconfigured");
+    expect(calls).toHaveLength(0);
+  });
+
+  test("D7: path + home are config-resolved; scan runs on a longer-than-read-default watchdog", async () => {
+    const { run, calls } = captureRunOpts({ ok: true, data: SCAN_RESULT });
+    await buildBootstrapScan(CONFIGURED, run);
+    expect(calls[0]!.command).toBe("bootstrap_scan");
+    expect(calls[0]!.args).toEqual({ path: "/libs/x", home: "/home/test" });
+    // a slow-but-healthy home walk must not 502 on the 10s read default
+    expect(calls[0]!.opts.timeoutMs).toBe(30_000);
+  });
+});
+
+describe("buildBootstrapExecute", () => {
+  test("a clean run returns 200 with the summary", async () => {
+    const r = await buildBootstrapExecute(CONFIGURED, { plan: SCAN_RESULT.plan, excluded_ids: [] }, okRun(EXECUTE_OK));
+    expect(r.status).toBe(200);
+    expect((r.body as any).created).toBe(1);
+    expect((r.body as any).reimported).toBe(1);
+  });
+
+  test("a partial run (skipped_items) is a NORMAL 200 — a skip is data, not an error", async () => {
+    const r = await buildBootstrapExecute(CONFIGURED, { plan: SCAN_RESULT.plan }, okRun(EXECUTE_SKIPPED));
+    expect(r.status).toBe(200);
+    expect((r.body as any).skipped).toBe(1);
+    expect((r.body as any).skipped_items[0].reason).toBe("WorkingCopyDirty");
+  });
+
+  test("unconfigured library → 409 WITHOUT spawning (execute writes versions)", async () => {
+    const { run, calls } = captureRunOpts({ ok: true, data: EXECUTE_OK });
+    const r = await buildBootstrapExecute(UNCONFIGURED, { plan: SCAN_RESULT.plan }, run);
+    expect(r.status).toBe(409);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("D7 tripwire: all five paths are config-injected; a hostile body's paths are ignored; created_at is server-stamped", async () => {
+    const { run, calls } = captureRunOpts({ ok: true, data: EXECUTE_OK });
+    const body = {
+      plan: SCAN_RESULT.plan,
+      resume: SESSION,
+      excluded_ids: ["skill/foo"],
+      // hostile redirection attempts — every one must be ignored:
+      path: "/etc",
+      home: "/etc",
+      installs_path: "/etc/installs.json",
+      session_path: "/etc/sess.json",
+      backup_dir: "/etc/backups",
+      created_at: "1999-01-01T00:00:00Z",
+    } as any;
+    await buildBootstrapExecute(CONFIGURED, body, run, "2026-06-12T09:00:00Z");
+    const a = calls[0]!.args;
+    expect(a.path).toBe("/libs/x");
+    expect(a.home).toBe("/home/test");
+    expect(a.installs_path).toBe("/data/installs.json");
+    expect(a.session_path).toBe("/data/bootstrap-session.json");
+    expect(a.backup_dir).toBe("/data/backups");
+    expect(a.created_at).toBe("2026-06-12T09:00:00Z"); // server clock, not body
+    // the plan / resume / excluded_ids DO ride the body (round-tripped untouched)
+    expect(a.plan).toEqual(SCAN_RESULT.plan);
+    expect(a.resume).toEqual(SESSION);
+    expect(a.excluded_ids).toEqual(["skill/foo"]);
+  });
+
+  test("a missing excluded_ids defaults to [] (never undefined to the bridge)", async () => {
+    const { run, calls } = captureRunOpts({ ok: true, data: EXECUTE_OK });
+    await buildBootstrapExecute(CONFIGURED, { plan: SCAN_RESULT.plan }, run);
+    expect(calls[0]!.args.excluded_ids).toEqual([]);
+    expect(calls[0]!.args.resume).toBeNull(); // a fresh run carries no resume
+  });
+});
+
+describe("buildReadBootstrapSession / buildClearBootstrapSession", () => {
+  test("read returns 200 with {session}; session_path is config-injected", async () => {
+    const { run, calls } = captureRunOpts({ ok: true, data: SESSION });
+    const r = await buildReadBootstrapSession(CONFIGURED, run);
+    expect(r.status).toBe(200);
+    expect((r.body as any).session).toEqual(SESSION);
+    expect(calls[0]!.args).toEqual({ session_path: "/data/bootstrap-session.json" });
+  });
+
+  test("read passes a bridge null straight through as {session:null} (absent → 200, never 404)", async () => {
+    const r = await buildReadBootstrapSession(CONFIGURED, okRun(null));
+    expect(r.status).toBe(200);
+    expect((r.body as any).session).toBeNull();
+  });
+
+  test("read + clear run even while the library is unconfigured (session-file only)", async () => {
+    const { run, calls } = captureRunOpts({ ok: true, data: null });
+    expect((await buildReadBootstrapSession(UNCONFIGURED, run)).status).toBe(200);
+    expect((await buildClearBootstrapSession(UNCONFIGURED, run)).status).toBe(200);
+    expect(calls).toHaveLength(2);
+  });
+
+  test("clear returns 200 {} ", async () => {
+    const r = await buildClearBootstrapSession(CONFIGURED, okRun({}));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({});
+  });
+});
+
+describe("bootstrap write-lock split (D1)", () => {
+  const slowRun = (maxRef: { active: number; max: number }): typeof runBridge =>
+    (async () => {
+      maxRef.active += 1;
+      maxRef.max = Math.max(maxRef.max, maxRef.active);
+      await new Promise((res) => setTimeout(res, 5));
+      maxRef.active -= 1;
+      return { ok: true, data: EXECUTE_OK };
+    }) as any;
+
+  test("execute serializes against a concurrent ledger writer (it mutates installs.json)", async () => {
+    const ref = { active: 0, max: 0 };
+    await Promise.all([
+      buildBootstrapExecute(CONFIGURED, { plan: SCAN_RESULT.plan }, slowRun(ref)),
+      buildAcknowledgeDrift(CONFIGURED, "skill", "b", { target: "claude" }, slowRun(ref)),
+    ]);
+    expect(ref.max).toBe(1);
+  });
+
+  test("clear serializes against a concurrent execute (it removes the session mid-run)", async () => {
+    const ref = { active: 0, max: 0 };
+    await Promise.all([
+      buildClearBootstrapSession(CONFIGURED, slowRun(ref)),
+      buildBootstrapExecute(CONFIGURED, { plan: SCAN_RESULT.plan }, slowRun(ref)),
+    ]);
+    expect(ref.max).toBe(1);
+  });
+
+  test("session READ does NOT take the write lock (it overlaps a write)", async () => {
+    const ref = { active: 0, max: 0 };
+    await Promise.all([
+      buildReadBootstrapSession(CONFIGURED, slowRun(ref)),
+      buildBootstrapExecute(CONFIGURED, { plan: SCAN_RESULT.plan }, slowRun(ref)),
+    ]);
+    expect(ref.max).toBe(2); // the read is not lock-gated
+  });
+});
+
+describe("registerLibraryRoutes — bootstrap HTTP wiring", () => {
+  test("the four bootstrap routes are wired (scan / session GET+DELETE / execute)", async () => {
+    const app = new Hono();
+    registerLibraryRoutes(app, () => CONFIGURED);
+    const get = (p: string) => app.request(p);
+    const send = (p: string, method: string, body?: object) =>
+      app.request(p, {
+        method,
+        headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    expect((await get("/api/library/bootstrap/scan")).status).not.toBe(404);
+    expect((await get("/api/library/bootstrap/session")).status).not.toBe(404);
+    expect((await send("/api/library/bootstrap/execute", "POST", { plan: SCAN_RESULT.plan })).status).not.toBe(404);
+    expect((await send("/api/library/bootstrap/session", "DELETE")).status).not.toBe(404);
+  });
+
+  test("a failing scan is route-local: a sibling Observability route stays 200", async () => {
+    const app = new Hono();
+    app.get("/api/summary", (c) => c.json({ ok: true }));
+    registerLibraryRoutes(app, () => ({ ...CONFIGURED, bridgePath: "/no/such/bridge" }));
+    const scan = await app.request("/api/library/bootstrap/scan");
+    expect([409, 422, 502]).toContain(scan.status);
     expect((await app.request("/api/summary")).status).toBe(200);
   });
 });

@@ -20,6 +20,9 @@ import {
   parseDuplicatePrimitiveResult,
   parseImportFromPathResult,
   parseForgetResult,
+  parseBootstrapScanResult,
+  parseBootstrapSessionResult,
+  parseBootstrapExecuteSummary,
 } from "./library_models.ts";
 
 // These parsers guard the WRITE-side process boundary. The load-bearing check
@@ -627,5 +630,156 @@ describe("parseForgetResult", () => {
   test("rejects a non-boolean removed", () => {
     expect(() => parseForgetResult({ removed: "yes" })).toThrow(BridgeShapeError);
     expect(() => parseForgetResult({})).toThrow(BridgeShapeError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bootstrap-discovery parsers (bootstrap slice). The load-bearing checks: the
+// externally-tagged Classification (`"AlreadyImported"` vs `{New|Drifted:…}`),
+// the recomputed summary, the verbatim-`raw`-preserved plan/session (round-trip
+// to execute untouched), and the un-renamed `WorkingCopyDirty`/`InstallMissing`
+// skip reason (NOT snake_case — a serde rename would break the cue mapping).
+// ---------------------------------------------------------------------------
+
+const SCAN = {
+  cross_referenced: {
+    groups: [
+      { kind: "skill", name: "newskill", classification: { New: { content: { hash: "h1" } } } },
+      { kind: "skill", name: "diagnose", classification: { Drifted: { content: { hash: "h2" } } } },
+      { kind: "agent", name: "old", classification: "AlreadyImported" },
+    ],
+    needs_manual_review: [{ kind: "command", name: "weird", members: [] }],
+    symlinked: [{ kind: "skill", name: "linked" }],
+    unclassified: [],
+  },
+  plan: {
+    creates: [{ kind: "skill", name: "newskill", base: { target: "claude" }, overlays: [] }],
+    reimports: [{ kind: "skill", name: "diagnose", base: { target: "claude" } }],
+  },
+};
+
+describe("parseBootstrapScanResult", () => {
+  test("parses the classification tags and recomputes the banner summary", () => {
+    const r = parseBootstrapScanResult(SCAN);
+    expect(r.crossReferenced.groups.map((g) => [g.kind, g.name, g.classification])).toEqual([
+      ["skill", "newskill", "new"],
+      ["skill", "diagnose", "drifted"],
+      ["agent", "old", "already_imported"],
+    ]);
+    // summary is recomputed (the serialized CrossReferenced omits summary()).
+    expect(r.crossReferenced.summary).toEqual({
+      new: 1,
+      already_imported: 1,
+      drifted: 1,
+      needs_manual_review: 1,
+    });
+    expect(r.crossReferenced.symlinked).toBe(1);
+    expect(r.crossReferenced.unclassified).toBe(0);
+    expect(r.crossReferenced.needs_manual_review).toEqual([{ kind: "command", name: "weird" }]);
+  });
+
+  test("lifts kind/name for display but preserves the verbatim action object for re-send", () => {
+    const r = parseBootstrapScanResult(SCAN);
+    expect(r.plan.creates[0]).toEqual({
+      kind: "skill",
+      name: "newskill",
+      raw: { kind: "skill", name: "newskill", base: { target: "claude" }, overlays: [] },
+    });
+    // `raw` is the EXACT object the bridge returned — the base/overlays the wizard
+    // must round-trip back to execute, not drop.
+    expect(r.plan.reimports[0]!.raw).toEqual({ kind: "skill", name: "diagnose", base: { target: "claude" } });
+  });
+
+  test("rejects a renamed/dropped Classification discriminant (a serde drift tripwire)", () => {
+    const bad = { ...SCAN, cross_referenced: { ...SCAN.cross_referenced, groups: [{ kind: "skill", name: "x", classification: { Renamed: {} } }] } };
+    expect(() => parseBootstrapScanResult(bad)).toThrow(BridgeShapeError);
+    expect(() => parseBootstrapScanResult({ cross_referenced: SCAN.cross_referenced })).toThrow(BridgeShapeError); // no plan
+    expect(() => parseBootstrapScanResult(null)).toThrow(BridgeShapeError);
+  });
+});
+
+describe("parseBootstrapSessionResult", () => {
+  const SESSION = {
+    format_version: 2,
+    started_at: "2026-06-12T00:00:00Z",
+    backup_taken: true,
+    excluded_ids: ["skill/foo"],
+    completed: [],
+  };
+
+  test("an absent session is a legitimate null (the first-run state), not a failure", () => {
+    expect(parseBootstrapSessionResult({ session: null })).toBeNull();
+  });
+
+  test("lifts startedAt/formatVersion but preserves the verbatim session for re-send", () => {
+    const r = parseBootstrapSessionResult({ session: SESSION });
+    expect(r).not.toBeNull();
+    expect(r!.formatVersion).toBe(2);
+    expect(r!.startedAt).toBe("2026-06-12T00:00:00Z");
+    // the whole session round-trips back to execute as `resume` untouched.
+    expect(r!.raw).toEqual(SESSION);
+  });
+
+  test("rejects a malformed envelope / session", () => {
+    expect(() => parseBootstrapSessionResult(null)).toThrow(BridgeShapeError);
+    expect(() => parseBootstrapSessionResult({ session: { started_at: "x" } })).toThrow(BridgeShapeError); // no format_version
+  });
+});
+
+describe("parseBootstrapExecuteSummary", () => {
+  test("a clean run parses created/reimported + the committed gating fields", () => {
+    const r = parseBootstrapExecuteSummary({
+      backup_path: "/data/backups/ts.tar.gz",
+      created: 2,
+      reimported: 1,
+      skipped: 0,
+      skipped_items: [],
+      committed: true,
+      commit_error: null,
+    });
+    expect(r).toEqual({
+      backup_path: "/data/backups/ts.tar.gz",
+      created: 2,
+      reimported: 1,
+      skipped: 0,
+      skipped_items: [],
+      committed: true,
+      commit_error: null,
+    });
+  });
+
+  test("a skipped item rides the summary with its verbatim Rust skip-reason (no serde rename)", () => {
+    const r = parseBootstrapExecuteSummary({
+      backup_path: null,
+      created: 0,
+      reimported: 0,
+      skipped: 2,
+      skipped_items: [
+        { kind: "skill", name: "a", source_target: "claude", reason: "WorkingCopyDirty" },
+        { kind: "agent", name: "b", source_target: "pi", reason: "InstallMissing" },
+      ],
+      // gating: an all-skipped run wrote nothing → no commit fields on the wire.
+    });
+    expect(r.skipped_items[0]).toEqual({ kind: "skill", name: "a", source_target: "claude", reason: "WorkingCopyDirty" });
+    expect(r.skipped_items[1]!.reason).toBe("InstallMissing");
+    // absent commit fields collapse to null, NOT a parse failure.
+    expect(r.committed).toBeNull();
+    expect(r.commit_error).toBeNull();
+    expect(r.backup_path).toBeNull();
+  });
+
+  test("rejects an unknown skip reason (a serde rename tripwire) and a non-array skipped_items", () => {
+    expect(() =>
+      parseBootstrapExecuteSummary({
+        backup_path: null,
+        created: 0,
+        reimported: 0,
+        skipped: 1,
+        skipped_items: [{ kind: "skill", name: "a", source_target: "claude", reason: "working_copy_dirty" }],
+      }),
+    ).toThrow(BridgeShapeError); // snake_case is NOT the wire shape — must be WorkingCopyDirty
+    expect(() => parseBootstrapExecuteSummary({ created: 0, reimported: 0, skipped: 0, skipped_items: null })).toThrow(
+      BridgeShapeError,
+    );
   });
 });

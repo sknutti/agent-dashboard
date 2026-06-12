@@ -360,6 +360,111 @@ export interface ForgetResult {
 }
 
 // ---------------------------------------------------------------------------
+// Bootstrap-discovery wire models (bootstrap slice)
+//
+// The first-run "scan your machine and import existing primitives" wizard. The
+// scan returns BOTH the full classification (for the review UI's informational
+// rows) and the derived executable `plan`; `derive_plan` ran server-side. The
+// `plan` and a resumable `session` round-trip back to `bootstrap_execute`
+// UNTOUCHED, so the action/session parsers keep the verbatim object (`raw`)
+// alongside the lifted display fields — the wizard re-sends `raw`, never a
+// re-serialization that could drop the base/overlay fields the bridge needs.
+// Skip-reason rides the Rust variant name verbatim (no serde rename:
+// `WorkingCopyDirty`/`InstallMissing`), unlike the snake_case `kind`.
+// ---------------------------------------------------------------------------
+
+/** A scan candidate's classification against the library. Externally-tagged in
+ *  Rust (`"AlreadyImported"` | `{New:…}` | `{Drifted:…}`); flattened to a tag
+ *  here — the review UI only needs the tag, not the per-candidate content. */
+export type BootstrapClassification = "new" | "already_imported" | "drifted";
+
+/** One classified `(kind, name)` group from the scan — display-only. */
+export interface BootstrapGroup {
+  kind: Kind;
+  name: string;
+  classification: BootstrapClassification;
+}
+
+/** The wizard's banner counts. core exposes this via a `summary()` method that
+ *  the serialized `CrossReferenced` omits, so the parser recomputes it the same
+ *  way (count groups by tag + `needs_manual_review.length`). */
+export interface BootstrapSummary {
+  new: number;
+  already_imported: number;
+  drifted: number;
+  needs_manual_review: number;
+}
+
+/** The full scan classification, for the review UI's informational rows. The
+ *  heavy per-candidate content is dropped — only the executable `plan` (kept
+ *  verbatim, below) round-trips back to execute. `symlinked`/`unclassified` are
+ *  surfaced as counts (the UI shows "N skipped, symlinked"). */
+export interface CrossReferenced {
+  groups: BootstrapGroup[];
+  needs_manual_review: { kind: Kind; name: string }[];
+  symlinked: number;
+  unclassified: number;
+  summary: BootstrapSummary;
+}
+
+/** One executable action (a New→create or Drifted→reimport). `kind`/`name` are
+ *  lifted for display; `raw` is the verbatim action object the bridge
+ *  re-deserializes — it carries the base/overlays the UI must NOT drop, so the
+ *  wizard re-sends `raw` untouched (filtering = which `raw`s to include). */
+export interface BootstrapAction {
+  kind: Kind;
+  name: string;
+  raw: Record<string, unknown>;
+}
+
+/** The executable subset of a scan: New primitives to create + Drifted ones to
+ *  reimport. Round-trips back to `bootstrap_execute` as the (frontend-filtered)
+ *  plan. */
+export interface BootstrapPlan {
+  creates: BootstrapAction[];
+  reimports: BootstrapAction[];
+}
+
+/** A `bootstrap_scan` result: the full classification (display) + the derived
+ *  executable plan (`derive_plan` ran server-side, one envelope). */
+export interface BootstrapScanResult {
+  crossReferenced: CrossReferenced;
+  plan: BootstrapPlan;
+}
+
+/** A resumable bootstrap session — the prior partial run's checkpoint. `raw` is
+ *  re-sent to execute as `resume` untouched; `startedAt` drives the "Resume
+ *  bootstrap from <when>?" prompt. */
+export interface BootstrapSession {
+  formatVersion: number;
+  startedAt: string;
+  raw: Record<string, unknown>;
+}
+
+/** An item bootstrap could not complete automatically. `reason` is the verbatim
+ *  Rust variant name (no serde rename). */
+export interface BootstrapSkippedItem {
+  kind: Kind;
+  name: string;
+  source_target: TargetName;
+  reason: "WorkingCopyDirty" | "InstallMissing";
+}
+
+/** A `bootstrap_execute` result. `committed`/`commit_error` are present ONLY
+ *  when the run wrote something (`created + reimported > 0`) — the bridge gates
+ *  the commit — so they're nullable here (absent → null). A partial run leaves
+ *  `skipped_items` populated and the session on disk for Resume. */
+export interface BootstrapExecuteSummary {
+  backup_path: string | null;
+  created: number;
+  reimported: number;
+  skipped: number;
+  skipped_items: BootstrapSkippedItem[];
+  committed: boolean | null;
+  commit_error: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // Runtime validators
 // ---------------------------------------------------------------------------
 
@@ -774,6 +879,130 @@ export function parseImportFromPathResult(v: unknown): ImportFromPathResult {
 export function parseForgetResult(v: unknown): ForgetResult {
   if (!isObject(v)) fail("ForgetResult");
   return { removed: asBool(v.removed, "ForgetResult.removed") };
+}
+
+// ---- bootstrap-discovery parsers ----------------------------------------
+
+function parseBootstrapClassification(v: unknown): BootstrapClassification {
+  if (v === "AlreadyImported") return "already_imported";
+  if (isObject(v)) {
+    if ("New" in v) return "new";
+    if ("Drifted" in v) return "drifted";
+  }
+  return fail("Classification");
+}
+
+function parseBootstrapGroup(v: unknown): BootstrapGroup {
+  if (!isObject(v) || !isKind(v.kind)) fail("BootstrapGroup");
+  return {
+    kind: v.kind,
+    name: asString(v.name, "BootstrapGroup.name"),
+    classification: parseBootstrapClassification(v.classification),
+  };
+}
+
+function parseManualReviewGroup(v: unknown): { kind: Kind; name: string } {
+  if (!isObject(v) || !isKind(v.kind)) fail("ManualReviewGroup");
+  return { kind: v.kind, name: asString(v.name, "ManualReviewGroup.name") };
+}
+
+function parseCrossReferenced(v: unknown): CrossReferenced {
+  if (!isObject(v)) fail("CrossReferenced");
+  if (!Array.isArray(v.groups)) fail("CrossReferenced.groups");
+  if (!Array.isArray(v.needs_manual_review)) fail("CrossReferenced.needs_manual_review");
+  if (!Array.isArray(v.symlinked)) fail("CrossReferenced.symlinked");
+  if (!Array.isArray(v.unclassified)) fail("CrossReferenced.unclassified");
+  const groups = v.groups.map(parseBootstrapGroup);
+  const needsManual = v.needs_manual_review.map(parseManualReviewGroup);
+  // Recompute the banner summary exactly as core's `summary()` (the serialized
+  // CrossReferenced omits the method's output).
+  const summary: BootstrapSummary = {
+    new: groups.filter((g) => g.classification === "new").length,
+    already_imported: groups.filter((g) => g.classification === "already_imported").length,
+    drifted: groups.filter((g) => g.classification === "drifted").length,
+    needs_manual_review: needsManual.length,
+  };
+  return {
+    groups,
+    needs_manual_review: needsManual,
+    symlinked: v.symlinked.length,
+    unclassified: v.unclassified.length,
+    summary,
+  };
+}
+
+function parseBootstrapAction(v: unknown): BootstrapAction {
+  if (!isObject(v) || !isKind(v.kind)) fail("BootstrapAction");
+  return {
+    kind: v.kind,
+    name: asString(v.name, "BootstrapAction.name"),
+    // Keep the verbatim object — it round-trips back to execute untouched.
+    raw: v,
+  };
+}
+
+function parseBootstrapPlanModel(v: unknown): BootstrapPlan {
+  if (!isObject(v) || !Array.isArray(v.creates) || !Array.isArray(v.reimports))
+    fail("BootstrapPlan");
+  return {
+    creates: v.creates.map(parseBootstrapAction),
+    reimports: v.reimports.map(parseBootstrapAction),
+  };
+}
+
+export function parseBootstrapScanResult(v: unknown): BootstrapScanResult {
+  if (!isObject(v)) fail("BootstrapScanResult");
+  return {
+    crossReferenced: parseCrossReferenced(v.cross_referenced),
+    plan: parseBootstrapPlanModel(v.plan),
+  };
+}
+
+function parseBootstrapSession(v: unknown): BootstrapSession {
+  if (!isObject(v)) fail("BootstrapSession");
+  return {
+    formatVersion: asNumber(v.format_version, "BootstrapSession.format_version"),
+    startedAt: asString(v.started_at, "BootstrapSession.started_at"),
+    // Keep the verbatim object — re-sent to execute as `resume` untouched.
+    raw: v,
+  };
+}
+
+/** Parse the `read_bootstrap_session` envelope (`{session: … | null}`). An
+ *  absent session is a legitimate `null` (the first-run state), not a failure. */
+export function parseBootstrapSessionResult(v: unknown): BootstrapSession | null {
+  if (!isObject(v)) fail("BootstrapSessionResult");
+  if (v.session === null || v.session === undefined) return null;
+  return parseBootstrapSession(v.session);
+}
+
+function parseBootstrapSkippedItem(v: unknown): BootstrapSkippedItem {
+  if (!isObject(v) || !isKind(v.kind)) fail("BootstrapSkippedItem");
+  const reason = v.reason;
+  if (reason !== "WorkingCopyDirty" && reason !== "InstallMissing")
+    fail("BootstrapSkippedItem.reason");
+  return {
+    kind: v.kind,
+    name: asString(v.name, "BootstrapSkippedItem.name"),
+    source_target: asTarget(v.source_target, "BootstrapSkippedItem.source_target"),
+    reason,
+  };
+}
+
+export function parseBootstrapExecuteSummary(v: unknown): BootstrapExecuteSummary {
+  if (!isObject(v) || !Array.isArray(v.skipped_items)) fail("BootstrapExecuteSummary");
+  return {
+    backup_path: asNullableString(v.backup_path, "BootstrapExecuteSummary.backup_path"),
+    created: asNumber(v.created, "BootstrapExecuteSummary.created"),
+    reimported: asNumber(v.reimported, "BootstrapExecuteSummary.reimported"),
+    skipped: asNumber(v.skipped, "BootstrapExecuteSummary.skipped"),
+    skipped_items: v.skipped_items.map(parseBootstrapSkippedItem),
+    // Commit-gating: the fields are present only when something was written;
+    // absent (an all-skipped / empty run) → null, NOT a parse failure.
+    committed: v.committed === undefined ? null : asNullableBool(v.committed, "BootstrapExecuteSummary.committed"),
+    commit_error:
+      v.commit_error === undefined ? null : asNullableString(v.commit_error, "BootstrapExecuteSummary.commit_error"),
+  };
 }
 
 function parseDriftReport(v: unknown): DriftReport {

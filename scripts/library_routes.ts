@@ -37,6 +37,9 @@ import {
   parseDuplicatePrimitiveResult,
   parseImportFromPathResult,
   parseForgetResult,
+  parseBootstrapScanResult,
+  parseBootstrapSessionResult,
+  parseBootstrapExecuteSummary,
   type LibraryStatus,
 } from "./library_models.ts";
 import { importInstalls } from "./library_migration.ts";
@@ -90,6 +93,7 @@ export function statusForCode(code: string): HttpStatus {
     // Install/drift/migration precondition faults: well-formed request, but the
     // ledger/install state isn't in a state the command can act on.
     case "installs_unconfigured":
+    case "bootstrap_unconfigured": // session/backup path unset — dashboard config not ready
     case "installs_already_present": // dest already holds records — idempotent refuse
     case "installs_destination_corrupt": // dashboard's own ledger is unreadable
     case "drift_no_install_record": // acknowledge/scan with nothing recorded
@@ -1070,6 +1074,118 @@ export async function buildForgetPrimitive(
 }
 
 // ---------------------------------------------------------------------------
+// Bootstrap-discovery handlers (bootstrap slice)
+//
+// The first-run scan→review→execute wizard. `path`/`home`/`installs_path`/
+// `session_path`/`backup_dir` are ALL config-injected (D7) — only the
+// `plan`/`resume`/`excluded_ids` (round-tripped from the scan) ride the body.
+// scan + session-read are READS (no write lock); scan gets a longer watchdog
+// than the 10s read default (it walks the home tree once). execute +
+// session-clear are WRITES under the ledger mutex (execute mutates installs.json
+// — the reimport divergence; clear serializes against a concurrent execute).
+// Every BootstrapExecuteSummary (including a partial run's skipped_items) rides
+// 200 as DATA; only genuine core faults map to 4xx/502. The execute timestamp is
+// server-stamped (route owns the clock), never body-derived.
+// ---------------------------------------------------------------------------
+
+/** The scan walks the user's `~/.claude`/`.pi`/`.codex` roots once; at ~117
+ *  primitives it benches in the ~50-80ms range the search slice measured, but a
+ *  pathological home could be slower — so it gets a watchdog larger than the 10s
+ *  read default (which would spuriously 502 a slow-but-healthy scan). Distinct
+ *  from WRITE_TIMEOUT_MS by intent, not value. */
+const BOOTSTRAP_SCAN_TIMEOUT_MS = 30_000;
+
+interface BootstrapExecuteRequestBody {
+  plan?: unknown;
+  resume?: unknown;
+  excluded_ids?: unknown;
+}
+
+/** Read: scan the machine, cross-reference the library, and return the full
+ *  classification + the derived executable plan in one envelope (`derive_plan`
+ *  ran server-side). Needs the library layout (it cross-references), so refuse
+ *  early when unconfigured. No write lock; a longer watchdog than the read
+ *  default. */
+export async function buildBootstrapScan(
+  config: LibraryConfig,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "bootstrap_scan",
+    { path: config.libraryPath, home: config.home },
+    { validate: parseBootstrapScanResult, timeoutMs: BOOTSTRAP_SCAN_TIMEOUT_MS },
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** Write: execute a (frontend-filtered) bootstrap plan — create the New ones,
+ *  reimport the Drifted ones, after a one-time source backup, with a resumable
+ *  session checkpoint. Takes the write lock (it mutates installs.json — the
+ *  reimport divergence from publish). All five config paths are injected (D7);
+ *  only plan/resume/excluded_ids ride the body. `created_at` is server-stamped.
+ *  A partial run's skipped_items ride 200 as data, never an error. */
+export async function buildBootstrapExecute(
+  config: LibraryConfig,
+  body: BootstrapExecuteRequestBody,
+  run: Run = runBridge,
+  now: string = new Date().toISOString(),
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const args = {
+    path: config.libraryPath,
+    home: config.home,
+    installs_path: config.installsPath,
+    session_path: config.sessionPath,
+    backup_dir: config.backupDir,
+    plan: body.plan ?? null,
+    resume: body.resume ?? null,
+    excluded_ids: Array.isArray(body.excluded_ids) ? body.excluded_ids : [],
+    created_at: now,
+  };
+  const r = await withWriteLock(() =>
+    run(config.bridgePath, "bootstrap_execute", args, {
+      validate: parseBootstrapExecuteSummary,
+      timeoutMs: WRITE_TIMEOUT_MS,
+    }),
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** Read: load the resumable bootstrap session (the prior partial run's
+ *  checkpoint). Works off the session file only (no layout), so it runs even
+ *  when the library is unconfigured. An absent session is a 200 `{session:null}`,
+ *  never a 404. No write lock. */
+export async function buildReadBootstrapSession(
+  config: LibraryConfig,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  const r = await run(
+    config.bridgePath,
+    "read_bootstrap_session",
+    { session_path: config.sessionPath },
+    { validate: parseBootstrapSessionResult },
+  );
+  return r.ok ? { status: 200, body: { session: r.data } } : errorResult(r.error);
+}
+
+/** Write: clear the bootstrap session (the wizard's Discard / start-over).
+ *  Idempotent. Takes the write lock to serialize against a concurrent execute.
+ *  Session-file only — runs even when the library is unconfigured. */
+export async function buildClearBootstrapSession(
+  config: LibraryConfig,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  const r = await withWriteLock(() =>
+    run(config.bridgePath, "clear_bootstrap_session", { session_path: config.sessionPath }, {
+      timeoutMs: WRITE_TIMEOUT_MS,
+    }),
+  );
+  return r.ok ? { status: 200, body: {} } : errorResult(r.error);
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -1290,4 +1406,15 @@ export function registerLibraryRoutes(
   app.post("/api/library/primitives/:kind/:name/forget", async (c) =>
     json(c, await buildForgetPrimitive(loadConfig(), c.req.param("kind"), c.req.param("name"))),
   );
+  // Bootstrap discovery wizard (the first-run scan→import flow). scan + session
+  // read are GETs (no write lock); execute + session clear are writes (execute
+  // mutates installs.json; clear serializes against it). Grouped under the
+  // distinct `/bootstrap` prefix — no `:kind/:name` collision (the isolation
+  // /search got). Each inherits server.ts's loopback Host + Origin guard.
+  app.get("/api/library/bootstrap/scan", async (c) => json(c, await buildBootstrapScan(loadConfig())));
+  app.get("/api/library/bootstrap/session", async (c) => json(c, await buildReadBootstrapSession(loadConfig())));
+  app.post("/api/library/bootstrap/execute", async (c) =>
+    json(c, await buildBootstrapExecute(loadConfig(), await readJson(c))),
+  );
+  app.delete("/api/library/bootstrap/session", async (c) => json(c, await buildClearBootstrapSession(loadConfig())));
 }
