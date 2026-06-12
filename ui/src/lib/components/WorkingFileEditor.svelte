@@ -181,21 +181,32 @@
 
   async function save(): Promise<void> {
     if (saving || !isDirty) return;
+    // Snapshot the open file + the exact bytes we POST + the selection nonce. If
+    // the user switches files DURING the save (selectFile/openPrimary bump
+    // loadNonce), we must NOT write the new file's baseline — that would mark a
+    // different, unsaved file "clean" (a lying dirty cue). We also set `baseline`
+    // to what was SENT, not the live buffer: if the user keeps typing into the
+    // same file mid-save, those newer keystrokes stay correctly dirty.
+    const myNonce = loadNonce;
+    const target = selectedFile;
+    const sent = buffer;
     saving = true;
     editorError = null;
     try {
-      if (selectedFile === null) {
-        await saveWorking(kind, name, buffer);
+      if (target === null) {
+        await saveWorking(kind, name, sent);
       } else {
-        await saveWorkingFile(kind, name, selectedFile, buffer);
+        await saveWorkingFile(kind, name, target, sent);
       }
-      baseline = buffer; // dirty clears
-      onWrite(); // parent: detailRes + primitivesRes reload (W6)
-      filesRes.reload(); // size_bytes changed
+      if (loadNonce === myNonce) {
+        baseline = sent; // dirty clears (relative to what we actually saved)
+        onWrite(); // parent: detailRes + primitivesRes reload (W6)
+        filesRes.reload(); // size_bytes changed
+      }
     } catch (e) {
-      editorError = editorMessage(e, "save failed");
+      if (loadNonce === myNonce) editorError = editorMessage(e, "save failed");
     } finally {
-      saving = false;
+      saving = false; // always — this save is done regardless of a switch
     }
   }
 
@@ -210,12 +221,15 @@
       newPath = "";
       onWrite();
       filesRes.reload();
-      await selectFile(path); // open the new (empty) file
     } catch (e) {
       editorError = editorMessage(e, "couldn’t create the file");
+      return; // a read-back failure below must not masquerade as a create failure
     } finally {
       saving = false;
     }
+    // Create succeeded and the lock is released — open the new (empty) file. Its
+    // own nonce guard handles the user clicking elsewhere mid read-back.
+    void selectFile(path);
   }
 
   async function renameFile(from: string): Promise<void> {

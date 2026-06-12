@@ -97,6 +97,35 @@ describe("WorkingFileEditor — edit → save → dirty-clear (W6)", () => {
     await fireEvent.click(saveButton());
     expect(saveRef).toHaveBeenCalledWith("skill", "diagnose", "notes.md", "v2");
   });
+
+  test("switching files mid-save never falsely marks the new file clean (race — Finding 3)", async () => {
+    mountEditor();
+    // The primary's save is held open so we can switch files while it is in flight.
+    let resolveSave!: () => void;
+    vi.spyOn(api, "saveWorking").mockReturnValue(
+      new Promise<never>((res) => {
+        resolveSave = () => res(undefined as never);
+      }) as never,
+    );
+    vi.spyOn(api, "readWorkingFile").mockResolvedValue({ kind: "text", text: "B-orig", ext: "md" });
+    await treeEntry("SKILL.md");
+    // Edit the primary → dirty, then start the (still-pending) save.
+    await fireEvent.input(textarea(), { target: { value: "---\n---\nprimary-edited\n" } });
+    await fireEvent.click(saveButton());
+    // Switch to notes.md mid-save and edit IT (now dirty, baseline = "B-orig").
+    // (The Save button stays disabled here only because the primary save is still
+    // in flight — saving === true — not because notes.md is clean.)
+    await fireEvent.click(await treeEntry("notes.md"));
+    await waitFor(() => expect(textarea().value).toBe("B-orig"));
+    await fireEvent.input(textarea(), { target: { value: "B-edited" } });
+    // The primary's save now resolves — it must NOT clobber notes.md's baseline.
+    resolveSave();
+    await waitFor(() => expect(api.saveWorking).toHaveBeenCalled());
+    // saving clears, and notes.md is STILL dirty (honest cue). WITHOUT the fix,
+    // baseline would have been set to "B-edited" → falsely clean → button disabled.
+    await waitFor(() => expect(saveButton().disabled).toBe(false));
+    expect(textarea().value).toBe("B-edited");
+  });
 });
 
 describe("WorkingFileEditor — buffer survives the poll (risk-b)", () => {
