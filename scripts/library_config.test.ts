@@ -3,7 +3,13 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadLibraryConfig, checkLibraryBridge, type LibraryConfig } from "./library_config.ts";
-import { DEFAULT_BRIDGE_PATH, DEFAULT_INSTALLS_PATH, DEFAULT_LIBRARY_HOME } from "./paths.ts";
+import {
+  DEFAULT_BACKUP_DIR,
+  DEFAULT_BOOTSTRAP_SESSION_PATH,
+  DEFAULT_BRIDGE_PATH,
+  DEFAULT_INSTALLS_PATH,
+  DEFAULT_LIBRARY_HOME,
+} from "./paths.ts";
 
 // An empty env so call-time env-override resolution is deterministic (the host
 // shell must not leak CC_LIBRARY_* into the assertions).
@@ -28,6 +34,8 @@ describe("loadLibraryConfig", () => {
         bridgePath: DEFAULT_BRIDGE_PATH,
         installsPath: DEFAULT_INSTALLS_PATH,
         home: DEFAULT_LIBRARY_HOME,
+        sessionPath: DEFAULT_BOOTSTRAP_SESSION_PATH,
+        backupDir: DEFAULT_BACKUP_DIR,
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -52,6 +60,8 @@ describe("loadLibraryConfig", () => {
         bridgePath: "/opt/bridge",
         installsPath: DEFAULT_INSTALLS_PATH,
         home: DEFAULT_LIBRARY_HOME,
+        sessionPath: DEFAULT_BOOTSTRAP_SESSION_PATH,
+        backupDir: DEFAULT_BACKUP_DIR,
       });
     });
   });
@@ -78,6 +88,8 @@ describe("loadLibraryConfig", () => {
         bridgePath: DEFAULT_BRIDGE_PATH,
         installsPath: DEFAULT_INSTALLS_PATH,
         home: DEFAULT_LIBRARY_HOME,
+        sessionPath: DEFAULT_BOOTSTRAP_SESSION_PATH,
+        backupDir: DEFAULT_BACKUP_DIR,
       });
     });
   });
@@ -152,6 +164,52 @@ describe("loadLibraryConfig — install destination (installsPath + home)", () =
   });
 });
 
+describe("loadLibraryConfig — bootstrap state (sessionPath + backupDir)", () => {
+  test("a missing file yields the default session path + backup dir", () => {
+    const dir = mkdtempSync(join(tmpdir(), "library-empty-"));
+    try {
+      const c = loadLibraryConfig(dir, NO_ENV);
+      expect(c.sessionPath).toBe(DEFAULT_BOOTSTRAP_SESSION_PATH);
+      expect(c.backupDir).toBe(DEFAULT_BACKUP_DIR);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the defaults live under DATA_DIR", () => {
+    expect(DEFAULT_BOOTSTRAP_SESSION_PATH).toMatch(/\/bootstrap-session\.json$/);
+    expect(DEFAULT_BACKUP_DIR).toMatch(/\/backups$/);
+  });
+
+  test("reads bootstrap_session_path and backup_dir from the file", () => {
+    withYaml(`bootstrap_session_path: /data/sess.json\nbackup_dir: /data/bk\n`, (dir) => {
+      const c = loadLibraryConfig(dir, NO_ENV);
+      expect(c.sessionPath).toBe("/data/sess.json");
+      expect(c.backupDir).toBe("/data/bk");
+    });
+  });
+
+  test("env CC_LIBRARY_BOOTSTRAP_SESSION_PATH / CC_LIBRARY_BACKUP_DIR override the file", () => {
+    withYaml(`bootstrap_session_path: /from/file.json\nbackup_dir: /from/file\n`, (dir) => {
+      const env = {
+        CC_LIBRARY_BOOTSTRAP_SESSION_PATH: "/from/env.json",
+        CC_LIBRARY_BACKUP_DIR: "/from/env",
+      };
+      const c = loadLibraryConfig(dir, env);
+      expect(c.sessionPath).toBe("/from/env.json");
+      expect(c.backupDir).toBe("/from/env");
+    });
+  });
+
+  test("non-string values fall back to the defaults, never a coerced value", () => {
+    withYaml(`bootstrap_session_path:\n  - not\n  - a\n  - string\nbackup_dir: 999\n`, (dir) => {
+      const c = loadLibraryConfig(dir, NO_ENV);
+      expect(c.sessionPath).toBe(DEFAULT_BOOTSTRAP_SESSION_PATH);
+      expect(c.backupDir).toBe(DEFAULT_BACKUP_DIR);
+    });
+  });
+});
+
 describe("checkLibraryBridge (doctor)", () => {
   const present = () => true;
   const absent = () => false;
@@ -163,6 +221,8 @@ describe("checkLibraryBridge (doctor)", () => {
     bridgePath,
     installsPath: "/data/installs.json",
     home: "/home/test",
+    sessionPath: "/data/bootstrap-session.json",
+    backupDir: "/data/backups",
   });
 
   // Injectable mtime providers (ms). The defaults hit the real fs; tests pin

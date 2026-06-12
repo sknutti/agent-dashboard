@@ -52,6 +52,24 @@ export const DEFAULT_INSTALLS_PATH = join(DATA_DIR, "installs.json");
  */
 export const DEFAULT_LIBRARY_HOME = homedir();
 
+/**
+ * Default location of the dashboard-owned bootstrap session file. Bootstrap is
+ * dashboard-owned state (ADR-0008), so — like `installs.json` — it lives under
+ * `DATA_DIR`, never in the standalone app's Application Support dir. The bridge
+ * reads/writes it; `loadLibraryConfig()` layers the optional `library.yaml`
+ * `bootstrap_session_path` + the `CC_LIBRARY_BOOTSTRAP_SESSION_PATH` env
+ * override at call time. A partial bootstrap leaves a resumable checkpoint here.
+ */
+export const DEFAULT_BOOTSTRAP_SESSION_PATH = join(DATA_DIR, "bootstrap-session.json");
+
+/**
+ * Default directory for bootstrap source-dir backups — the `<timestamp>.tar.gz`
+ * safety tarball written before any library write on a fresh bootstrap run.
+ * Dashboard-owned, under `DATA_DIR`; `loadLibraryConfig()` layers the optional
+ * `library.yaml` `backup_dir` + the `CC_LIBRARY_BACKUP_DIR` env override.
+ */
+export const DEFAULT_BACKUP_DIR = join(DATA_DIR, "backups");
+
 /** IANA-ish timezone name for local-time bucketing and health display. */
 export function tzName(): string {
   return (

@@ -41,20 +41,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use prompt_library_core::{
-    acknowledge_drift,
+    acknowledge_drift, bootstrap_execute, bootstrap_scan,
     detail::{
         list_overlays, read_primitive_detail, read_primitive_for_target,
         read_primitive_version_view, revert_primitive_to_version,
     },
-    delete_primitive, duplicate_primitive, find_in_library, forget_primitive,
+    delete_primitive, derive_plan, duplicate_primitive, find_in_library, forget_primitive,
     import_primitive_from_path, install, listing::list_primitives, reimport_install_as_version,
     rename_primitive, scaffold_primitive, scan_drift_for_primitive, scan_record, uninstall,
-    update_primitive_metadata, working_files, DeletePrimitiveRequest, DriftReport,
-    DuplicatePrimitiveRequest, Error as CoreError, FindOptions, ImportFromPathResult, InstallPaths,
-    InstallRequest, InstallsFile, KindInfoTable, LibraryLayout, MetadataUpdate, PrimitiveKind,
-    PrimitiveName, ReimportRequest, ReimportResult, RenamePrimitiveRequest, Target,
-    UninstallRequest, VersionLabel, VersionMetadata, VersionStore, WorkingCopy,
-    INSTALLS_FORMAT_VERSION,
+    update_primitive_metadata, working_files, BootstrapExecuteRequest, BootstrapPlan,
+    BootstrapSession, DeletePrimitiveRequest, DriftReport, DuplicatePrimitiveRequest,
+    Error as CoreError, FindOptions, ImportFromPathResult, InstallPaths, InstallRequest,
+    InstallsFile, KindInfoTable, LibraryLayout, MetadataUpdate, PrimitiveKind, PrimitiveName,
+    ReimportRequest, ReimportResult, RenamePrimitiveRequest, Target, UninstallRequest,
+    VersionLabel, VersionMetadata, VersionStore, WorkingCopy, INSTALLS_FORMAT_VERSION,
 };
 use prompt_library_git::{
     git_ops::{current_branch, git_add_all, git_commit, git_diff_changed_files},
@@ -190,6 +190,26 @@ async fn dispatch(command: &str, args: &Value) -> Result<Value, LibraryError> {
         "duplicate_primitive" => cmd_duplicate_primitive(args).await,
         "import_primitive_from_path" => cmd_import_primitive_from_path(args).await,
         "forget_primitive" => cmd_forget_primitive(args),
+        // Bootstrap discovery slice. The first-run "scan your machine for
+        // existing primitives and import them" wizard. `bootstrap_scan` is SYNC
+        // + read-only (std::fs walk of the home install roots + library
+        // cross-reference; no commit, no ledger mutation — like
+        // find_in_library) and folds the pure `derive_plan` in, returning
+        // `{cross_referenced, plan}` in one envelope. The Tauri
+        // `Channel<ScanProgress>` is DROPPED (no web event channel; the 3 fixed
+        // coarse stages render client-side) — a no-op `on_progress`, as core's
+        // own tests use. `bootstrap_execute` is ASYNC — it writes new
+        // version trees + reimports drifted ones and COMMITS, but ONLY when
+        // `created + reimported > 0` (the reimport commit-gating posture; the
+        // reference always commits — we diverge to avoid an empty
+        // "created 0, reimported 0" commit). It mutates `installs.json`, so the
+        // route serializes it under the write mutex (the reimport divergence
+        // from publish). `read`/`clear` session are SYNC, no commit — they touch
+        // only the dashboard-owned bootstrap session file.
+        "bootstrap_scan" => cmd_bootstrap_scan(args),
+        "bootstrap_execute" => cmd_bootstrap_execute(args).await,
+        "read_bootstrap_session" => cmd_read_bootstrap_session(args),
+        "clear_bootstrap_session" => cmd_clear_bootstrap_session(args),
         other => Err(LibraryError::new(
             "unknown_command",
             "unknown bridge command",
@@ -1128,6 +1148,100 @@ fn cmd_forget_primitive(args: &Value) -> Result<Value, LibraryError> {
 }
 
 // ---------------------------------------------------------------------------
+// Bootstrap-discovery commands (bootstrap slice)
+// ---------------------------------------------------------------------------
+
+/// Scan the user's install roots (`~/.claude`, `~/.pi`, `~/.codex`), dedupe,
+/// and cross-reference each candidate against the library — then run the pure
+/// `derive_plan` and return BOTH the full `CrossReferenced` (for the review
+/// UI's already-imported / needs-review / symlinked / unclassified rows) and
+/// the executable `BootstrapPlan` (the New→create + Drifted→reimport subset) in
+/// one envelope. Read-only: std::fs only, no commit, no ledger mutation. The
+/// Tauri progress `Channel` is dropped — `bootstrap_scan` emits 3 fixed coarse
+/// stages + Done over a sub-second walk with no web event channel and no payoff,
+/// so a no-op `on_progress` (exactly as core's own tests pass) is correct; the
+/// UI renders the known stage labels client-side.
+fn cmd_bootstrap_scan(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let home = parse_home(args)?;
+    let cr = bootstrap_scan(&home, LibraryLayout::new(&root), |_| {}).map_err(map_core_error)?;
+    // Serialize the full classification BEFORE `derive_plan` consumes `cr`.
+    let cross_referenced = serde_json::to_value(&cr).map_err(serialize_err)?;
+    let plan = serde_json::to_value(derive_plan(cr)).map_err(serialize_err)?;
+    Ok(json!({ "cross_referenced": cross_referenced, "plan": plan }))
+}
+
+/// Execute a bootstrap plan: write each New primitive at v1, reimport each
+/// Drifted one as vN+1, after a one-time source-dir tarball backup, with a
+/// per-item resumable session checkpoint. The `plan` is the (frontend-filtered)
+/// executable subset; `resume` re-drives a prior partial run's session (skipping
+/// already-completed items and the backup); `excluded_ids` are persisted into
+/// the session for the wizard's resume-display (core does NOT filter execution
+/// by them — exclusion is the frontend pre-filtering `plan`). The bridge owns no
+/// clock: `created_at` is the TS-supplied RFC3339 timestamp (shape-validated).
+/// core uses ONE `timestamp` for BOTH the backup-tarball filename AND the
+/// `created_at` it writes into new metadata/version trees, so — like the
+/// reference's `now_rfc3339_filesafe` — we sanitize `:`→`-` for filename safety;
+/// that single string is what core records. Partial outcomes (`skipped_items`)
+/// ride the `ok` envelope as DATA, never an error. Commits ONLY when
+/// `created + reimported > 0` (gating divergence from the always-committing
+/// reference), folding `{committed, commit_error}` on per the publish posture.
+async fn cmd_bootstrap_execute(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let (install_paths, installs_file_path) = install_context(args)?;
+    let session_path = parse_session_path(args)?;
+    let backup_dir = parse_backup_dir(args)?;
+    let plan = parse_bootstrap_plan(args)?;
+    let resume = parse_bootstrap_resume(args)?;
+    let excluded_ids = parse_excluded_ids(args)?;
+    let created_at = parse_created_at(args)?;
+    let timestamp = created_at.replace(':', "-");
+
+    let summary = bootstrap_execute(BootstrapExecuteRequest {
+        plan: &plan,
+        layout: LibraryLayout::new(&root),
+        install_paths: &install_paths,
+        installs_file: &installs_file_path,
+        session_path: &session_path,
+        backup_dir: &backup_dir,
+        home: install_paths.home(),
+        timestamp: &timestamp,
+        resume,
+        excluded_ids,
+    })
+    .map_err(map_core_error)?;
+
+    let mut value = serde_json::to_value(&summary).map_err(serialize_err)?;
+    if summary.created + summary.reimported > 0 {
+        let message = format!(
+            "bootstrap: created {}, reimported {}",
+            summary.created, summary.reimported
+        );
+        let (committed, commit_error) = commit_change(&root, &message).await;
+        insert_commit_fields(&mut value, committed, commit_error);
+    }
+    Ok(value)
+}
+
+/// Load the dashboard-owned bootstrap session (the resume checkpoint). Returns
+/// `{session: null}` when absent (a 200 `null`, never a 404 — an absent session
+/// is the normal first-run state). Read-only, no commit.
+fn cmd_read_bootstrap_session(args: &Value) -> Result<Value, LibraryError> {
+    let session_path = parse_session_path(args)?;
+    let session = BootstrapSession::load(&session_path).map_err(map_core_error)?;
+    Ok(json!({ "session": session }))
+}
+
+/// Remove the bootstrap session file — the wizard's "Discard / start over"
+/// action. Idempotent (no-op when absent). Touches only the dashboard-owned
+/// session file, so no commit and no library-root resolution.
+fn cmd_clear_bootstrap_session(args: &Value) -> Result<Value, LibraryError> {
+    let session_path = parse_session_path(args)?;
+    BootstrapSession::clear(&session_path).map_err(map_core_error)?;
+    Ok(json!({}))
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -1243,6 +1357,99 @@ fn install_context(args: &Value) -> Result<(InstallPaths, Utf8PathBuf), LibraryE
         ));
     }
     Ok((InstallPaths::new(home), Utf8PathBuf::from(installs_path)))
+}
+
+/// Resolve the install-destination `home` alone (bootstrap_scan needs it but no
+/// `installs.json`). Route-injected from server config like `install_context`'s
+/// `home` — missing/empty is a config fault (`installs_unconfigured`), not a
+/// user error, and never read from an HTTP body (D7).
+fn parse_home(args: &Value) -> Result<Utf8PathBuf, LibraryError> {
+    let home = args.get("home").and_then(Value::as_str).unwrap_or("");
+    if home.is_empty() {
+        return Err(LibraryError::new(
+            "installs_unconfigured",
+            "no install home configured",
+            "request args.home was missing or empty",
+        ));
+    }
+    Ok(Utf8PathBuf::from(home))
+}
+
+/// Resolve the dashboard-owned bootstrap session path. Route-injected from
+/// server config (`CC_LIBRARY_BOOTSTRAP_SESSION_PATH`, default
+/// `DATA_DIR/bootstrap-session.json`); NEVER from an HTTP body (D7). Missing/
+/// empty is a config fault, not a user error.
+fn parse_session_path(args: &Value) -> Result<Utf8PathBuf, LibraryError> {
+    let raw = args.get("session_path").and_then(Value::as_str).unwrap_or("");
+    if raw.is_empty() {
+        return Err(LibraryError::new(
+            "bootstrap_unconfigured",
+            "no bootstrap session path configured",
+            "request args.session_path was missing or empty",
+        ));
+    }
+    Ok(Utf8PathBuf::from(raw))
+}
+
+/// Resolve the dashboard-owned bootstrap backup directory. Route-injected from
+/// server config (`CC_LIBRARY_BACKUP_DIR`, default `DATA_DIR/backups`); NEVER
+/// from an HTTP body (D7). Missing/empty is a config fault, not a user error.
+fn parse_backup_dir(args: &Value) -> Result<Utf8PathBuf, LibraryError> {
+    let raw = args.get("backup_dir").and_then(Value::as_str).unwrap_or("");
+    if raw.is_empty() {
+        return Err(LibraryError::new(
+            "bootstrap_unconfigured",
+            "no bootstrap backup dir configured",
+            "request args.backup_dir was missing or empty",
+        ));
+    }
+    Ok(Utf8PathBuf::from(raw))
+}
+
+/// Deserialize the executable `BootstrapPlan` the wizard sends back from the
+/// scan (round-tripped untouched, then pre-filtered to the user's checked
+/// actions). A missing/malformed plan is a `bridge_bad_request` (the caller's
+/// bug), never a torn write — core only ever sees a well-formed plan.
+fn parse_bootstrap_plan(args: &Value) -> Result<BootstrapPlan, LibraryError> {
+    let raw = args.get("plan").cloned().unwrap_or(Value::Null);
+    serde_json::from_value(raw).map_err(|e| {
+        LibraryError::new(
+            "bridge_bad_request",
+            "missing or malformed bootstrap plan",
+            format!("args.plan did not deserialize into a BootstrapPlan: {e}"),
+        )
+    })
+}
+
+/// Deserialize an optional resume `BootstrapSession` (the prior partial run's
+/// checkpoint, round-tripped untouched). Absent/null → `None` (a fresh run).
+fn parse_bootstrap_resume(args: &Value) -> Result<Option<BootstrapSession>, LibraryError> {
+    match args.get("resume") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|e| {
+            LibraryError::new(
+                "bridge_bad_request",
+                "malformed bootstrap resume session",
+                format!("args.resume did not deserialize into a BootstrapSession: {e}"),
+            )
+        }),
+    }
+}
+
+/// The action ids the user unchecked in review. Persisted into the session for
+/// resume-display only — core does NOT filter execution by them (the executable
+/// exclusion is the frontend pre-filtering `plan`). Absent/null → empty.
+fn parse_excluded_ids(args: &Value) -> Result<Vec<String>, LibraryError> {
+    match args.get("excluded_ids") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(v) => serde_json::from_value(v.clone()).map_err(|e| {
+            LibraryError::new(
+                "bridge_bad_request",
+                "malformed excluded_ids",
+                format!("args.excluded_ids must be an array of strings: {e}"),
+            )
+        }),
+    }
 }
 
 /// Parse the closed `targets` enum array (`claude`/`pi`/`codex`). A malformed
@@ -3837,5 +4044,211 @@ mod tests {
         // Idempotent: second forget finds nothing.
         let again = cmd_forget_primitive(&life_install_args(&fx)).unwrap();
         assert_eq!(again["removed"], json!(false));
+    }
+
+    // ---- bootstrap-discovery slice -----------------------------------------
+
+    /// A library (`.prompt-library` marker) + a temp install home to plant scan
+    /// candidates under + the dashboard-owned session/installs/backup paths. The
+    /// single `TempDir` holds the whole tree alive; everything is canonicalized
+    /// so it matches what `require_library` resolves to (macOS /var symlink).
+    struct BootstrapFx {
+        _tmp: TempDir,
+        root: Utf8PathBuf,
+        home: Utf8PathBuf,
+        installs: Utf8PathBuf,
+        session: Utf8PathBuf,
+        backup_dir: Utf8PathBuf,
+    }
+
+    fn bootstrap_fx() -> BootstrapFx {
+        let tmp = TempDir::new().unwrap();
+        let base = Utf8PathBuf::from_path_buf(tmp.path().canonicalize().unwrap()).unwrap();
+        let root = base.join("lib");
+        init_library(&root, NOW).unwrap(); // missing dir → created + marker written
+        let home = base.join("home");
+        std::fs::create_dir_all(home.as_std_path()).unwrap();
+        let data = base.join("data");
+        std::fs::create_dir_all(data.as_std_path()).unwrap();
+        BootstrapFx {
+            _tmp: tmp,
+            root,
+            home,
+            installs: data.join("installs.json"),
+            session: data.join("bootstrap-session.json"),
+            backup_dir: data.join("backups"),
+        }
+    }
+
+    /// Plant a Claude-skill scan candidate at `~/.claude/skills/<name>/SKILL.md`.
+    fn plant_claude_skill(home: &Utf8PathBuf, name: &str, body: &[u8]) {
+        let dir = home.join(".claude/skills").join(name);
+        std::fs::create_dir_all(dir.as_std_path()).unwrap();
+        std::fs::write(dir.join("SKILL.md").as_std_path(), body).unwrap();
+    }
+
+    fn scan_args(fx: &BootstrapFx) -> Value {
+        json!({ "path": fx.root.as_str(), "home": fx.home.as_str() })
+    }
+
+    fn execute_args(fx: &BootstrapFx, plan: Value, excluded: Value) -> Value {
+        json!({
+            "path": fx.root.as_str(),
+            "home": fx.home.as_str(),
+            "installs_path": fx.installs.as_str(),
+            "session_path": fx.session.as_str(),
+            "backup_dir": fx.backup_dir.as_str(),
+            "plan": plan,
+            "excluded_ids": excluded,
+            "created_at": NOW,
+        })
+    }
+
+    fn session_args(fx: &BootstrapFx) -> Value {
+        json!({ "session_path": fx.session.as_str() })
+    }
+
+    /// Drive a scan through the full envelope and return its derived `plan`.
+    async fn scan_plan(fx: &BootstrapFx) -> Value {
+        let env = handle(
+            &json!({ "v": 1, "command": "bootstrap_scan", "args": scan_args(fx) }).to_string(),
+        )
+        .await;
+        assert_eq!(env["ok"], json!(true), "scan failed: {env:?}");
+        env["data"]["plan"].clone()
+    }
+
+    #[tokio::test]
+    async fn bootstrap_scan_returns_cross_referenced_and_derived_plan() {
+        let fx = bootstrap_fx();
+        plant_claude_skill(&fx.home, "newskill", b"---\n---\nbody\n");
+        let env = handle(
+            &json!({ "v": 1, "command": "bootstrap_scan", "args": scan_args(&fx) }).to_string(),
+        )
+        .await;
+        assert_eq!(env["ok"], json!(true), "{env:?}");
+        let data = &env["data"];
+        // The full classification rides the envelope (one group, classified New).
+        assert_eq!(data["cross_referenced"]["groups"].as_array().unwrap().len(), 1);
+        // derive_plan ran server-side: the New candidate → a create, no reimports.
+        assert_eq!(data["plan"]["creates"].as_array().unwrap().len(), 1);
+        assert_eq!(data["plan"]["reimports"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_execute_creates_writes_backup_and_commits() {
+        let fx = bootstrap_fx();
+        git_init_repo(&fx.root);
+        plant_claude_skill(&fx.home, "newskill", b"---\n---\nbody\n");
+        let plan = scan_plan(&fx).await;
+        let env = handle(
+            &json!({ "v": 1, "command": "bootstrap_execute", "args": execute_args(&fx, plan, json!([])) })
+                .to_string(),
+        )
+        .await;
+        assert_eq!(env["ok"], json!(true), "{env:?}");
+        let data = &env["data"];
+        assert_eq!(data["created"], json!(1));
+        assert_eq!(data["reimported"], json!(0));
+        assert_eq!(data["skipped"], json!(0));
+        assert!(data["backup_path"].is_string(), "the safety tarball path is surfaced: {data:?}");
+        // created > 0 → the commit-gating fired; the new version tree committed.
+        assert_eq!(data["committed"], json!(true));
+        assert_eq!(data["commit_error"], json!(null));
+        assert_eq!(
+            git_capture(&fx.root, &["log", "-1", "--pretty=%s"]),
+            "bootstrap: created 1, reimported 0"
+        );
+        // The primitive now exists in the library at v1.
+        assert_eq!(
+            std::fs::read_to_string(fx.root.join("skills/newskill/current.txt").as_std_path())
+                .unwrap()
+                .trim(),
+            "v1"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_execute_reimports_a_drifted_candidate_to_v2() {
+        let fx = bootstrap_fx();
+        git_init_repo(&fx.root);
+        // Library already has `diagnose` published at v1; the on-disk copy under
+        // the home differs → cross-reference classifies it Drifted, not New.
+        publish_skill(&fx.root, "diagnose", vec![Target::Claude]);
+        plant_claude_skill(&fx.home, "diagnose", b"---\n---\nDRIFTED\n");
+        let plan = scan_plan(&fx).await;
+        assert_eq!(plan["creates"].as_array().unwrap().len(), 0, "{plan:?}");
+        assert_eq!(plan["reimports"].as_array().unwrap().len(), 1, "{plan:?}");
+        let env = handle(
+            &json!({ "v": 1, "command": "bootstrap_execute", "args": execute_args(&fx, plan, json!([])) })
+                .to_string(),
+        )
+        .await;
+        assert_eq!(env["ok"], json!(true), "{env:?}");
+        assert_eq!(env["data"]["reimported"], json!(1), "{:?}", env["data"]);
+        assert_eq!(env["data"]["created"], json!(0));
+        // The library advanced to v2 (the drifted bytes became a new version).
+        assert_eq!(
+            std::fs::read_to_string(fx.root.join("skills/diagnose/current.txt").as_std_path())
+                .unwrap()
+                .trim(),
+            "v2"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_execute_empty_plan_commits_nothing() {
+        let fx = bootstrap_fx();
+        git_init_repo(&fx.root);
+        // Everything excluded in review → an empty plan writes nothing.
+        let plan = json!({ "creates": [], "reimports": [] });
+        let env = handle(
+            &json!({ "v": 1, "command": "bootstrap_execute", "args": execute_args(&fx, plan, json!([])) })
+                .to_string(),
+        )
+        .await;
+        assert_eq!(env["ok"], json!(true), "{env:?}");
+        let data = &env["data"];
+        assert_eq!(data["created"], json!(0));
+        assert_eq!(data["reimported"], json!(0));
+        // Gating divergence from the reference: with nothing written, NO commit
+        // fields are folded on...
+        assert!(
+            data.as_object().unwrap().get("committed").is_none(),
+            "an empty run must not carry commit fields: {data:?}"
+        );
+        // ...and the repo has no commit at all (no empty "created 0" entry).
+        assert_eq!(git_capture(&fx.root, &["rev-list", "--all", "--count"]), "0");
+    }
+
+    #[tokio::test]
+    async fn bootstrap_session_read_absent_is_null_and_clear_is_idempotent() {
+        let fx = bootstrap_fx();
+        // No session yet → read is a 200 `null`, never a 404.
+        let read = handle(
+            &json!({ "v": 1, "command": "read_bootstrap_session", "args": session_args(&fx) })
+                .to_string(),
+        )
+        .await;
+        assert_eq!(read["ok"], json!(true), "{read:?}");
+        assert_eq!(read["data"]["session"], json!(null));
+        // Clear is idempotent: removing an absent session is ok, not an error.
+        let clear = handle(
+            &json!({ "v": 1, "command": "clear_bootstrap_session", "args": session_args(&fx) })
+                .to_string(),
+        )
+        .await;
+        assert_eq!(clear["ok"], json!(true), "{clear:?}");
+    }
+
+    #[tokio::test]
+    async fn bootstrap_missing_injected_paths_are_config_faults() {
+        let fx = bootstrap_fx();
+        // home is route-injected → absent is a config fault, not a user error.
+        let scan_err = cmd_bootstrap_scan(&json!({ "path": fx.root.as_str() })).unwrap_err();
+        assert_eq!(scan_err.code, "installs_unconfigured");
+        // session_path is route-injected → absent is its own config fault.
+        let read_err = cmd_read_bootstrap_session(&json!({})).unwrap_err();
+        assert_eq!(read_err.code, "bootstrap_unconfigured");
     }
 }
