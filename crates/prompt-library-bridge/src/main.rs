@@ -1119,6 +1119,64 @@ mod tests {
         );
     }
 
+    // The write-side goldens tie the committed install/uninstall/scan_drift/
+    // list_installs bytes (which the TS validators parse) to LIVE core output, so
+    // a serde rename on the tagged enums fails `cargo test` instead of silently
+    // desyncing the frozen fixtures. Their `data` carries no absolute path
+    // (conflicts are install-relative; version/timestamp pinned), so a fresh
+    // temp-home install reproduces the committed bytes exactly.
+
+    #[test]
+    fn install_summary_matches_committed_fixture() {
+        let fx = install_fx(vec![Target::Claude]);
+        let data = cmd_install(&write_args(&fx, json!(["claude"]), false)).unwrap();
+        let expected = golden_data(include_str!("../../../scripts/fixtures/bridge/install_summary.json"));
+        assert_eq!(
+            data, expected,
+            "install_summary drifted from the committed fixture — regenerate with \
+             `bun run scripts/fixtures/bridge/capture.ts`"
+        );
+    }
+
+    #[test]
+    fn scan_drift_matches_committed_fixture() {
+        let fx = install_fx(vec![Target::Claude]);
+        cmd_install(&write_args(&fx, json!(["claude"]), false)).unwrap();
+        let data = cmd_scan_drift(&drift_args(&fx)).unwrap();
+        let expected = golden_data(include_str!("../../../scripts/fixtures/bridge/scan_drift.json"));
+        assert_eq!(
+            data, expected,
+            "scan_drift drifted from the committed fixture — regenerate with \
+             `bun run scripts/fixtures/bridge/capture.ts`"
+        );
+    }
+
+    #[test]
+    fn list_installs_matches_committed_fixture() {
+        let fx = install_fx(vec![Target::Claude]);
+        cmd_install(&write_args(&fx, json!(["claude"]), false)).unwrap();
+        let data = cmd_list_installs_for_primitive(&drift_args(&fx)).unwrap();
+        let expected = golden_data(include_str!("../../../scripts/fixtures/bridge/list_installs.json"));
+        assert_eq!(
+            data, expected,
+            "list_installs drifted from the committed fixture — regenerate with \
+             `bun run scripts/fixtures/bridge/capture.ts`"
+        );
+    }
+
+    #[test]
+    fn uninstall_summary_matches_committed_fixture() {
+        let fx = install_fx(vec![Target::Claude]);
+        cmd_install(&write_args(&fx, json!(["claude"]), false)).unwrap();
+        let data = cmd_uninstall(&write_args(&fx, json!(["claude"]), false)).unwrap();
+        let expected = golden_data(include_str!("../../../scripts/fixtures/bridge/uninstall_summary.json"));
+        assert_eq!(
+            data, expected,
+            "uninstall_summary drifted from the committed fixture — regenerate with \
+             `bun run scripts/fixtures/bridge/capture.ts`"
+        );
+    }
+
     #[tokio::test]
     async fn error_message_carries_no_filesystem_path() {
         // m4: `message` is path-free; only `detail` may carry the path.

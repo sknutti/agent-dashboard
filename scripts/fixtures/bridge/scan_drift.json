@@ -1,0 +1,14 @@
+{
+  "data": [
+    {
+      "kind": "skill",
+      "name": "diagnose",
+      "status": {
+        "kind": "clean"
+      },
+      "target": "claude"
+    }
+  ],
+  "ok": true,
+  "v": 1
+}

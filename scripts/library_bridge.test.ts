@@ -9,6 +9,10 @@ import {
   parsePrimitiveSummaries,
   parsePrimitiveDetail,
   parseLibraryStatus,
+  parseInstallSummary,
+  parseUninstallSummary,
+  parseDriftReports,
+  parseInstalledTargets,
 } from "./library_models.ts";
 
 const FIX = join(import.meta.dir, "fixtures", "bridge");
@@ -73,6 +77,44 @@ describe("interpretBridgeOutcome — envelope parsing (committed fixtures)", () 
     if (!r.ok) return;
     expect(r.data).toMatchObject({ is_valid: true, marker_exists: true, is_git_repo: false });
     expect(r.data.branch).toBeNull();
+  });
+
+  // Write-side fixtures: the SAME committed bytes the Rust goldens assert against
+  // live core output. Parsing them here closes the loop — a serde rename breaks
+  // both the Rust golden and this parse (drift-safe both ways).
+  test("install_summary parses a clean install (installed outcome, no failures)", () => {
+    const r = interpretBridgeOutcome(ok(fixture("install_summary")), parseInstallSummary);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data.failures).toEqual([]);
+    expect(r.data.successes[0]!.target).toBe("claude");
+    expect(r.data.successes[0]!.outcome).toEqual({ kind: "installed", version: "v1" });
+  });
+
+  test("uninstall_summary parses a removed outcome", () => {
+    const r = interpretBridgeOutcome(ok(fixture("uninstall_summary")), parseUninstallSummary);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data.successes[0]!.outcome).toEqual({ kind: "removed" });
+  });
+
+  test("scan_drift parses a per-target DriftReport with a clean status", () => {
+    const r = interpretBridgeOutcome(ok(fixture("scan_drift")), parseDriftReports);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data[0]).toMatchObject({ kind: "skill", name: "diagnose", target: "claude" });
+    expect(r.data[0]!.status).toEqual({ kind: "clean" });
+  });
+
+  test("list_installs parses the compact per-target projection", () => {
+    const r = interpretBridgeOutcome(ok(fixture("list_installs")), parseInstalledTargets);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data[0]).toEqual({
+      target: "claude",
+      installed_version: "v1",
+      installed_at: "2026-04-30T12:00:00Z",
+    });
   });
 });
 

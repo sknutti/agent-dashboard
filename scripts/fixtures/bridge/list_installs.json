@@ -1,0 +1,11 @@
+{
+  "data": [
+    {
+      "installed_at": "2026-04-30T12:00:00Z",
+      "installed_version": "v1",
+      "target": "claude"
+    }
+  ],
+  "ok": true,
+  "v": 1
+}

@@ -15,14 +15,18 @@ bun run scripts/fixtures/bridge/capture.ts
 That builds the release bridge, seeds a deterministic Library via the
 `seed_fixture_library` example (pinned timestamp → byte-stable), runs each read
 command, and rewrites the `*.json` here. Absolute temp paths in error `detail`
-are normalized to `<LIBRARY_PATH>`.
+are normalized to `<LIBRARY_PATH>`. The write-side fixtures come from a SECOND
+lib seeded with the example's `publish` arg (so `diagnose` is installable) plus
+a temp install home + ledger; their `data` carries no absolute path, so they are
+byte-stable without normalization.
 
 ## Drift guard
 
 `crates/prompt-library-bridge/src/main.rs` has golden tests asserting the live
-`kind_info` / `target_info` output still equals `kind_info.json` /
-`target_info.json`. A core serde rename therefore fails `cargo test`, pointing
-back here — instead of silently desyncing these frozen fixtures from reality.
+`kind_info` / `target_info` / `install_summary` / `uninstall_summary` /
+`scan_drift` / `list_installs` output still equals the committed JSON. A core
+serde rename therefore fails `cargo test`, pointing back here — instead of
+silently desyncing these frozen fixtures from reality.
 
 ## Files
 
@@ -35,3 +39,7 @@ back here — instead of silently desyncing these frozen fixtures from reality.
 | `primitive_detail_codex_agent.json` | `primitive_detail` | toml-tagged `working` |
 | `library_status_valid.json` | `library_status` | valid marker, non-git fixture dir |
 | `error_marker_missing.json` | `list_primitives` | application error envelope (`ok:false`) |
+| `install_summary.json` | `install` | `InstallSummary`; one `installed` outcome, tagged on `kind` |
+| `uninstall_summary.json` | `uninstall` | `UninstallSummary`; one `removed` outcome |
+| `scan_drift.json` | `scan_drift` | per-target `DriftReport`; `clean` status (nested `kind` tag) |
+| `list_installs.json` | `list_installs_for_primitive` | compact `InstalledTarget` projection |
