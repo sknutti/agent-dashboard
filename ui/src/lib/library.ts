@@ -83,6 +83,15 @@ export function dirtyCue(dirty: boolean): Cue {
     : { label: "pinned", tone: "default", glyph: "○" };
 }
 
+/** Editor buffer cue — DISTINCT copy from the primitive-level dirtyCue: this is
+ *  "the open file has unsaved edits", not "the working copy differs from the
+ *  pinned version". Colorblind-safe (label + glyph, never bare red/green). */
+export function editorDirtyCue(isDirty: boolean): Cue {
+  return isDirty
+    ? { label: "unsaved", tone: "amber", glyph: "●" }
+    : { label: "saved", tone: "default", glyph: "○" };
+}
+
 /** A words-only git summary for the status rail (no color-coded dots). Nulls are
  *  indeterminate — never asserted as "clean"/"all pushed". */
 export function gitSummary(s: LibraryStatus): string {

@@ -13,6 +13,8 @@ import {
   parseUninstallSummary,
   parseDriftReports,
   parseInstalledTargets,
+  parseWorkingFileEntries,
+  parseWorkingFileBytes,
 } from "./library_models.ts";
 
 const FIX = join(import.meta.dir, "fixtures", "bridge");
@@ -115,6 +117,34 @@ describe("interpretBridgeOutcome — envelope parsing (committed fixtures)", () 
       installed_version: "v1",
       installed_at: "2026-04-30T12:00:00Z",
     });
+  });
+
+  // Working-file fixtures: the SAME committed bytes the Rust working goldens
+  // assert against live core output (seeded byte-identically by
+  // `seed_fixture_library --working`). Parsing them here closes the loop — a
+  // serde rename on WorkingFileEntry/WorkingFileBytes breaks both sides.
+  test("list_working_files parses primary-first entries with both roles", () => {
+    const r = interpretBridgeOutcome(ok(fixture("list_working_files")), parseWorkingFileEntries);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data[0]).toEqual({ path: "SKILL.md", role: "primary", is_text: true, size_bytes: 13 });
+    const bin = r.data.find((e) => e.path === "logo.bin")!;
+    expect(bin.role).toBe("ref");
+    expect(bin.is_text).toBe(false);
+  });
+
+  test("read_working_file (text) parses the text-tagged bytes with an extension", () => {
+    const r = interpretBridgeOutcome(ok(fixture("read_working_file_text")), parseWorkingFileBytes);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data).toEqual({ kind: "text", text: "hello\n", ext: "md" });
+  });
+
+  test("read_working_file (binary) parses the binary-tagged bytes — size only", () => {
+    const r = interpretBridgeOutcome(ok(fixture("read_working_file_binary")), parseWorkingFileBytes);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data).toEqual({ kind: "binary", size: 4 });
   });
 });
 

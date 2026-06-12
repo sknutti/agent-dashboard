@@ -1,0 +1,24 @@
+{
+  "data": [
+    {
+      "is_text": true,
+      "path": "SKILL.md",
+      "role": "primary",
+      "size_bytes": 13
+    },
+    {
+      "is_text": false,
+      "path": "logo.bin",
+      "role": "ref",
+      "size_bytes": 4
+    },
+    {
+      "is_text": true,
+      "path": "notes.md",
+      "role": "ref",
+      "size_bytes": 6
+    }
+  ],
+  "ok": true,
+  "v": 1
+}

@@ -429,6 +429,23 @@ export type WorkingContent =
   | { kind: "md"; frontmatter: string; body: string }
   | { kind: "toml"; text: string };
 
+// ── Prompt Library working files (editor slice) ─────────────────────────────
+// Mirror core's working_files.rs serde (scripts/library_models.ts). Binary files
+// carry size only — the editor renders a placeholder, never a textarea.
+
+export type WorkingFileRole = "primary" | "ref";
+
+export interface WorkingFileEntry {
+  path: string;
+  role: WorkingFileRole;
+  is_text: boolean;
+  size_bytes: number;
+}
+
+export type WorkingFileBytes =
+  | { kind: "text"; text: string; ext: string | null }
+  | { kind: "binary"; size: number };
+
 export interface LibraryPrimitiveMetadata {
   allowed_targets: LibraryTarget[];
   created_at: string;
@@ -593,3 +610,36 @@ export const acknowledgeDrift = (kind: string, name: string, target: LibraryTarg
 
 export const importInstalls = () =>
   sendJson<LibraryImportResult>("/api/library/import-installs", "POST", {});
+
+// ── Prompt Library working-file editor fetchers (editor slice) ──────────────
+// Reads (list/read) use getJson; writes use sendJson so a route-local error code
+// (working_file_exists / library_invalid_working_path / …) rides LibraryApiError
+// to a route-local inline message — never the shell. The content read's ref path
+// rides a query param (a path segment can't carry "/" for nested refs).
+
+const wfPath = (kind: string, name: string) => `${primPath(kind, name)}/working-files`;
+
+export const getWorkingFiles = (kind: string, name: string) =>
+  getJson<WorkingFileEntry[]>(wfPath(kind, name));
+
+export const readWorkingFile = (kind: string, name: string, path: string) =>
+  getJson<WorkingFileBytes>(`${wfPath(kind, name)}/content?path=${encodeURIComponent(path)}`);
+
+/** Save the PRIMARY file (parse-validated in-core before write). */
+export const saveWorking = (kind: string, name: string, content: string) =>
+  sendJson<Record<string, never>>(`${primPath(kind, name)}/working`, "POST", { content });
+
+export const createWorkingFile = (kind: string, name: string, path: string, content: string) =>
+  sendJson<Record<string, never>>(wfPath(kind, name), "POST", { path, content });
+
+export const saveWorkingFile = (kind: string, name: string, path: string, content: string) =>
+  sendJson<Record<string, never>>(wfPath(kind, name), "PUT", { path, content });
+
+export const renameWorkingFile = (kind: string, name: string, oldPath: string, newPath: string) =>
+  sendJson<Record<string, never>>(`${wfPath(kind, name)}/rename`, "PUT", {
+    old_path: oldPath,
+    new_path: newPath,
+  });
+
+export const deleteWorkingFile = (kind: string, name: string, path: string) =>
+  sendJson<Record<string, never>>(wfPath(kind, name), "DELETE", { path });
