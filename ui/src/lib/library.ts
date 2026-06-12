@@ -15,6 +15,7 @@ import type {
   LibraryUninstallOutcome,
   LibraryReimportResult,
   LibraryImportFromPathResult,
+  LibraryBootstrapClassification,
 } from "./api";
 
 /** All four Kinds, shown equally (ADR-0007 — no Kind is privileged). */
@@ -306,4 +307,88 @@ export function importResultCue(result: LibraryImportFromPathResult): Cue {
     case "not_classifiable":
       return { label: "not auto-importable — use bootstrap", tone: "cyan", glyph: "⊘" };
   }
+}
+
+// ── bootstrap derivation (bootstrap slice) ──────────────────────────────────
+
+/** A scan candidate's classification cue for the review step. Four distinct
+ *  states, each a label + glyph + Okabe-Ito-safe tone — NEVER bare red/green
+ *  (Scott is red/green CVD), and distinguishable with color stripped. `new` and
+ *  `drifted` are the importable ones (create / reimport); `already_imported` and
+ *  `needs_review` are read-only informational rows. */
+export function classificationCue(c: LibraryBootstrapClassification | "needs_review"): Cue {
+  switch (c) {
+    case "new":
+      return { label: "new", tone: "cyan", glyph: "✦" };
+    case "drifted":
+      return { label: "drifted", tone: "amber", glyph: "●" };
+    case "already_imported":
+      return { label: "already imported", tone: "default", glyph: "✓" };
+    case "needs_review":
+      return { label: "needs review", tone: "default", glyph: "⚑" };
+  }
+}
+
+/** Why a bootstrap item was skipped — distinct, label-first remedies (working
+ *  copy vs install path are DIFFERENT fixes, distinguishable without color).
+ *  Mirrors the reimport cue vocabulary (a bootstrap reimport routes through the
+ *  same core path). Colorblind-safe. */
+export function bootstrapSkipReasonCue(reason: "WorkingCopyDirty" | "InstallMissing"): Cue {
+  switch (reason) {
+    case "WorkingCopyDirty":
+      return { label: "working copy has unpublished edits — resolve, then Resume", tone: "amber", glyph: "●" };
+    case "InstallMissing":
+      return { label: "install path is gone — rescan", tone: "cyan", glyph: "⊘" };
+  }
+}
+
+/** Post-execute commit state for the bootstrap result banner. The version trees
+ *  ALWAYS landed by the time this renders; the cue describes only the advisory
+ *  git commit, gated to runs that wrote something (`committed` is null on a
+ *  scan-only / all-skipped run). Mirrors lifecycleCommitCue. Colorblind-safe. */
+export function bootstrapCommitCue(committed: boolean | null, commitError: string | null): Cue {
+  if (committed) return { label: "committed locally", tone: "default", glyph: "✓" };
+  if (commitError) return { label: "imported · not committed", tone: "amber", glyph: "●" };
+  return { label: "imported", tone: "default", glyph: "✓" };
+}
+
+// ── reconcile derivation (bootstrap slice — the forget home) ─────────────────
+
+/** An install record whose `(kind, name)` has no corresponding library primitive
+ *  — the inverse of a healthy install. The Reconcile view lists these so the
+ *  dead ledger rows can be forgotten. */
+export interface OrphanInstall {
+  kind: LibraryKind;
+  name: string;
+  targets: LibraryTarget[];
+}
+
+/** Derive orphaned install records: every `(kind, name)` that appears in the
+ *  drift batch (which enumerates every `installs.json` record, library-
+ *  independent) but has NO matching library primitive. Pure — drives the
+ *  Reconcile view from reads the Library route already holds (driftBatch +
+ *  primitives), so no dedicated bridge read is needed. */
+export function orphanInstalls(
+  reports: LibraryDriftReport[],
+  primitives: LibraryPrimitiveSummary[],
+): OrphanInstall[] {
+  const known = new Set(primitives.map((p) => selectionKey(p.kind, p.name)));
+  const byPrimitive = new Map<string, OrphanInstall>();
+  for (const r of reports) {
+    const key = selectionKey(r.kind, r.name);
+    if (known.has(key)) continue; // a live primitive — not an orphan
+    let o = byPrimitive.get(key);
+    if (!o) {
+      o = { kind: r.kind, name: r.name, targets: [] };
+      byPrimitive.set(key, o);
+    }
+    if (!o.targets.includes(r.target)) o.targets.push(r.target);
+  }
+  return [...byPrimitive.values()];
+}
+
+/** The orphan row cue — a CVD-safe "this install has no library primitive"
+ *  marker (label + glyph + cyan, never bare red/green). */
+export function orphanCue(): Cue {
+  return { label: "no library primitive", tone: "cyan", glyph: "⊘" };
 }

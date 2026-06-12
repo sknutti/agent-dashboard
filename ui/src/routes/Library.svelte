@@ -10,6 +10,7 @@
   import WorkingFileEditor from "../lib/components/WorkingFileEditor.svelte";
   import TargetOverlayPane from "../lib/components/TargetOverlayPane.svelte";
   import MetadataForm from "../lib/components/MetadataForm.svelte";
+  import BootstrapWizard from "../lib/components/BootstrapWizard.svelte";
   import { resource } from "../lib/resource.svelte";
   import {
     getLibraryStatus,
@@ -64,6 +65,7 @@
     renameInstallCaveat,
     deleteResultCue,
     importResultCue,
+    orphanInstalls,
     KIND_LABELS,
     KIND_ORDER,
   } from "../lib/library";
@@ -784,6 +786,18 @@
   // duplicate / import (the affected primitive is reloaded + selected).
   let lifecycleNotice = $state<{ tone: "default" | "amber" | "cyan"; text: string } | null>(null);
 
+  // Bootstrap discovery wizard (bootstrap slice) — the first-run scan→import flow
+  // + the Reconcile/forget tab. Orphaned install records (a ledger row with no
+  // library primitive) are derived from the reads this route already holds
+  // (driftBatch + primitives), so the Reconcile tab needs no new fetch.
+  let bootstrapOpen = $state(false);
+  const orphans = $derived(orphanInstalls(driftBatch, primitives));
+
+  function onBootstrapImported(): void {
+    primitivesRes.reload();
+    driftBatchRes.reload();
+  }
+
   // Create form (collection-level): kind select + name input; an inline error on
   // a collision/invalid-name, never a shell toast.
   let createOpen = $state(false);
@@ -1077,6 +1091,15 @@
               onclick={openImportPath}
             >
               <Icon name="folder" size={13} /> Import
+            </button>
+            <button
+              type="button"
+              class="head-btn"
+              title="Scan your machine for existing primitives to import"
+              onclick={() => (bootstrapOpen = true)}
+            >
+              <Icon name="search" size={13} /> Bootstrap
+              {#if orphans.length}<span class="head-badge" title="orphaned install records to reconcile">{orphans.length}</span>{/if}
             </button>
           </div>
         </div>
@@ -1744,6 +1767,18 @@
     </div>
   {/if}
 
+  <!-- Bootstrap discovery wizard (bootstrap slice): the first-run scan→review→
+       execute flow + the Reconcile/forget tab. Self-contained modal; reloads the
+       primitives + drift reads after an import or a forget. -->
+  {#if bootstrapOpen}
+    <BootstrapWizard
+      {orphans}
+      onClose={() => (bootstrapOpen = false)}
+      onImported={onBootstrapImported}
+      onForgotten={() => driftBatchRes.reload()}
+    />
+  {/if}
+
   <!-- Rename: captured-intent {kind,name,newName} (D2). Surfaces the install
        caveat AFTER the write (records migrate; on-disk copies keep the old name). -->
   {#if renameDialog}
@@ -2407,6 +2442,15 @@
   .head-btn.danger-btn {
     border-color: color-mix(in srgb, var(--amber) 55%, var(--border));
     color: var(--amber);
+  }
+  .head-badge {
+    margin-left: 3px;
+    background: var(--cyan, #56b4e9);
+    color: #06121b;
+    border-radius: 999px;
+    padding: 0 5px;
+    font-size: 10px;
+    font-weight: 700;
   }
   .targets-section,
   .overlays-section {

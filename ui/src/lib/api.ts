@@ -914,3 +914,102 @@ export const importFromPath = (sourcePath: string) =>
  *  for a primitive whose library dir is already gone). No commit. */
 export const forgetPrimitive = (kind: string, name: string) =>
   sendJson<LibraryForgetResult>(`${primPath(kind, name)}/forget`, "POST", {});
+
+// ── bootstrap discovery wizard (bootstrap slice) ─────────────────────────────
+// The first-run scan→review→execute flow. The HTTP bodies are the PARSED shapes
+// (library_models.ts validated the bridge output), so `crossReferenced` is
+// camelCase + flattened and each action carries its verbatim `raw` for re-send.
+
+export type LibraryBootstrapClassification = "new" | "already_imported" | "drifted";
+
+export interface LibraryBootstrapGroup {
+  kind: LibraryKind;
+  name: string;
+  classification: LibraryBootstrapClassification;
+}
+
+export interface LibraryBootstrapSummary {
+  new: number;
+  already_imported: number;
+  drifted: number;
+  needs_manual_review: number;
+}
+
+export interface LibraryCrossReferenced {
+  groups: LibraryBootstrapGroup[];
+  needs_manual_review: { kind: LibraryKind; name: string }[];
+  symlinked: number;
+  unclassified: number;
+  summary: LibraryBootstrapSummary;
+}
+
+/** One executable action. `raw` is the verbatim action object the bridge
+ *  re-deserializes — the wizard re-sends it untouched (filtering = which `raw`s
+ *  to include). */
+export interface LibraryBootstrapAction {
+  kind: LibraryKind;
+  name: string;
+  raw: Record<string, unknown>;
+}
+
+export interface LibraryBootstrapPlan {
+  creates: LibraryBootstrapAction[];
+  reimports: LibraryBootstrapAction[];
+}
+
+export interface LibraryBootstrapScanResult {
+  crossReferenced: LibraryCrossReferenced;
+  plan: LibraryBootstrapPlan;
+}
+
+export interface LibraryBootstrapSession {
+  formatVersion: number;
+  startedAt: string;
+  raw: Record<string, unknown>;
+}
+
+export interface LibraryBootstrapSkippedItem {
+  kind: LibraryKind;
+  name: string;
+  source_target: LibraryTarget;
+  reason: "WorkingCopyDirty" | "InstallMissing";
+}
+
+export interface LibraryBootstrapExecuteSummary {
+  backup_path: string | null;
+  created: number;
+  reimported: number;
+  skipped: number;
+  skipped_items: LibraryBootstrapSkippedItem[];
+  committed: boolean | null;
+  commit_error: string | null;
+}
+
+/** The raw plan/resume shapes re-sent to execute — the action objects' verbatim
+ *  `raw`, never the lifted display view. */
+export interface LibraryBootstrapExecuteBody {
+  plan: { creates: Record<string, unknown>[]; reimports: Record<string, unknown>[] };
+  resume?: Record<string, unknown> | null;
+  excluded_ids: string[];
+}
+
+/** Scan the machine + cross-reference the library, returning the full
+ *  classification + the derived executable plan (one bridge call). */
+export const bootstrapScan = () =>
+  getJson<LibraryBootstrapScanResult>("/api/library/bootstrap/scan");
+
+/** Load the resumable bootstrap session (a prior partial run's checkpoint), or
+ *  null on the first run. */
+export const readBootstrapSession = () =>
+  getJson<{ session: LibraryBootstrapSession | null }>("/api/library/bootstrap/session").then(
+    (r) => r.session,
+  );
+
+/** Execute a (frontend-filtered) bootstrap plan. A partial run's skipped_items
+ *  ride 200 as data; the session persists for Resume. */
+export const bootstrapExecute = (body: LibraryBootstrapExecuteBody) =>
+  sendJson<LibraryBootstrapExecuteSummary>("/api/library/bootstrap/execute", "POST", body);
+
+/** Clear the bootstrap session (Discard / start over). Idempotent. */
+export const clearBootstrapSession = () =>
+  sendJson<Record<string, never>>("/api/library/bootstrap/session", "DELETE");
