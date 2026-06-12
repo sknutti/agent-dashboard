@@ -6,9 +6,20 @@ import {
   parseSelection,
   dirtyCue,
   gitSummary,
+  driftByTarget,
+  installStateFor,
+  stateCue,
+  outcomeCue,
+  uninstallCue,
+  anyDrift,
   KIND_ORDER,
 } from "./library";
-import type { LibraryPrimitiveSummary, LibraryStatus } from "./api";
+import type {
+  LibraryPrimitiveSummary,
+  LibraryStatus,
+  LibraryDriftReport,
+  LibraryInstalledTarget,
+} from "./api";
 
 const P = (kind: any, name: string, dirty = false): LibraryPrimitiveSummary => ({ kind, name, dirty, author: null });
 const ITEMS: LibraryPrimitiveSummary[] = [
@@ -94,5 +105,121 @@ describe("gitSummary (text-only, CVD-safe)", () => {
   test("indeterminate git state (nulls) is not asserted as clean", () => {
     const s = gitSummary({ ...base, dirty: null, unpushed: null });
     expect(s).not.toContain("clean");
+  });
+});
+
+// ── install / drift cues + selectors ────────────────────────────────────────
+
+const report = (
+  kind: any,
+  name: string,
+  target: any,
+  status: LibraryDriftReport["status"],
+): LibraryDriftReport => ({ kind, name, target, status });
+
+const installed = (target: any, version = "v1"): LibraryInstalledTarget => ({
+  target,
+  installed_version: version,
+  installed_at: "2026-04-30T12:00:00Z",
+});
+
+const CVD_TONES = ["amber", "cyan", "default"];
+
+describe("driftByTarget", () => {
+  const reports: LibraryDriftReport[] = [
+    report("skill", "diagnose", "claude", { kind: "clean" }),
+    report("skill", "diagnose", "pi", { kind: "modified", conflicts: ["SKILL.md"] }),
+    report("agent", "reviewer", "claude", { kind: "missing", missing: ["AGENTS.md"] }),
+  ];
+  test("folds the batch into a per-target lookup scoped to one primitive", () => {
+    const map = driftByTarget(reports, "skill", "diagnose");
+    expect(map.get("claude")).toEqual({ kind: "clean" });
+    expect(map.get("pi")).toEqual({ kind: "modified", conflicts: ["SKILL.md"] });
+    // a different primitive's report is excluded
+    expect(map.has("claude") && map.size).toBe(2);
+  });
+  test("an unrecorded primitive yields an empty map", () => {
+    expect(driftByTarget(reports, "command", "deploy").size).toBe(0);
+  });
+});
+
+describe("installStateFor", () => {
+  const drift = driftByTarget(
+    [
+      report("skill", "diagnose", "claude", { kind: "clean" }),
+      report("skill", "diagnose", "pi", { kind: "modified", conflicts: ["SKILL.md"] }),
+      report("skill", "diagnose", "codex", { kind: "missing", missing: ["x"] }),
+    ],
+    "skill",
+    "diagnose",
+  );
+  const inst = [installed("claude"), installed("pi"), installed("codex")];
+  test("a target with no install record is not_installed", () => {
+    expect(installStateFor("claude", [], new Map())).toBe("not_installed");
+  });
+  test("installed + clean drift is clean", () => {
+    expect(installStateFor("claude", inst, drift)).toBe("clean");
+  });
+  test("installed + modified drift is modified", () => {
+    expect(installStateFor("pi", inst, drift)).toBe("modified");
+  });
+  test("installed + missing drift is missing", () => {
+    expect(installStateFor("codex", inst, drift)).toBe("missing");
+  });
+  test("installed with no drift report defaults to clean (defensive)", () => {
+    expect(installStateFor("claude", [installed("claude")], new Map())).toBe("clean");
+  });
+});
+
+describe("stateCue / outcomeCue / uninstallCue (colorblind-safe)", () => {
+  test("every state cue carries label + glyph and a CVD-safe tone", () => {
+    for (const s of ["not_installed", "clean", "modified", "missing"] as const) {
+      const c = stateCue(s);
+      expect(c.label.length).toBeGreaterThan(0);
+      expect(c.glyph.length).toBeGreaterThan(0);
+      expect(CVD_TONES).toContain(c.tone);
+    }
+    // distinct labels — distinguishable without color
+    const labels = (["not_installed", "clean", "modified", "missing"] as const).map((s) => stateCue(s).label);
+    expect(new Set(labels).size).toBe(4);
+  });
+
+  test("a no-op install outcome has a visible 'already up to date' cue (not a silent no-op)", () => {
+    const c = outcomeCue({ kind: "no_op_identical", version: "v1" });
+    expect(c.label.toLowerCase()).toContain("up to date");
+    expect(c.glyph.length).toBeGreaterThan(0);
+  });
+  test("a colliding_content outcome cues an overwrite need (amber, not red)", () => {
+    const c = outcomeCue({ kind: "colliding_content", version: "v1", conflicts: ["x"] });
+    expect(CVD_TONES).toContain(c.tone);
+    expect(c.tone).not.toBe("default");
+  });
+  test("an installed outcome reads as installed", () => {
+    expect(outcomeCue({ kind: "installed", version: "v1" }).label).toContain("installed");
+  });
+
+  test("uninstall outcomes each have a visible cue incl. the 'was not installed' no-op", () => {
+    expect(uninstallCue({ kind: "removed" }).label).toContain("uninstalled");
+    expect(uninstallCue({ kind: "not_installed" }).label.toLowerCase()).toContain("was not installed");
+    const drifted = uninstallCue({ kind: "drifted", conflicts: ["x"] });
+    expect(CVD_TONES).toContain(drifted.tone);
+    expect(drifted.tone).not.toBe("default");
+  });
+});
+
+describe("anyDrift (explorer badge — does any target of a primitive drift)", () => {
+  const reports: LibraryDriftReport[] = [
+    report("skill", "diagnose", "claude", { kind: "clean" }),
+    report("skill", "diagnose", "pi", { kind: "modified", conflicts: ["x"] }),
+    report("agent", "reviewer", "claude", { kind: "clean" }),
+  ];
+  test("true when at least one target is modified/missing", () => {
+    expect(anyDrift(reports, "skill", "diagnose")).toBe(true);
+  });
+  test("false when every recorded target is clean", () => {
+    expect(anyDrift(reports, "agent", "reviewer")).toBe(false);
+  });
+  test("false when the primitive has no records", () => {
+    expect(anyDrift(reports, "command", "deploy")).toBe(false);
   });
 });

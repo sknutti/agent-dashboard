@@ -3,7 +3,17 @@
 // (resource() calls) lives in Library.svelte. Keeping these pure makes the
 // list/filter/cue logic unit-testable without rendering a component.
 
-import type { LibraryKind, LibraryPrimitiveSummary, LibraryStatus } from "./api";
+import type {
+  LibraryKind,
+  LibraryTarget,
+  LibraryPrimitiveSummary,
+  LibraryStatus,
+  LibraryDriftReport,
+  LibraryDriftStatus,
+  LibraryInstalledTarget,
+  LibraryTargetOutcome,
+  LibraryUninstallOutcome,
+} from "./api";
 
 /** All four Kinds, shown equally (ADR-0007 — no Kind is privileged). */
 export const KIND_ORDER: LibraryKind[] = ["skill", "agent", "command", "codex_agent"];
@@ -82,4 +92,87 @@ export function gitSummary(s: LibraryStatus): string {
   else if (s.dirty === false) parts.push("clean");
   if (s.unpushed === true) parts.push("unpushed commits");
   return parts.join(" · ");
+}
+
+// ── install / drift derivation (write-flow slice) ───────────────────────────
+
+/** Per-target install state for the detail rows — folds the install records and
+ *  the (per-primitive) drift report into one discriminant. */
+export type TargetInstallState = "not_installed" | "clean" | "modified" | "missing";
+
+/** Fold a DriftReport[] into a per-target `status` lookup scoped to one
+ *  primitive. The batch carries every primitive; the detail wants one. */
+export function driftByTarget(
+  reports: LibraryDriftReport[],
+  kind: LibraryKind,
+  name: string,
+): Map<LibraryTarget, LibraryDriftStatus> {
+  const map = new Map<LibraryTarget, LibraryDriftStatus>();
+  for (const r of reports) {
+    if (r.kind === kind && r.name === name) map.set(r.target, r.status);
+  }
+  return map;
+}
+
+/** The install state of one target = (is there a record?) × (drift status). A
+ *  recorded target with no drift entry defaults to clean (defensive — every
+ *  record should have one). */
+export function installStateFor(
+  target: LibraryTarget,
+  installed: LibraryInstalledTarget[],
+  drift: Map<LibraryTarget, LibraryDriftStatus>,
+): TargetInstallState {
+  if (!installed.some((t) => t.target === target)) return "not_installed";
+  const status = drift.get(target);
+  if (status?.kind === "modified") return "modified";
+  if (status?.kind === "missing") return "missing";
+  return "clean";
+}
+
+/** Row badge for a target's install state. Colorblind-safe: distinct label +
+ *  glyph, Okabe-Ito-safe tones, never a bare red/green (Scott is red/green CVD). */
+export function stateCue(state: TargetInstallState): Cue {
+  switch (state) {
+    case "clean":
+      return { label: "installed", tone: "default", glyph: "✓" };
+    case "modified":
+      return { label: "drifted", tone: "amber", glyph: "●" };
+    case "missing":
+      return { label: "missing externally", tone: "cyan", glyph: "⊘" };
+    case "not_installed":
+      return { label: "not installed", tone: "default", glyph: "○" };
+  }
+}
+
+/** Post-install per-target feedback. Every outcome — including the `no_op_identical`
+ *  no-op — gets a VISIBLE cue so a button press is never a silent dead-end. */
+export function outcomeCue(outcome: LibraryTargetOutcome): Cue {
+  switch (outcome.kind) {
+    case "installed":
+      return { label: "installed", tone: "default", glyph: "✓" };
+    case "no_op_identical":
+      return { label: "already up to date", tone: "default", glyph: "✓" };
+    case "colliding_content":
+      return { label: "needs overwrite", tone: "amber", glyph: "●" };
+  }
+}
+
+/** Post-uninstall per-target feedback (the `not_installed` no-op is visible too). */
+export function uninstallCue(outcome: LibraryUninstallOutcome): Cue {
+  switch (outcome.kind) {
+    case "removed":
+      return { label: "uninstalled", tone: "default", glyph: "✓" };
+    case "not_installed":
+      return { label: "was not installed", tone: "default", glyph: "○" };
+    case "drifted":
+      return { label: "drifted — needs force", tone: "amber", glyph: "●" };
+  }
+}
+
+/** Explorer badge predicate: does ANY recorded target of `(kind,name)` drift
+ *  (modified or missing)? Drives a per-primitive drift dot in the explorer. */
+export function anyDrift(reports: LibraryDriftReport[], kind: LibraryKind, name: string): boolean {
+  return reports.some(
+    (r) => r.kind === kind && r.name === name && r.status.kind !== "clean",
+  );
 }

@@ -470,3 +470,126 @@ export const getLibraryPrimitiveDetail = (kind: string, name: string) =>
   getJson<LibraryPrimitiveDetail>(
     `/api/library/primitives/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`,
   );
+
+// ── Prompt Library install / drift (write-flow slice, ADR-0008) ─────────────
+// Mirror the bridge write models in scripts/library_models.ts (real Rust serde).
+// Every per-target outcome is tagged on `kind`; `colliding_content` / `drifted`
+// are NORMAL results the UI prompts on (two-phase confirm), NOT errors.
+
+export type LibraryTargetOutcome =
+  | { kind: "installed"; version: string }
+  | { kind: "no_op_identical"; version: string }
+  | { kind: "colliding_content"; version: string; conflicts: string[] };
+
+export interface LibraryTargetResult {
+  target: LibraryTarget;
+  outcome: LibraryTargetOutcome;
+}
+
+export type LibraryInstallFailureKind =
+  | { kind: "occupied_by_unexpected_kind"; path: string; expected: string; actual: string }
+  | { kind: "io"; path: string; message: string }
+  | { kind: "other"; message: string };
+
+export interface LibraryTargetFailure {
+  target: LibraryTarget;
+  reason: LibraryInstallFailureKind;
+}
+
+export interface LibraryInstallSummary {
+  successes: LibraryTargetResult[];
+  failures: LibraryTargetFailure[];
+}
+
+export type LibraryUninstallOutcome =
+  | { kind: "removed" }
+  | { kind: "not_installed" }
+  | { kind: "drifted"; conflicts: string[] };
+
+export interface LibraryTargetUninstallResult {
+  target: LibraryTarget;
+  outcome: LibraryUninstallOutcome;
+}
+
+export interface LibraryUninstallSummary {
+  successes: LibraryTargetUninstallResult[];
+  failures: LibraryTargetFailure[];
+}
+
+export type LibraryDriftStatus =
+  | { kind: "clean" }
+  | { kind: "modified"; conflicts: string[] }
+  | { kind: "missing"; missing: string[] };
+
+export interface LibraryDriftReport {
+  kind: LibraryKind;
+  name: string;
+  target: LibraryTarget;
+  status: LibraryDriftStatus;
+}
+
+export interface LibraryInstalledTarget {
+  target: LibraryTarget;
+  installed_version: string;
+  installed_at: string;
+}
+
+export interface LibraryImportResult {
+  imported: number;
+}
+
+/** A library write that failed with a route-local `{code, message}` — carries the
+ *  code so the UI can render the right route-local message (never the shell). */
+export class LibraryApiError extends Error {
+  code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "LibraryApiError";
+    this.code = code;
+  }
+}
+
+async function sendJson<T>(path: string, method: string, body?: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method,
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data: unknown = await res.json().catch(() => null);
+  if (!res.ok) {
+    const obj = (data ?? {}) as Record<string, unknown>;
+    const code = typeof obj.code === "string" ? obj.code : `http_${res.status}`;
+    const message = typeof obj.message === "string" ? obj.message : `${path} -> ${res.status}`;
+    throw new LibraryApiError(code, message);
+  }
+  return data as T;
+}
+
+const primPath = (kind: string, name: string) =>
+  `/api/library/primitives/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`;
+
+export const getInstallsForPrimitive = (kind: string, name: string) =>
+  getJson<LibraryInstalledTarget[]>(`${primPath(kind, name)}/installs`);
+/** Per-primitive drift — authoritative for the detail rows + post-write reload (D8). */
+export const getDrift = (kind: string, name: string) =>
+  getJson<LibraryDriftReport[]>(`${primPath(kind, name)}/drift`);
+/** Whole-ledger drift — feeds explorer badges on the 30s poll. */
+export const getDriftBatch = () => getJson<LibraryDriftReport[]>("/api/library/drift");
+
+export const installPrimitive = (
+  kind: string,
+  name: string,
+  opts: { targets: LibraryTarget[]; force?: boolean },
+) => sendJson<LibraryInstallSummary>(`${primPath(kind, name)}/install`, "POST", opts);
+
+export const uninstallPrimitive = (
+  kind: string,
+  name: string,
+  opts: { targets: LibraryTarget[]; force?: boolean },
+) => sendJson<LibraryUninstallSummary>(`${primPath(kind, name)}/install`, "DELETE", opts);
+
+export const acknowledgeDrift = (kind: string, name: string, target: LibraryTarget) =>
+  sendJson<Record<string, never>>(`${primPath(kind, name)}/acknowledge-drift`, "POST", { target });
+
+export const importInstalls = () =>
+  sendJson<LibraryImportResult>("/api/library/import-installs", "POST", {});

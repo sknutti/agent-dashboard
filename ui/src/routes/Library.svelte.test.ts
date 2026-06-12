@@ -11,6 +11,8 @@ import type {
   LibraryStatus,
   LibraryPrimitiveSummary,
   LibraryPrimitiveDetail,
+  LibraryInstalledTarget,
+  LibraryDriftReport,
 } from "../lib/api";
 
 afterEach(() => {
@@ -36,8 +38,13 @@ const DETAIL: LibraryPrimitiveDetail = {
   versions: [], current_version: null,
 };
 
-/** Mock every library fetcher for the happy (valid + populated) path. */
-function mockValidLibrary(detail: LibraryPrimitiveDetail = DETAIL) {
+/** Mock every library fetcher for the happy (valid + populated) path. The
+ *  install/drift reads default to empty (nothing installed, no drift); pass
+ *  overrides for write-flow tests. */
+function mockValidLibrary(
+  detail: LibraryPrimitiveDetail = DETAIL,
+  opts: { installs?: LibraryInstalledTarget[]; drift?: LibraryDriftReport[]; batch?: LibraryDriftReport[] } = {},
+) {
   vi.spyOn(api, "getLibraryStatus").mockResolvedValue(VALID);
   vi.spyOn(api, "getLibraryPrimitives").mockResolvedValue(PRIMS);
   vi.spyOn(api, "getLibraryKindInfo").mockResolvedValue({} as any);
@@ -45,6 +52,28 @@ function mockValidLibrary(detail: LibraryPrimitiveDetail = DETAIL) {
     targets: [{ target: "claude", dir_name: "claude" }, { target: "pi", dir_name: "pi" }, { target: "codex", dir_name: "codex" }],
   });
   vi.spyOn(api, "getLibraryPrimitiveDetail").mockResolvedValue(detail);
+  vi.spyOn(api, "getInstallsForPrimitive").mockResolvedValue(opts.installs ?? []);
+  vi.spyOn(api, "getDrift").mockResolvedValue(opts.drift ?? []);
+  vi.spyOn(api, "getDriftBatch").mockResolvedValue(opts.batch ?? []);
+}
+
+// A published, installable skill (current_version set + allowed_targets) so the
+// install rows render (they gate on a pinned version).
+const INSTALLABLE: LibraryPrimitiveDetail = {
+  kind: "skill", name: "diagnose",
+  metadata: { allowed_targets: ["claude"], created_at: "2026-04-30T12:00:00Z", author: "Ada Lovelace" },
+  working: { kind: "md", frontmatter: "", body: "x" },
+  versions: ["v1"], current_version: "v1",
+};
+
+const INSTALLED_CLAUDE: LibraryInstalledTarget = {
+  target: "claude", installed_version: "v1", installed_at: "2026-04-30T12:00:00Z",
+};
+
+async function selectDiagnose() {
+  await fireEvent.click(await screen.findByRole("button", { name: /Skills/i }));
+  await fireEvent.click(screen.getByText("diagnose"));
+  await screen.findByText("Install targets");
 }
 
 describe("Library route — failure & empty states", () => {
@@ -175,5 +204,129 @@ describe("Library route — explorer, collapse, selection, detail", () => {
     // versions strip renders the on-demand versions ("v2" is also the current
     // version in the rail, so there are two — assert at least one).
     expect(screen.getAllByText("v2").length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("Library route — install rows, two-phase confirm, drift, import", () => {
+  test("a published primitive renders per-target rows; a not-installed target offers Install", async () => {
+    mockValidLibrary(INSTALLABLE);
+    render(Library);
+    await selectDiagnose();
+    expect(screen.getByText("Install targets")).toBeTruthy();
+    // "claude" appears in both the row and the rail's allowed-targets summary
+    expect(screen.getAllByText("claude").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/not installed/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Install" })).toBeTruthy();
+  });
+
+  test("a clean install shows the installed cue (no silent no-op)", async () => {
+    mockValidLibrary(INSTALLABLE);
+    vi.spyOn(api, "installPrimitive").mockResolvedValue({
+      successes: [{ target: "claude", outcome: { kind: "installed", version: "v1" } }],
+      failures: [],
+    });
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(screen.getByRole("button", { name: "Install" }));
+    expect(await screen.findByText(/claude: installed/)).toBeTruthy();
+  });
+
+  test("a colliding_content install opens the two-phase dialog with the exact conflict paths; NO force write before confirm", async () => {
+    mockValidLibrary(INSTALLABLE);
+    const installSpy = vi.spyOn(api, "installPrimitive").mockResolvedValue({
+      successes: [{ target: "claude", outcome: { kind: "colliding_content", version: "v1", conflicts: ["SKILL.md"] } }],
+      failures: [],
+    });
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(screen.getByRole("button", { name: "Install" }));
+
+    // dialog appears, naming the captured target + the exact conflict path
+    expect(await screen.findByText(/Overwrite drifted files/)).toBeTruthy();
+    expect(screen.getByText("SKILL.md")).toBeTruthy();
+    // the FIRST call was force:false; force:true has NOT fired yet (no auto-force)
+    expect(installSpy).toHaveBeenCalledWith("skill", "diagnose", { targets: ["claude"], force: false });
+    expect(installSpy).not.toHaveBeenCalledWith("skill", "diagnose", { targets: ["claude"], force: true });
+
+    // confirming re-issues force:true scoped to THIS target only (D5)
+    await fireEvent.click(screen.getByRole("button", { name: "Overwrite" }));
+    expect(installSpy).toHaveBeenCalledWith("skill", "diagnose", { targets: ["claude"], force: true });
+  });
+
+  test("cancelling the dialog issues no force write", async () => {
+    mockValidLibrary(INSTALLABLE);
+    const installSpy = vi.spyOn(api, "installPrimitive").mockResolvedValue({
+      successes: [{ target: "claude", outcome: { kind: "colliding_content", version: "v1", conflicts: ["SKILL.md"] } }],
+      failures: [],
+    });
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(screen.getByRole("button", { name: "Install" }));
+    await fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(installSpy).not.toHaveBeenCalledWith("skill", "diagnose", { targets: ["claude"], force: true });
+  });
+
+  test("a drifted (modified) target offers Acknowledge, which calls acknowledgeDrift", async () => {
+    mockValidLibrary(INSTALLABLE, {
+      installs: [INSTALLED_CLAUDE],
+      drift: [{ kind: "skill", name: "diagnose", target: "claude", status: { kind: "modified", conflicts: ["SKILL.md"] } }],
+    });
+    const ackSpy = vi.spyOn(api, "acknowledgeDrift").mockResolvedValue({} as any);
+    render(Library);
+    await selectDiagnose();
+    // the row reads as drifted (text, not color alone)
+    expect(screen.getByText(/drifted/)).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: "Acknowledge" }));
+    expect(ackSpy).toHaveBeenCalledWith("skill", "diagnose", "claude");
+  });
+
+  test("a missing-externally target offers Uninstall, NOT Acknowledge", async () => {
+    mockValidLibrary(INSTALLABLE, {
+      installs: [INSTALLED_CLAUDE],
+      drift: [{ kind: "skill", name: "diagnose", target: "claude", status: { kind: "missing", missing: ["SKILL.md"] } }],
+    });
+    render(Library);
+    await selectDiagnose();
+    expect(screen.getByText(/missing externally/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Uninstall" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Acknowledge" })).toBeNull();
+  });
+
+  test("the explorer shows a drift badge for a primitive with a drifted target", async () => {
+    mockValidLibrary(INSTALLABLE, {
+      batch: [{ kind: "skill", name: "diagnose", target: "claude", status: { kind: "modified", conflicts: ["x"] } }],
+    });
+    render(Library);
+    await fireEvent.click(await screen.findByRole("button", { name: /Skills/i }));
+    expect(screen.getByText(/drift/)).toBeTruthy();
+  });
+
+  test("the Import button calls importInstalls and reports the imported count", async () => {
+    mockValidLibrary(INSTALLABLE);
+    const importSpy = vi.spyOn(api, "importInstalls").mockResolvedValue({ imported: 5 });
+    render(Library);
+    await fireEvent.click(await screen.findByRole("button", { name: /Import existing installs/i }));
+    expect(importSpy).toHaveBeenCalled();
+    expect(await screen.findByText(/Imported 5 install/)).toBeTruthy();
+  });
+
+  test("an already-imported destination surfaces a route-local message (not the shell)", async () => {
+    mockValidLibrary(INSTALLABLE);
+    vi.spyOn(api, "importInstalls").mockRejectedValue(
+      new api.LibraryApiError("installs_already_present", "installs already imported"),
+    );
+    render(Library);
+    await fireEvent.click(await screen.findByRole("button", { name: /Import existing installs/i }));
+    expect(await screen.findByText(/Already imported/)).toBeTruthy();
+  });
+
+  test("a format-version mismatch tells the user to upgrade the dashboard build", async () => {
+    mockValidLibrary(INSTALLABLE);
+    vi.spyOn(api, "importInstalls").mockRejectedValue(
+      new api.LibraryApiError("installs_format_mismatch", "installs format version mismatch"),
+    );
+    render(Library);
+    await fireEvent.click(await screen.findByRole("button", { name: /Import existing installs/i }));
+    expect(await screen.findByText(/upgrade the dashboard/)).toBeTruthy();
   });
 });
