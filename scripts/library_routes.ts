@@ -29,6 +29,7 @@ import {
   parsePublishResult,
   parseTargetView,
   parseOverlayLists,
+  parseMetadataUpdateResult,
   type LibraryStatus,
 } from "./library_models.ts";
 import { importInstalls } from "./library_migration.ts";
@@ -91,6 +92,11 @@ export function statusForCode(code: string): HttpStatus {
     case "working_file_exists": // create over an existing ref file — use Save
     case "working_file_refuse_primary": // rename/delete the primary file (refused in-core)
     case "library_version_exists": // re-publish an existing label — immutable; use a new label
+    // Metadata edit dropped a target that still has overlay files. Like the
+    // install `colliding_content`/`force` two-phase-confirm: recoverable by
+    // re-issuing with `discard_orphan_overlays: true`, so it's a 409 conflict
+    // the user resolves by confirming, NOT a 422 bad-input dead-end.
+    case "library_target_removed_with_overlays":
       return 409;
     // Bad client input (the :kind / :name segment, or a non-UTF-8 path).
     case "library_invalid_name":
@@ -735,6 +741,62 @@ export async function buildListOverlays(
 }
 
 // ---------------------------------------------------------------------------
+// Metadata-editing handler (metadata-editing slice)
+//
+// The library ROOT is always `config.libraryPath` (never the body); the body
+// supplies the editable subset (`allowed_targets` / `display_name` / `author` +
+// the optional `discard_orphan_overlays` confirm). Like publish/set-current it
+// returns a commit-bearing result at HTTP 200 even on a commit failure: unlike
+// the overlay writes, `metadata.yaml` is git-TRACKED, so the write COMMITS
+// (Slice 4's posture) — `committed`/`commit_error` ride back as a cue, never an
+// error toast. WRITE_TIMEOUT + SIGKILL but NO ledger mutex (no installs.json
+// touch; git's index.lock serializes commits, exactly like publish). Dropping a
+// target that still has overlay files → library_target_removed_with_overlays
+// (409): the UI confirms and re-issues with `discard_orphan_overlays: true`. The
+// error PAYLOAD (the dropped paths) stays server-side (m4 / never-forward-
+// detail); the UI names the affected paths from its already-loaded list_overlays
+// data, so the confirm copy needs no payload forwarding (O1, resolved: derive
+// client-side).
+// ---------------------------------------------------------------------------
+
+interface MetadataWriteBody {
+  allowed_targets?: unknown;
+  display_name?: unknown;
+  author?: unknown;
+  discard_orphan_overlays?: unknown;
+}
+
+/** Write: replace a primitive's editable metadata fields, then commit. Dropping
+ *  a target with overlay files → library_target_removed_with_overlays (409),
+ *  resolved by re-issuing with `discard_orphan_overlays: true`. A kind-illegal
+ *  target → library_target_not_allowed_for_kind (422). Returns the freshly-
+ *  written metadata + the advisory commit result at 200 even on a commit fail. */
+export async function buildUpdateMetadata(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  body: MetadataWriteBody,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await run(
+    config.bridgePath,
+    "update_metadata",
+    {
+      path: config.libraryPath,
+      kind,
+      name,
+      allowed_targets: body.allowed_targets,
+      display_name: typeof body.display_name === "string" ? body.display_name : null,
+      author: typeof body.author === "string" ? body.author : null,
+      discard_orphan_overlays: body.discard_orphan_overlays === true,
+    },
+    { validate: parseMetadataUpdateResult, timeoutMs: WRITE_TIMEOUT_MS },
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -906,5 +968,15 @@ export function registerLibraryRoutes(
   );
   app.get("/api/library/primitives/:kind/:name/overlays", async (c) =>
     json(c, await buildListOverlays(loadConfig(), c.req.param("kind"), c.req.param("name"))),
+  );
+  // Metadata edit (write; commits — metadata.yaml is git-tracked, unlike the
+  // gitignored overlays above). WRITE_TIMEOUT + SIGKILL, no ledger mutex.
+  // Returns a MetadataUpdateResult ({metadata, committed, commit_error}) at 200
+  // even on a commit failure (Slice 4's posture). Dropping a target with overlay
+  // files → 409; the UI confirms and re-PUTs with discard_orphan_overlays. The
+  // `/metadata` segment is distinct from /working-files, /versions, /targets,
+  // /overlays — no collision. Inherits server.ts's loopback Host + Origin guard.
+  app.put("/api/library/primitives/:kind/:name/metadata", async (c) =>
+    json(c, await buildUpdateMetadata(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
   );
 }

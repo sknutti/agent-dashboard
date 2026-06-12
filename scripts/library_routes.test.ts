@@ -30,6 +30,7 @@ import {
   buildWriteOverlay,
   buildRemoveOverlay,
   buildListOverlays,
+  buildUpdateMetadata,
   withWriteLock,
   statusForCode,
   registerLibraryRoutes,
@@ -860,6 +861,122 @@ describe("buildListOverlays (read — no write lock)", () => {
   });
 });
 
+const META_OK = {
+  metadata: {
+    allowed_targets: ["claude", "pi"],
+    created_at: "2026-04-30T12:00:00Z",
+    display_name: "Diag",
+    author: "Alice",
+  },
+  committed: true,
+  commit_error: null,
+};
+const META_COMMIT_FAILED = {
+  metadata: { allowed_targets: ["claude"], created_at: "2026-04-30T12:00:00Z" },
+  committed: false,
+  commit_error: "Author identity unknown\n\n*** Please tell me who you are.",
+};
+
+describe("statusForCode — metadata-editing codes", () => {
+  test("dropping a target with overlays is a 409 (re-issue-with-flag conflict)", () => {
+    expect(statusForCode("library_target_removed_with_overlays")).toBe(409);
+  });
+  test("a kind-illegal target stays 422 (already mapped)", () => {
+    expect(statusForCode("library_target_not_allowed_for_kind")).toBe(422);
+  });
+});
+
+describe("buildUpdateMetadata", () => {
+  test("success → 200 with the MetadataUpdateResult (metadata + commit state)", async () => {
+    const r = await buildUpdateMetadata(
+      CONFIGURED,
+      "skill",
+      "diagnose",
+      { allowed_targets: ["claude", "pi"], display_name: "Diag", author: "Alice" },
+      okRun(META_OK),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual(META_OK);
+  });
+  test("a commit failure is NON-fatal — 200 carrying committed:false + the message (Slice 4 posture)", async () => {
+    const r = await buildUpdateMetadata(
+      CONFIGURED,
+      "skill",
+      "diagnose",
+      { allowed_targets: ["claude"] },
+      okRun(META_COMMIT_FAILED),
+    );
+    expect(r.status).toBe(200);
+    expect((r.body as any).committed).toBe(false);
+    expect((r.body as any).commit_error).toContain("identity unknown");
+    expect((r.body as any).metadata.allowed_targets).toEqual(["claude"]);
+  });
+  test("dropping a target with overlays → 409 library_target_removed_with_overlays", async () => {
+    const r = await buildUpdateMetadata(
+      CONFIGURED,
+      "skill",
+      "diagnose",
+      { allowed_targets: ["pi"] },
+      errRun(libErr("library_target_removed_with_overlays")),
+    );
+    expect(r.status).toBe(409);
+    expect((r.body as any).code).toBe("library_target_removed_with_overlays");
+    expect(JSON.stringify(r.body)).not.toContain("/Users/"); // m4: detail withheld
+  });
+  test("a kind-illegal target → 422 library_target_not_allowed_for_kind", async () => {
+    const r = await buildUpdateMetadata(
+      CONFIGURED,
+      "agent",
+      "router",
+      { allowed_targets: ["codex"] },
+      errRun(libErr("library_target_not_allowed_for_kind")),
+    );
+    expect(r.status).toBe(422);
+  });
+  test("forwards the editable subset + config root; a body path cannot redirect the root", async () => {
+    const { run, calls } = captureRun({ ok: true, data: META_OK });
+    await buildUpdateMetadata(
+      CONFIGURED,
+      "skill",
+      "diagnose",
+      { allowed_targets: ["claude", "pi"], display_name: "Diag", author: "Alice", discard_orphan_overlays: true, path: "/etc/evil" } as any,
+      run,
+    );
+    expect(calls[0]!.command).toBe("update_metadata");
+    expect(calls[0]!.args).toMatchObject({
+      path: "/libs/x", // config root, NOT the body's /etc/evil
+      kind: "skill",
+      name: "diagnose",
+      allowed_targets: ["claude", "pi"],
+      display_name: "Diag",
+      author: "Alice",
+      discard_orphan_overlays: true,
+    });
+  });
+  test("absent display_name/author → null (not undefined) on the wire; discard defaults false", async () => {
+    const { run, calls } = captureRun({ ok: true, data: META_OK });
+    await buildUpdateMetadata(CONFIGURED, "skill", "diagnose", { allowed_targets: ["claude"] }, run);
+    expect(calls[0]!.args).toMatchObject({
+      display_name: null,
+      author: null,
+      discard_orphan_overlays: false,
+    });
+  });
+  test("an empty-string display_name/author is preserved verbatim on the wire (the bridge collapses it to null)", async () => {
+    const { run, calls } = captureRun({ ok: true, data: META_OK });
+    await buildUpdateMetadata(CONFIGURED, "skill", "diagnose", { allowed_targets: ["claude"], display_name: "", author: "" }, run);
+    // "" is a string, so it rides as "" — the bridge's parse_optional_nonempty
+    // turns ""/null alike into None. The route only nulls non-string values.
+    expect(calls[0]!.args).toMatchObject({ display_name: "", author: "" });
+  });
+  test("unconfigured → 409 WITHOUT spawning", async () => {
+    const { run, calls } = captureRun({ ok: true, data: META_OK });
+    const r = await buildUpdateMetadata(UNCONFIGURED, "skill", "diagnose", { allowed_targets: ["claude"] }, run);
+    expect(r.status).toBe(409);
+    expect(calls).toHaveLength(0);
+  });
+});
+
 // Route-local isolation: library routes mounted on a Hono app must not affect a
 // sibling Observability route, even with no library configured.
 describe("registerLibraryRoutes — HTTP wiring + Observability isolation", () => {
@@ -1022,6 +1139,22 @@ describe("registerLibraryRoutes — HTTP wiring + Observability isolation", () =
       body: JSON.stringify({ content: "---\n---\nx\n" }),
     });
     expect([409, 422, 502]).toContain(write.status); // a library-local failure status
+
+    const summary = await app.request("/api/summary");
+    expect(summary.status).toBe(200); // Observability untouched
+  });
+
+  test("a failing metadata edit is route-local: a sibling Observability route stays 200", async () => {
+    const app = new Hono();
+    app.get("/api/summary", (c) => c.json({ ok: true }));
+    registerLibraryRoutes(app, () => ({ ...CONFIGURED, bridgePath: "/no/such/bridge" }));
+
+    const edit = await app.request("/api/library/primitives/skill/diagnose/metadata", {
+      method: "PUT",
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+      body: JSON.stringify({ allowed_targets: ["claude"], display_name: "Diag", author: null }),
+    });
+    expect([409, 422, 502]).toContain(edit.status); // a library-local failure status
 
     const summary = await app.request("/api/summary");
     expect(summary.status).toBe(200); // Observability untouched

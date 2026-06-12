@@ -122,6 +122,35 @@ export interface PublishResult {
 }
 
 // ---------------------------------------------------------------------------
+// Metadata-editing wire models (metadata-editing slice)
+//
+// `update_metadata` returns the freshly-written metadata PLUS the same non-fatal
+// commit contract as publish — `metadata.yaml` is git-tracked (not under the
+// gitignored `working/`), so the write COMMITS (Slice 4's posture), unlike the
+// overlay writes. By the time this returns the metadata atomic-write has already
+// landed; `committed`/`commit_error` describe ONLY the advisory git step.
+// ---------------------------------------------------------------------------
+
+/** The editable subset sent to `update_metadata`. `display_name`/`author` send
+ *  `null` to clear (the bridge collapses ""/null → drop the field); the
+ *  optional `discard_orphan_overlays` confirms deleting overlay files orphaned
+ *  by dropping a target (the 409 two-phase-confirm). */
+export interface MetadataUpdateBody {
+  allowed_targets: TargetName[];
+  display_name: string | null;
+  author: string | null;
+  discard_orphan_overlays?: boolean;
+}
+
+/** The outcome of an `update_metadata`: the freshly-written metadata + the
+ *  advisory git commit result (same non-fatal contract as `PublishResult`). */
+export interface MetadataUpdateResult {
+  metadata: PrimitiveMetadata;
+  committed: boolean;
+  commit_error: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // Target-overlay wire models (target-overlays slice)
 //
 // Mirror core's `detail.rs::TargetView` (the merged primary for a target + a
@@ -392,6 +421,15 @@ export function parsePublishResult(v: unknown): PublishResult {
   return {
     committed: asBool(v.committed, "PublishResult.committed"),
     commit_error: asNullableString(v.commit_error, "PublishResult.commit_error"),
+  };
+}
+
+export function parseMetadataUpdateResult(v: unknown): MetadataUpdateResult {
+  if (!isObject(v)) fail("MetadataUpdateResult");
+  return {
+    metadata: parseMetadata(v.metadata),
+    committed: asBool(v.committed, "MetadataUpdateResult.committed"),
+    commit_error: asNullableString(v.commit_error, "MetadataUpdateResult.commit_error"),
   };
 }
 

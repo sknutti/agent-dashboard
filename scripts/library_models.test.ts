@@ -10,6 +10,7 @@ import {
   parseWorkingFileBytes,
   parsePrimitiveVersionView,
   parsePublishResult,
+  parseMetadataUpdateResult,
   parseTargetView,
   parseOverlayLists,
 } from "./library_models.ts";
@@ -313,6 +314,56 @@ describe("parsePublishResult (non-fatal commit contract)", () => {
     expect(() => parsePublishResult({ commit_error: null })).toThrow(BridgeShapeError);
     expect(() => parsePublishResult({ committed: true, commit_error: 5 })).toThrow(BridgeShapeError);
     expect(() => parsePublishResult(null)).toThrow(BridgeShapeError);
+  });
+});
+
+describe("parseMetadataUpdateResult (metadata + non-fatal commit contract)", () => {
+  test("a successful edit → the written metadata + committed:true", () => {
+    const r = parseMetadataUpdateResult({
+      metadata: { allowed_targets: ["claude", "pi"], created_at: "2026-04-30T12:00:00Z", display_name: "Diag", author: "Alice" },
+      committed: true,
+      commit_error: null,
+    });
+    expect(r.committed).toBe(true);
+    expect(r.commit_error).toBeNull();
+    expect(r.metadata).toEqual({
+      allowed_targets: ["claude", "pi"],
+      created_at: "2026-04-30T12:00:00Z",
+      display_name: "Diag",
+      author: "Alice",
+    });
+  });
+
+  test("a cleared field is simply absent in the metadata (skip_serializing_if None)", () => {
+    const r = parseMetadataUpdateResult({
+      metadata: { allowed_targets: ["claude"], created_at: "2026-04-30T12:00:00Z" },
+      committed: false,
+      commit_error: null,
+    });
+    expect(r.metadata.display_name).toBeUndefined();
+    expect(r.metadata.author).toBeUndefined();
+  });
+
+  test("a failed commit → committed:false carrying the legible git message; the write still rode back", () => {
+    const r = parseMetadataUpdateResult({
+      metadata: { allowed_targets: ["claude"], created_at: "2026-04-30T12:00:00Z" },
+      committed: false,
+      commit_error: "Author identity unknown",
+    });
+    expect(r.committed).toBe(false);
+    expect(r.commit_error).toBe("Author identity unknown");
+    expect(r.metadata.allowed_targets).toEqual(["claude"]);
+  });
+
+  test("rejects a missing metadata, a missing committed flag, or a non-string/non-null commit_error", () => {
+    expect(() => parseMetadataUpdateResult({ committed: true, commit_error: null })).toThrow(BridgeShapeError);
+    expect(() =>
+      parseMetadataUpdateResult({ metadata: { allowed_targets: [], created_at: "x" }, commit_error: null }),
+    ).toThrow(BridgeShapeError);
+    expect(() =>
+      parseMetadataUpdateResult({ metadata: { allowed_targets: [], created_at: "x" }, committed: true, commit_error: 5 }),
+    ).toThrow(BridgeShapeError);
+    expect(() => parseMetadataUpdateResult(null)).toThrow(BridgeShapeError);
   });
 });
 
