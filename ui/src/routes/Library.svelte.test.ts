@@ -253,6 +253,24 @@ describe("Library route — install rows, two-phase confirm, drift, import", () 
     expect(installSpy).toHaveBeenCalledWith("skill", "diagnose", { targets: ["claude"], force: true });
   });
 
+  test("a pre-flight failure (occupied path) is rendered, and NEVER offers the overwrite dialog (D5)", async () => {
+    mockValidLibrary(INSTALLABLE);
+    const installSpy = vi.spyOn(api, "installPrimitive").mockResolvedValue({
+      successes: [],
+      failures: [
+        { target: "claude", reason: { kind: "occupied_by_unexpected_kind", path: "p", expected: "dir", actual: "file" } },
+      ],
+    });
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(screen.getByRole("button", { name: "Install" }));
+    // the failure is surfaced as a route-local message…
+    expect(await screen.findByText(/occupies the install path/)).toBeTruthy();
+    // …and NO confirm dialog appears (occupied is not an overwrite-able collision)
+    expect(screen.queryByText(/Overwrite drifted files/)).toBeNull();
+    expect(installSpy).not.toHaveBeenCalledWith("skill", "diagnose", { targets: ["claude"], force: true });
+  });
+
   test("cancelling the dialog issues no force write", async () => {
     mockValidLibrary(INSTALLABLE);
     const installSpy = vi.spyOn(api, "installPrimitive").mockResolvedValue({
