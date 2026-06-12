@@ -104,6 +104,16 @@ export function publishStateCue(committed: boolean, commitError: string | null):
   return { label: "published", tone: "default", glyph: "✓" };
 }
 
+/** Distinguish a per-target OVERLAY (a target-specific delta that shadows the
+ *  base primary at install time) from a plain base passthrough. Colorblind-safe:
+ *  label + glyph + a CVD-safe cyan for the overlay, never a bare red/green. The
+ *  label makes "this is a delta, not the full base file" unmistakable. */
+export function overlayCue(hasOverlay: boolean): Cue {
+  return hasOverlay
+    ? { label: "overlay", tone: "cyan", glyph: "◆" }
+    : { label: "base (no overlay)", tone: "default", glyph: "○" };
+}
+
 /** Distinguish the current pinned version from a past one in the inspector —
  *  by label + glyph + a CVD-safe cyan (never a bare red/green); "current" is the
  *  pointer a future install reads. */

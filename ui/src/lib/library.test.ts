@@ -8,6 +8,7 @@ import {
   editorDirtyCue,
   publishStateCue,
   currentVersionCue,
+  overlayCue,
   gitSummary,
   driftByTarget,
   installStateFor,
@@ -138,6 +139,24 @@ describe("currentVersionCue (current vs past; colorblind-safe)", () => {
     expect(cur.tone).toBe("cyan"); // CVD-safe accent, not green
     // A null current (no pin) reads everything as past.
     expect(currentVersionCue("v1", null).label).toBe("past version");
+  });
+});
+
+describe("overlayCue (delta vs. base passthrough; colorblind-safe)", () => {
+  test("overlay vs base differ by label + glyph; overlay is cyan, never green", () => {
+    const overlay = overlayCue(true);
+    const base = overlayCue(false);
+    expect(overlay.label).toBe("overlay");
+    expect(base.label).toBe("base (no overlay)");
+    // The label makes "delta, not the full base file" explicit, not color-coded.
+    expect(overlay.label).not.toBe(base.label);
+    // Distinguishable WITHOUT color: distinct, non-empty glyphs.
+    expect(overlay.glyph).not.toBe(base.glyph);
+    expect(overlay.glyph.length).toBeGreaterThan(0);
+    expect(base.glyph.length).toBeGreaterThan(0);
+    // CVD-safe accent, never a bare red/green.
+    expect(overlay.tone).toBe("cyan");
+    expect(["amber", "cyan", "default"]).toContain(base.tone);
   });
 });
 

@@ -60,6 +60,13 @@ function mockValidLibrary(
   vi.spyOn(api, "getWorkingFiles").mockResolvedValue([
     { path: "SKILL.md", role: "primary", is_text: true, size_bytes: 30 },
   ]);
+  // The target-overlay pane mounts whenever allowed_targets is non-empty; default
+  // to no overlays + a base-passthrough view so it doesn't hit a real fetch.
+  vi.spyOn(api, "listOverlays").mockResolvedValue([]);
+  vi.spyOn(api, "readPrimitiveTarget").mockResolvedValue({
+    working: detail.working,
+    has_overlay: false,
+  });
 }
 
 // A published, installable skill (current_version set + allowed_targets) so the
@@ -359,6 +366,48 @@ describe("Library route — install rows, two-phase confirm, drift, import", () 
     render(Library);
     await fireEvent.click(await screen.findByRole("button", { name: /Import existing installs/i }));
     expect(await screen.findByText(/upgrade the dashboard/)).toBeTruthy();
+  });
+});
+
+describe("Library route — target overlays + drift explanation (Decision 3)", () => {
+  test("the Target overlays section renders a tab per allowed target", async () => {
+    mockValidLibrary(INSTALLABLE); // allowed_targets: ["claude"]
+    render(Library);
+    await selectDiagnose();
+    expect(screen.getByText("Target overlays")).toBeTruthy();
+    expect(await screen.findByRole("tab", { name: /claude/ })).toBeTruthy();
+  });
+
+  test("editing an overlay on an INSTALLED target surfaces the reinstall/drift note next to its row", async () => {
+    mockValidLibrary(INSTALLABLE, { installs: [INSTALLED_CLAUDE] }); // claude is installed
+    vi.spyOn(api, "writeOverlay").mockResolvedValue({} as never);
+    render(Library);
+    await selectDiagnose();
+
+    // Drive the overlay pane: Add overlay → edit → Save.
+    const ta = (await screen.findByLabelText("claude overlay contents")) as HTMLTextAreaElement;
+    expect(ta).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: /add overlay for claude/i }));
+    await fireEvent.input(ta, { target: { value: "---\n---\nclaude-delta\n" } });
+    await fireEvent.click(screen.getByRole("button", { name: /^save overlay$/i }));
+
+    // The reinstall note appears (Decision 3) — drift is explained, not hidden.
+    expect(await screen.findByText(/reach the installed copy/i)).toBeTruthy();
+  });
+
+  test("editing an overlay on a NOT-installed target shows no reinstall note (nothing to drift)", async () => {
+    mockValidLibrary(INSTALLABLE, { installs: [] }); // claude allowed but NOT installed
+    vi.spyOn(api, "writeOverlay").mockResolvedValue({} as never);
+    render(Library);
+    await selectDiagnose();
+
+    const ta = (await screen.findByLabelText("claude overlay contents")) as HTMLTextAreaElement;
+    await fireEvent.click(screen.getByRole("button", { name: /add overlay for claude/i }));
+    await fireEvent.input(ta, { target: { value: "---\n---\nclaude-delta\n" } });
+    await fireEvent.click(screen.getByRole("button", { name: /^save overlay$/i }));
+
+    // No install record → no drift to explain.
+    expect(screen.queryByText(/reach the installed copy/i)).toBeNull();
   });
 });
 
