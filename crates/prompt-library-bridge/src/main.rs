@@ -36,15 +36,16 @@
 
 use std::io::{Read, Write};
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use prompt_library_core::{
     acknowledge_drift, detail::read_primitive_detail, install, listing::list_primitives,
-    scan_drift_for_primitive, scan_record, uninstall, DriftReport, Error as CoreError, InstallPaths,
-    InstallRequest, InstallsFile, KindInfoTable, LibraryLayout, PrimitiveKind, PrimitiveName,
-    Target, UninstallRequest, VersionLabel, INSTALLS_FORMAT_VERSION,
+    scan_drift_for_primitive, scan_record, uninstall, working_files, DriftReport,
+    Error as CoreError, InstallPaths, InstallRequest, InstallsFile, KindInfoTable, LibraryLayout,
+    PrimitiveKind, PrimitiveName, Target, UninstallRequest, VersionLabel, WorkingCopy,
+    INSTALLS_FORMAT_VERSION,
 };
 use prompt_library_git::{
     git_ops::{current_branch, git_diff_changed_files},
@@ -115,6 +116,18 @@ async fn dispatch(command: &str, args: &Value) -> Result<Value, LibraryError> {
         "acknowledge_drift" => cmd_acknowledge_drift(args),
         "list_installs_for_primitive" => cmd_list_installs_for_primitive(args),
         "import_installs" => cmd_import_installs(args),
+        // Working-copy / editor slice. All sync — std::fs only, like the
+        // install commands. `save_working` edits the PRIMARY file (parse-
+        // validated); the `*_working_file` commands edit ref files (which
+        // refuse the primary filename in-core). Reads (`list`/`read`) and
+        // writes share the same library-root resolution via `require_library`.
+        "save_working" => cmd_save_working(args),
+        "list_working_files" => cmd_list_working_files(args),
+        "read_working_file" => cmd_read_working_file(args),
+        "create_working_file" => cmd_create_working_file(args),
+        "save_working_file" => cmd_save_working_file(args),
+        "rename_working_file" => cmd_rename_working_file(args),
+        "delete_working_file" => cmd_delete_working_file(args),
         other => Err(LibraryError::new(
             "unknown_command",
             "unknown bridge command",
@@ -472,6 +485,139 @@ fn cmd_import_installs(args: &Value) -> Result<Value, LibraryError> {
 }
 
 // ---------------------------------------------------------------------------
+// Working-copy / editor commands (working-copy slice)
+// ---------------------------------------------------------------------------
+
+/// Save the PRIMARY working file (`SKILL.md`/`agent.md`/`<name>.md`/
+/// `<name>.toml`) through `WorkingCopy::save_primary_base`, which PARSE-
+/// VALIDATES the bytes (MD frontmatter+body, or TOML for CodexAgent) BEFORE the
+/// atomic write — malformed bytes never reach disk (they surface as
+/// `library_parse_error`, the file unchanged). This is a DIFFERENT path from
+/// `save_working_file`, which edits ref files and refuses the primary filename
+/// in-core (W1). The UI assembles the whole `---\nfm---\nbody` blob and sends it
+/// as `content`; core re-validates.
+fn cmd_save_working(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let kind = parse_kind(args)?;
+    let name = parse_name(args)?;
+    let content = parse_required_str(args, "content")?;
+    WorkingCopy::new(LibraryLayout::new(&root))
+        .save_primary_base(kind, &name, content.as_bytes())
+        .map_err(map_core_error)?;
+    Ok(json!({}))
+}
+
+/// List every file under the primitive's `working/base/` — primary pinned
+/// first, refs alphabetical (core sorts; the UI renders verbatim). `[]` when
+/// `working/base/` is absent; symlinks + ignored files are skipped in-core.
+fn cmd_list_working_files(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let kind = parse_kind(args)?;
+    let name = parse_name(args)?;
+    let entries = working_files::list_working_files(LibraryLayout::new(&root), kind, &name)
+        .map_err(map_core_error)?;
+    serde_json::to_value(entries).map_err(serialize_err)
+}
+
+/// Read one ref file's bytes as the tagged `WorkingFileBytes` union: text files
+/// carry `{kind:"text", text, ext?}`; binary files (NUL in the first 8 KiB)
+/// carry `{kind:"binary", size}` and NEVER stream bytes. The ref path rides
+/// `args.rel` (NOT `args.path` — that is the library root, owned by
+/// `require_library`) and flows straight to core, which validates it via
+/// `validate_path_shape` (the containment boundary is core's — the bridge must
+/// not duplicate it).
+fn cmd_read_working_file(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let kind = parse_kind(args)?;
+    let name = parse_name(args)?;
+    let rel = parse_required_str(args, "rel")?;
+    let bytes = working_files::read_working_file(
+        LibraryLayout::new(&root),
+        kind,
+        &name,
+        Utf8Path::new(&rel),
+    )
+    .map_err(map_core_error)?;
+    serde_json::to_value(bytes).map_err(serialize_err)
+}
+
+/// Create a new ref file at `args.rel`. Errors `working_file_exists` if the dest
+/// is occupied; `library_invalid_working_path` for the primary filename or a
+/// traversal path.
+fn cmd_create_working_file(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let kind = parse_kind(args)?;
+    let name = parse_name(args)?;
+    let rel = parse_required_str(args, "rel")?;
+    let content = parse_required_str(args, "content")?;
+    working_files::create_working_file(
+        LibraryLayout::new(&root),
+        kind,
+        &name,
+        Utf8Path::new(&rel),
+        &content,
+    )
+    .map_err(map_core_error)?;
+    Ok(json!({}))
+}
+
+/// Update the existing ref file at `args.rel`. Errors `working_file_not_found`
+/// if absent (callers must `create` first).
+fn cmd_save_working_file(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let kind = parse_kind(args)?;
+    let name = parse_name(args)?;
+    let rel = parse_required_str(args, "rel")?;
+    let content = parse_required_str(args, "content")?;
+    working_files::save_working_file(
+        LibraryLayout::new(&root),
+        kind,
+        &name,
+        Utf8Path::new(&rel),
+        &content,
+    )
+    .map_err(map_core_error)?;
+    Ok(json!({}))
+}
+
+/// Rename/move the ref file `args.old_rel` → `args.new_rel`. Refuses the primary
+/// as source (`working_file_refuse_primary`); errors on missing source /
+/// existing dest; creates intermediate dirs for the destination.
+fn cmd_rename_working_file(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let kind = parse_kind(args)?;
+    let name = parse_name(args)?;
+    let old_rel = parse_required_str(args, "old_rel")?;
+    let new_rel = parse_required_str(args, "new_rel")?;
+    working_files::rename_working_file(
+        LibraryLayout::new(&root),
+        kind,
+        &name,
+        Utf8Path::new(&old_rel),
+        Utf8Path::new(&new_rel),
+    )
+    .map_err(map_core_error)?;
+    Ok(json!({}))
+}
+
+/// Delete the ref file at `args.rel`. Idempotent on a missing file; refuses the
+/// primary (`working_file_refuse_primary`).
+fn cmd_delete_working_file(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let kind = parse_kind(args)?;
+    let name = parse_name(args)?;
+    let rel = parse_required_str(args, "rel")?;
+    working_files::delete_working_file(
+        LibraryLayout::new(&root),
+        kind,
+        &name,
+        Utf8Path::new(&rel),
+    )
+    .map_err(map_core_error)?;
+    Ok(json!({}))
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -593,6 +739,23 @@ fn parse_target(args: &Value) -> Result<Target, LibraryError> {
     })
 }
 
+/// Pull a REQUIRED string argument (`path`/`old_path`/`new_path`/`content`) for
+/// the working-file commands. A missing or non-string value is a caller bug →
+/// `bridge_bad_request`. An empty string IS allowed through (e.g. saving an
+/// empty ref file) — the working-file *path* arguments are then validated by
+/// core's `validate_path_shape`/`validate_ref_path`, never here: the bridge must
+/// not duplicate or weaken core's single-source-of-truth containment boundary.
+fn parse_required_str(args: &Value, key: &'static str) -> Result<String, LibraryError> {
+    match args.get(key).and_then(Value::as_str) {
+        Some(s) => Ok(s.to_string()),
+        None => Err(LibraryError::new(
+            "bridge_bad_request",
+            "missing or malformed string argument",
+            format!("request args.{key} was missing or not a string"),
+        )),
+    }
+}
+
 /// `force` defaults to `false` — the two-phase-confirm safe default. An
 /// overwrite is only ever the result of an explicit `force:true`.
 fn parse_force(args: &Value) -> bool {
@@ -707,6 +870,27 @@ fn map_core_error(e: CoreError) -> LibraryError {
         }
         CoreError::InstallNotSupported { .. } => {
             ("library_install_not_supported", "install is not supported for this kind/target")
+        }
+        // Working-copy / editor variants — promoted out of the catch-all so the
+        // route layer maps them to actionable HTTP statuses (422/409/404) and
+        // the editor offers the right next step. `InvalidWorkingPath` is the
+        // path-traversal tripwire code; the primary-save parse failures
+        // (Metadata/CodexAgent/Md/NotUtf8) already map to `library_parse_error`
+        // above — the file was never written.
+        CoreError::InvalidWorkingPath(_) => {
+            ("library_invalid_working_path", "invalid working-file path")
+        }
+        CoreError::WorkingFileAlreadyExists { .. } => {
+            ("working_file_exists", "a working file with that name already exists")
+        }
+        CoreError::WorkingFileNotFound { .. } => {
+            ("working_file_not_found", "no such working file")
+        }
+        CoreError::RefuseRenamePrimary { .. } | CoreError::RefuseDeletePrimary { .. } => {
+            ("working_file_refuse_primary", "cannot rename or delete the primary file")
+        }
+        CoreError::TooManyWorkingFiles { .. } => {
+            ("working_file_too_many", "primitive working-file bundle is at its cap")
         }
         // Anything still unmapped is a genuine bridge bug, not a known
         // application state.
@@ -1499,6 +1683,328 @@ mod tests {
         assert_eq!(
             env["data"]["successes"][0]["outcome"]["kind"],
             json!("installed")
+        );
+    }
+
+    // ---- working-copy / editor (working-copy slice) -------------------------
+    //
+    // Every test runs against a temp library (`fixture_library` scaffolds a
+    // `diagnose` skill whose primary `SKILL.md` already exists in
+    // `working/base/`). Ref files are seeded with core's own
+    // `WorkingCopy::save_base_file`, so the bridge contract is exercised against
+    // real on-disk bundles, never hand-authored bytes. No test writes outside
+    // its temp dir; the crate stays network-free + secrets-free (structural —
+    // it does not depend on prompt-library-secrets).
+
+    /// Base args for a working-file command on the scaffolded `diagnose` skill.
+    fn wf_args(root: &Utf8PathBuf) -> Value {
+        json!({ "path": root.as_str(), "kind": "skill", "name": "diagnose" })
+    }
+
+    /// Seed a ref file under the primitive's `working/base/` via core.
+    fn seed_ref(root: &Utf8PathBuf, rel: &str, bytes: &[u8]) {
+        let n = PrimitiveName::try_new("diagnose").unwrap();
+        WorkingCopy::new(LibraryLayout::new(root))
+            .save_base_file(PrimitiveKind::Skill, &n, Utf8Path::new(rel), bytes)
+            .unwrap();
+    }
+
+    fn working_base(root: &Utf8PathBuf) -> Utf8PathBuf {
+        let n = PrimitiveName::try_new("diagnose").unwrap();
+        LibraryLayout::new(root).working_base(PrimitiveKind::Skill, &n)
+    }
+
+    #[test]
+    fn list_working_files_pins_primary_then_refs() {
+        let (_tmp, root) = fixture_library();
+        // Scaffold-only: the primary SKILL.md is the sole entry.
+        let only = cmd_list_working_files(&wf_args(&root)).unwrap();
+        let arr = only.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["path"], json!("SKILL.md"));
+        assert_eq!(arr[0]["role"], json!("primary"));
+        assert_eq!(arr[0]["is_text"], json!(true));
+        // Seed two refs → primary first, refs alphabetical.
+        seed_ref(&root, "zebra.md", b"z");
+        seed_ref(&root, "notes.md", b"n");
+        let listed = cmd_list_working_files(&wf_args(&root)).unwrap();
+        let paths: Vec<&str> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths, vec!["SKILL.md", "notes.md", "zebra.md"]);
+        assert_eq!(listed[0]["role"], json!("primary"));
+        assert_eq!(listed[1]["role"], json!("ref"));
+    }
+
+    #[test]
+    fn read_working_file_text_carries_extension() {
+        let (_tmp, root) = fixture_library();
+        seed_ref(&root, "notes.md", b"hello\n");
+        let mut args = wf_args(&root);
+        args["rel"] = json!("notes.md");
+        let bytes = cmd_read_working_file(&args).unwrap();
+        assert_eq!(bytes["kind"], json!("text"));
+        assert_eq!(bytes["text"], json!("hello\n"));
+        assert_eq!(bytes["ext"], json!("md"));
+    }
+
+    #[test]
+    fn read_working_file_binary_returns_size_only() {
+        let (_tmp, root) = fixture_library();
+        // NUL in the first 8 KiB → binary; bytes are never returned.
+        seed_ref(&root, "logo.bin", &[0xFFu8, 0x00, 0x01, 0x02]);
+        let mut args = wf_args(&root);
+        args["rel"] = json!("logo.bin");
+        let bytes = cmd_read_working_file(&args).unwrap();
+        assert_eq!(bytes["kind"], json!("binary"));
+        assert_eq!(bytes["size"], json!(4));
+        assert!(bytes.get("text").is_none(), "binary must not carry bytes");
+    }
+
+    /// The traversal tripwire (risk-a, bridge half): a `../` ref path is
+    /// rejected IN-CORE by `validate_path_shape`, surfacing as the stable
+    /// `library_invalid_working_path` code — it never reaches the fs. (The
+    /// library root is `args.path`; the ref path is `args.rel` — distinct keys.)
+    #[test]
+    fn read_working_file_rejects_traversal_path() {
+        let (_tmp, root) = fixture_library();
+        for payload in ["../escape.md", "notes/../escape.md", "/etc/passwd"] {
+            let mut args = wf_args(&root);
+            args["rel"] = json!(payload);
+            let err = cmd_read_working_file(&args).unwrap_err();
+            assert_eq!(
+                err.code, "library_invalid_working_path",
+                "payload `{payload}` should be rejected in-core"
+            );
+        }
+    }
+
+    #[test]
+    fn create_working_file_writes_then_rejects_duplicate_and_primary() {
+        let (_tmp, root) = fixture_library();
+        let mut args = wf_args(&root);
+        args["rel"] = json!("notes/intro.md");
+        args["content"] = json!("hello\n");
+        cmd_create_working_file(&args).unwrap();
+        assert!(working_base(&root).join("notes/intro.md").exists());
+        // Same path again → exists.
+        assert_eq!(
+            cmd_create_working_file(&args).unwrap_err().code,
+            "working_file_exists"
+        );
+        // Primary filename via the ref path → rejected in-core (must route
+        // through save_working).
+        let mut primary = wf_args(&root);
+        primary["rel"] = json!("SKILL.md");
+        primary["content"] = json!("x");
+        assert_eq!(
+            cmd_create_working_file(&primary).unwrap_err().code,
+            "library_invalid_working_path"
+        );
+    }
+
+    #[test]
+    fn save_working_file_updates_existing_and_errors_on_missing() {
+        let (_tmp, root) = fixture_library();
+        seed_ref(&root, "notes.md", b"v1");
+        let mut args = wf_args(&root);
+        args["rel"] = json!("notes.md");
+        args["content"] = json!("v2");
+        cmd_save_working_file(&args).unwrap();
+        let mut read = wf_args(&root);
+        read["rel"] = json!("notes.md");
+        assert_eq!(cmd_read_working_file(&read).unwrap()["text"], json!("v2"));
+        // Missing file → not_found (callers must create first).
+        let mut missing = wf_args(&root);
+        missing["rel"] = json!("absent.md");
+        missing["content"] = json!("x");
+        assert_eq!(
+            cmd_save_working_file(&missing).unwrap_err().code,
+            "working_file_not_found"
+        );
+    }
+
+    #[test]
+    fn rename_working_file_moves_and_enforces_invariants() {
+        let (_tmp, root) = fixture_library();
+        seed_ref(&root, "a.md", b"a");
+        // a.md → docs/a.md: moved, intermediate dir created.
+        let mut mv = wf_args(&root);
+        mv["old_rel"] = json!("a.md");
+        mv["new_rel"] = json!("docs/a.md");
+        cmd_rename_working_file(&mv).unwrap();
+        assert!(working_base(&root).join("docs/a.md").exists());
+        assert!(!working_base(&root).join("a.md").exists());
+        // Primary as source → refuse.
+        let mut prim = wf_args(&root);
+        prim["old_rel"] = json!("SKILL.md");
+        prim["new_rel"] = json!("renamed.md");
+        assert_eq!(
+            cmd_rename_working_file(&prim).unwrap_err().code,
+            "working_file_refuse_primary"
+        );
+        // Dest exists → exists.
+        seed_ref(&root, "b.md", b"b");
+        seed_ref(&root, "c.md", b"c");
+        let mut clash = wf_args(&root);
+        clash["old_rel"] = json!("b.md");
+        clash["new_rel"] = json!("c.md");
+        assert_eq!(
+            cmd_rename_working_file(&clash).unwrap_err().code,
+            "working_file_exists"
+        );
+        // Source missing → not_found.
+        let mut gone = wf_args(&root);
+        gone["old_rel"] = json!("nope.md");
+        gone["new_rel"] = json!("x.md");
+        assert_eq!(
+            cmd_rename_working_file(&gone).unwrap_err().code,
+            "working_file_not_found"
+        );
+    }
+
+    #[test]
+    fn delete_working_file_is_idempotent_and_refuses_primary() {
+        let (_tmp, root) = fixture_library();
+        seed_ref(&root, "notes.md", b"x");
+        let mut args = wf_args(&root);
+        args["rel"] = json!("notes.md");
+        cmd_delete_working_file(&args).unwrap();
+        assert!(!working_base(&root).join("notes.md").exists());
+        // Second delete on a missing file → still Ok (idempotent).
+        cmd_delete_working_file(&args).unwrap();
+        // Primary → refuse, and the primary stays on disk.
+        let mut prim = wf_args(&root);
+        prim["rel"] = json!("SKILL.md");
+        assert_eq!(
+            cmd_delete_working_file(&prim).unwrap_err().code,
+            "working_file_refuse_primary"
+        );
+        assert!(working_base(&root).join("SKILL.md").exists());
+    }
+
+    #[test]
+    fn save_working_validates_primary_before_writing() {
+        let (_tmp, root) = fixture_library();
+        let primary = working_base(&root).join("SKILL.md");
+        let before = std::fs::read(primary.as_std_path()).unwrap();
+        // Valid MD blob → primary updated, list still reflects it.
+        let mut ok = wf_args(&root);
+        ok["content"] = json!("---\n---\nbody-v2\n");
+        cmd_save_working(&ok).unwrap();
+        assert_eq!(
+            std::fs::read(primary.as_std_path()).unwrap(),
+            b"---\n---\nbody-v2\n"
+        );
+        // Malformed MD (no opening fence) → parse error, the file is UNCHANGED:
+        // save_primary_base validates BEFORE the atomic write.
+        let mut bad = wf_args(&root);
+        bad["content"] = json!("no fences here");
+        assert_eq!(
+            cmd_save_working(&bad).unwrap_err().code,
+            "library_parse_error"
+        );
+        assert_eq!(
+            std::fs::read(primary.as_std_path()).unwrap(),
+            b"---\n---\nbody-v2\n",
+            "a rejected primary save must not touch disk"
+        );
+        let _ = before;
+    }
+
+    #[test]
+    fn working_file_commands_require_present_string_args() {
+        let (_tmp, root) = fixture_library();
+        // Missing `content` on a save → caller bug, bridge_bad_request.
+        let mut args = wf_args(&root);
+        args["rel"] = json!("notes.md");
+        assert_eq!(
+            cmd_save_working_file(&args).unwrap_err().code,
+            "bridge_bad_request"
+        );
+    }
+
+    #[tokio::test]
+    async fn working_file_read_dispatches_through_the_envelope() {
+        let (_tmp, root) = fixture_library();
+        seed_ref(&root, "notes.md", b"hi");
+        // The library root is `args.path`; the ref path is `args.rel` — distinct
+        // keys, so a read carries both without collision.
+        let req = json!({
+            "v": 1,
+            "command": "read_working_file",
+            "args": { "path": root.as_str(), "kind": "skill", "name": "diagnose", "rel": "notes.md" },
+        });
+        let env = handle(&req.to_string()).await;
+        assert_eq!(env["ok"], json!(true));
+        assert_eq!(env["data"]["kind"], json!("text"));
+        assert_eq!(env["data"]["text"], json!("hi"));
+    }
+
+    // ---- working-file golden fixtures ---------------------------------------
+    //
+    // These tie the committed `list_working_files`/`read_working_file_{text,
+    // binary}` bytes (which the TS validators parse) to LIVE core output, so a
+    // serde rename on `WorkingFileEntry`/`WorkingFileBytes` fails `cargo test`
+    // instead of silently desyncing the frozen fixtures. The bundle's bytes are
+    // byte-identical to `seed_fixture_library --working` (the `capture.ts`
+    // generator), so the JSON is asserted from both directions.
+
+    /// `fixture_library` (scaffolds `diagnose`) + the deterministic working
+    /// bundle: a fixed primary, one text ref, one binary ref. Mirrors the
+    /// example's `seed_working_bundle` byte-for-byte.
+    fn working_fixture() -> (TempDir, Utf8PathBuf) {
+        let (tmp, root) = fixture_library();
+        seed_ref(&root, "SKILL.md", b"---\n---\nbody\n");
+        seed_ref(&root, "notes.md", b"hello\n");
+        seed_ref(&root, "logo.bin", &[0xFFu8, 0x00, 0x01, 0x02]);
+        (tmp, root)
+    }
+
+    #[test]
+    fn list_working_files_matches_committed_fixture() {
+        let (_tmp, root) = working_fixture();
+        let data = cmd_list_working_files(&wf_args(&root)).unwrap();
+        let expected =
+            golden_data(include_str!("../../../scripts/fixtures/bridge/list_working_files.json"));
+        assert_eq!(
+            data, expected,
+            "list_working_files drifted from the committed fixture — regenerate with \
+             `bun run scripts/fixtures/bridge/capture.ts`"
+        );
+    }
+
+    #[test]
+    fn read_working_file_text_matches_committed_fixture() {
+        let (_tmp, root) = working_fixture();
+        let mut args = wf_args(&root);
+        args["rel"] = json!("notes.md");
+        let data = cmd_read_working_file(&args).unwrap();
+        let expected =
+            golden_data(include_str!("../../../scripts/fixtures/bridge/read_working_file_text.json"));
+        assert_eq!(
+            data, expected,
+            "read_working_file_text drifted from the committed fixture — regenerate with \
+             `bun run scripts/fixtures/bridge/capture.ts`"
+        );
+    }
+
+    #[test]
+    fn read_working_file_binary_matches_committed_fixture() {
+        let (_tmp, root) = working_fixture();
+        let mut args = wf_args(&root);
+        args["rel"] = json!("logo.bin");
+        let data = cmd_read_working_file(&args).unwrap();
+        let expected = golden_data(include_str!(
+            "../../../scripts/fixtures/bridge/read_working_file_binary.json"
+        ));
+        assert_eq!(
+            data, expected,
+            "read_working_file_binary drifted from the committed fixture — regenerate with \
+             `bun run scripts/fixtures/bridge/capture.ts`"
         );
     }
 }

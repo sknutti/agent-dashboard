@@ -15,6 +15,14 @@
 //! fixtures (install/uninstall/scan_drift/list_installs); the read fixtures come
 //! from a publish-free seed, so this never perturbs them.
 //!
+//! With the optional `working` arg, the `diagnose` skill's `working/base/` is
+//! seeded with a DETERMINISTIC bundle — a fixed primary (`SKILL.md`), one text
+//! ref (`notes.md`), and one binary ref (`logo.bin`, NUL-bearing) — for the
+//! working-file fixtures (`list_working_files`, `read_working_file_{text,binary}`).
+//! These bytes are byte-identical to the bridge's own `working_fixture()` golden
+//! test, so the committed JSON is drift-safe on BOTH sides. Captured in its own
+//! SEPARATE lib, so it never perturbs the read/write fixtures.
+//!
 //! The timestamp is pinned so the tree is byte-stable across machines.
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -33,7 +41,9 @@ fn main() {
         eprintln!("usage: seed_fixture_library <dir> [publish]");
         std::process::exit(2);
     });
-    let publish = std::env::args().nth(2).as_deref() == Some("publish");
+    let mode = std::env::args().nth(2);
+    let publish = mode.as_deref() == Some("publish");
+    let working = mode.as_deref() == Some("working");
     let root = Utf8PathBuf::from(dir);
     std::fs::create_dir_all(&root).expect("create fixture dir");
 
@@ -71,8 +81,29 @@ fn main() {
     if publish {
         publish_diagnose(&root, &diagnose);
     }
+    if working {
+        seed_working_bundle(&root, &diagnose);
+    }
 
     println!("seeded fixture library at {root}");
+}
+
+/// Seed `diagnose`'s `working/base/` with a fixed bundle for the working-file
+/// fixtures: a deterministic primary, one text ref, one binary ref. The bytes
+/// are byte-identical to the bridge's `working_fixture()` golden test, so the
+/// committed `list_working_files`/`read_working_file_{text,binary}` JSON is
+/// asserted from both directions.
+fn seed_working_bundle(root: &Utf8Path, name: &PrimitiveName) {
+    let wc = WorkingCopy::new(LibraryLayout::new(root));
+    // Overwrite the scaffolded primary with content-stable bytes (independent of
+    // scaffold internals), matching the golden test exactly.
+    wc.save_base_file(PrimitiveKind::Skill, name, Utf8Path::new("SKILL.md"), b"---\n---\nbody\n")
+        .expect("seed primary");
+    wc.save_base_file(PrimitiveKind::Skill, name, Utf8Path::new("notes.md"), b"hello\n")
+        .expect("seed text ref");
+    // NUL in the first 8 KiB → git's "binary" heuristic → read returns size only.
+    wc.save_base_file(PrimitiveKind::Skill, name, Utf8Path::new("logo.bin"), &[0xFFu8, 0x00, 0x01, 0x02])
+        .expect("seed binary ref");
 }
 
 /// Make `diagnose` installable: set its allowed_targets and snapshot the current

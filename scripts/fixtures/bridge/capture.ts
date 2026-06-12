@@ -96,4 +96,23 @@ await capture("uninstall_summary", {
   args: { ...wargs, targets: ["claude"], force: false },
 });
 
+// --- working-file fixtures (list_working_files / read_working_file) ----------
+// A SEPARATE lib seeded with `working`, which plants a deterministic
+// `working/base/` bundle on `diagnose`: a fixed primary, one text ref
+// (`notes.md`), one binary ref (`logo.bin`, NUL-bearing). The bytes match the
+// bridge's `working_fixture()` golden test exactly, so these JSON files are
+// asserted from both Rust and TS. The library root rides `path`; the ref path
+// rides `rel` (distinct keys — `path` is owned by `require_library`).
+const wflib = join(mkdtempSync(join(tmpdir(), "lib-working-")), "lib");
+console.log(`seeding working-file library at ${wflib}…`);
+sh(["cargo", "run", "-q", "-p", "prompt-library-bridge", "--example", "seed_fixture_library", "--", wflib, "working"]);
+const wfargs = { path: wflib, kind: "skill", name: "diagnose" };
+await capture("list_working_files", { v: 1, command: "list_working_files", args: wfargs });
+await capture("read_working_file_text", {
+  v: 1, command: "read_working_file", args: { ...wfargs, rel: "notes.md" },
+});
+await capture("read_working_file_binary", {
+  v: 1, command: "read_working_file", args: { ...wfargs, rel: "logo.bin" },
+});
+
 console.log("done.");
