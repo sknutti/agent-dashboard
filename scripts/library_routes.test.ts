@@ -11,6 +11,7 @@ import {
   buildInstall,
   buildUninstall,
   buildAcknowledgeDrift,
+  buildReimport,
   buildInstallsForPrimitive,
   buildDriftBatch,
   buildScanDrift,
@@ -1155,6 +1156,162 @@ describe("registerLibraryRoutes — HTTP wiring + Observability isolation", () =
       body: JSON.stringify({ allowed_targets: ["claude"], display_name: "Diag", author: null }),
     });
     expect([409, 422, 502]).toContain(edit.status); // a library-local failure status
+
+    const summary = await app.request("/api/summary");
+    expect(summary.status).toBe(200); // Observability untouched
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reimport-from-drift route (reimport slice)
+//
+// Reimport pulls a drifted install's on-disk bytes back into the library as a
+// new version. The load-bearing checks: (1) all five ReimportResult variants
+// ride 200 as DATA (only genuine faults map to error codes); (2) the handler
+// takes withWriteLock — UNLIKE its publish sibling — because it re-baselines
+// installs.json (the D1 concurrency tripwire); (3) the write root + home +
+// installs_path are config-resolved, never body-derived; (4) created_at is
+// server-stamped; (5) discard_working / fixed_primary_text flow to the bridge.
+// ---------------------------------------------------------------------------
+
+const REIMPORTED = { kind: "reimported", new_version: "v2", committed: true, commit_error: null };
+const REIMPORT_DIRTY = { kind: "working_copy_dirty" };
+const REIMPORT_BROKEN = {
+  kind: "broken_source",
+  primary_path: "SKILL.md",
+  raw_bytes: [110, 111, 112],
+  parse_error: "missing frontmatter",
+};
+
+describe("buildReimport", () => {
+  test("a clean reimport → 200 with the reimported result + commit fields", async () => {
+    const r = await buildReimport(CONFIGURED, "skill", "diagnose", { source_target: "claude", version_label: "v2" }, okRun(REIMPORTED));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual(REIMPORTED);
+  });
+
+  test("working_copy_dirty rides 200 as DATA (not an error) — the UI confirms then retries", async () => {
+    const r = await buildReimport(CONFIGURED, "skill", "diagnose", { source_target: "claude", version_label: "v2" }, okRun(REIMPORT_DIRTY));
+    expect(r.status).toBe(200);
+    expect((r.body as any).kind).toBe("working_copy_dirty");
+  });
+
+  test("broken_source rides 200 carrying the raw bytes + parse error for the fix sheet", async () => {
+    const r = await buildReimport(CONFIGURED, "skill", "diagnose", { source_target: "claude", version_label: "v2" }, okRun(REIMPORT_BROKEN));
+    expect(r.status).toBe(200);
+    expect((r.body as any).kind).toBe("broken_source");
+    expect((r.body as any).raw_bytes).toEqual([110, 111, 112]);
+  });
+
+  test("an invalid version label → 422 (genuine fault, detail withheld)", async () => {
+    const r = await buildReimport(CONFIGURED, "skill", "diagnose", { source_target: "claude", version_label: "nope" }, errRun(libErr("library_invalid_version")));
+    expect(r.status).toBe(422);
+    expect(JSON.stringify(r.body)).not.toContain("/Users/"); // m4: detail withheld
+  });
+
+  test("no install record → 502 only on a genuine core fault, NOT the not_installed result", async () => {
+    // The `not_installed` RESULT rides 200 (data); a bridge/core fault is the
+    // separate error path. Assert the result path first…
+    const okR = await buildReimport(CONFIGURED, "skill", "diagnose", { source_target: "pi", version_label: "v2" }, okRun({ kind: "not_installed" }));
+    expect(okR.status).toBe(200);
+    expect((okR.body as any).kind).toBe("not_installed");
+  });
+
+  test("forwards source_target→target, label, discard_working, fixed_primary_text + a SERVER-stamped created_at; root/home/installs stay config", async () => {
+    const { run, calls } = captureRun({ ok: true, data: REIMPORTED });
+    await buildReimport(
+      CONFIGURED,
+      "skill",
+      "diagnose",
+      {
+        source_target: "claude",
+        version_label: "v2",
+        notes: "captured drift",
+        discard_working: true,
+        fixed_primary_text: "---\n---\nfixed\n",
+        path: "/etc/evil",
+        home: "/etc/evil-home",
+        installs_path: "/etc/evil-installs",
+        created_at: "1999-01-01T00:00:00Z",
+      } as any,
+      run,
+      "2026-06-12T00:00:00Z",
+    );
+    expect(calls[0]!.command).toBe("reimport_install");
+    expect(calls[0]!.args).toMatchObject({
+      path: "/libs/x", // config root, NOT the body's /etc/evil
+      home: "/home/test", // config, NOT body
+      installs_path: "/data/installs.json", // config, NOT body
+      kind: "skill",
+      name: "diagnose",
+      target: "claude", // source_target → the bridge's single-target `target`
+      version_label: "v2",
+      notes: "captured drift",
+      discard_working: true,
+      fixed_primary_text: "---\n---\nfixed\n",
+      created_at: "2026-06-12T00:00:00Z", // injected `now`, NOT the body's 1999
+    });
+  });
+
+  test("absent discard_working / fixed_primary_text default to false / null on the wire", async () => {
+    const { run, calls } = captureRun({ ok: true, data: REIMPORTED });
+    await buildReimport(CONFIGURED, "skill", "diagnose", { source_target: "claude", version_label: "v2" }, run, "2026-06-12T00:00:00Z");
+    expect(calls[0]!.args.discard_working).toBe(false);
+    expect(calls[0]!.args.fixed_primary_text).toBeNull();
+  });
+
+  test("unconfigured → 409 WITHOUT spawning (needs the layout to snapshot)", async () => {
+    const { run, calls } = captureRun({ ok: true, data: REIMPORTED });
+    const r = await buildReimport(UNCONFIGURED, "skill", "diagnose", { source_target: "claude", version_label: "v2" }, run);
+    expect(r.status).toBe(409);
+    expect((r.body as any).code).toBe("library_unconfigured");
+    expect(calls).toHaveLength(0);
+  });
+
+  // D1 tripwire — reimport DIVERGES from its publish sibling: it must hold the
+  // write lock because it re-baselines installs.json. A reimport and an
+  // acknowledge dispatched concurrently must run strictly one-at-a-time.
+  test("D1: reimport serializes against a concurrent ledger write (acknowledge)", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const slowRun: typeof runBridge = (async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((res) => setTimeout(res, 5));
+      active -= 1;
+      return { ok: true, data: REIMPORTED };
+    }) as any;
+    await Promise.all([
+      buildReimport(CONFIGURED, "skill", "diagnose", { source_target: "claude", version_label: "v2" }, slowRun),
+      buildAcknowledgeDrift(CONFIGURED, "skill", "diagnose", { target: "claude" }, slowRun),
+    ]);
+    expect(maxActive).toBe(1); // never two ledger writers in flight at once
+  });
+});
+
+describe("registerLibraryRoutes — reimport HTTP wiring", () => {
+  test("the reimport route is wired (POST …/reimport)", async () => {
+    const app = new Hono();
+    registerLibraryRoutes(app, () => CONFIGURED);
+    const res = await app.request("/api/library/primitives/skill/diagnose/reimport", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+      body: JSON.stringify({ source_target: "claude", version_label: "v2" }),
+    });
+    expect(res.status).not.toBe(404);
+  });
+
+  test("a failing reimport is route-local: a sibling Observability route stays 200", async () => {
+    const app = new Hono();
+    app.get("/api/summary", (c) => c.json({ ok: true }));
+    registerLibraryRoutes(app, () => ({ ...CONFIGURED, bridgePath: "/no/such/bridge" }));
+
+    const reimport = await app.request("/api/library/primitives/skill/diagnose/reimport", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+      body: JSON.stringify({ source_target: "claude", version_label: "v2" }),
+    });
+    expect([409, 422, 502]).toContain(reimport.status); // a library-local failure status
 
     const summary = await app.request("/api/summary");
     expect(summary.status).toBe(200); // Observability untouched

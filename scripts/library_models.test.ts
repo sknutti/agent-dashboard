@@ -10,6 +10,7 @@ import {
   parseWorkingFileBytes,
   parsePrimitiveVersionView,
   parsePublishResult,
+  parseReimportResult,
   parseMetadataUpdateResult,
   parseTargetView,
   parseOverlayLists,
@@ -421,5 +422,60 @@ describe("parseOverlayLists (per-target overlay surface)", () => {
 
   test("rejects a non-array top level", () => {
     expect(() => parseOverlayLists({ target: "claude", paths: [] })).toThrow(BridgeShapeError);
+  });
+});
+
+describe("parseReimportResult (tagged union — every variant rides the ok envelope)", () => {
+  test("reimported carries the new label + the non-fatal commit contract", () => {
+    expect(
+      parseReimportResult({ kind: "reimported", new_version: "v2", committed: true, commit_error: null }),
+    ).toEqual({ kind: "reimported", new_version: "v2", committed: true, commit_error: null });
+  });
+
+  test("reimported with a commit failure → committed:false carrying the git message", () => {
+    const r = parseReimportResult({
+      kind: "reimported",
+      new_version: "v3",
+      committed: false,
+      commit_error: "Author identity unknown",
+    });
+    expect(r).toMatchObject({ kind: "reimported", committed: false, commit_error: "Author identity unknown" });
+  });
+
+  test("working_copy_dirty is a bare tagged variant", () => {
+    expect(parseReimportResult({ kind: "working_copy_dirty" })).toEqual({ kind: "working_copy_dirty" });
+  });
+
+  test("broken_source carries the primary path, raw bytes, and parse error", () => {
+    expect(
+      parseReimportResult({
+        kind: "broken_source",
+        primary_path: "SKILL.md",
+        raw_bytes: [110, 111, 112],
+        parse_error: "missing frontmatter",
+      }),
+    ).toEqual({
+      kind: "broken_source",
+      primary_path: "SKILL.md",
+      raw_bytes: [110, 111, 112],
+      parse_error: "missing frontmatter",
+    });
+  });
+
+  test("not_installed / install_missing are bare tagged variants", () => {
+    expect(parseReimportResult({ kind: "not_installed" })).toEqual({ kind: "not_installed" });
+    expect(parseReimportResult({ kind: "install_missing" })).toEqual({ kind: "install_missing" });
+  });
+
+  test("an unknown discriminant throws (a core serde rename must not surface as undefined)", () => {
+    expect(() => parseReimportResult({ kind: "reimagined" })).toThrow(BridgeShapeError);
+    expect(() => parseReimportResult(null)).toThrow(BridgeShapeError);
+  });
+
+  test("rejects a reimported missing its commit fields, or broken_source with non-numeric bytes", () => {
+    expect(() => parseReimportResult({ kind: "reimported", new_version: "v2" })).toThrow(BridgeShapeError);
+    expect(() =>
+      parseReimportResult({ kind: "broken_source", primary_path: "SKILL.md", raw_bytes: ["x"], parse_error: "e" }),
+    ).toThrow(BridgeShapeError);
   });
 });

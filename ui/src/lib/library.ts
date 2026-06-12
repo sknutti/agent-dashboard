@@ -13,6 +13,7 @@ import type {
   LibraryInstalledTarget,
   LibraryTargetOutcome,
   LibraryUninstallOutcome,
+  LibraryReimportResult,
 } from "./api";
 
 /** All four Kinds, shown equally (ADR-0007 — no Kind is privileged). */
@@ -219,6 +220,31 @@ export function uninstallCue(outcome: LibraryUninstallOutcome): Cue {
       return { label: "was not installed", tone: "default", glyph: "○" };
     case "drifted":
       return { label: "drifted — needs force", tone: "amber", glyph: "●" };
+  }
+}
+
+/** Post-reimport feedback. Reimport pulls a drifted install's on-disk bytes back
+ *  into the library as a new version (the INVERSE of install). Every variant gets
+ *  a VISIBLE, DISTINCT-by-label cue so a button press is never a silent dead-end;
+ *  the two interactive results (`working_copy_dirty`, `broken_source`) hand off to
+ *  a dialog/fix-sheet, but their cue still names the reason. The `reimported`
+ *  commit nuance mirrors `publishStateCue` (the snapshot always landed; the cue
+ *  describes only the advisory git commit). Colorblind-safe (label + glyph,
+ *  Okabe-Ito-safe tones, never a bare red/green — Scott is red/green CVD). */
+export function reimportResultCue(result: LibraryReimportResult): Cue {
+  switch (result.kind) {
+    case "reimported":
+      if (result.committed) return { label: "reimported · committed", tone: "default", glyph: "✓" };
+      if (result.commit_error) return { label: "reimported · not committed", tone: "amber", glyph: "●" };
+      return { label: "reimported", tone: "default", glyph: "✓" };
+    case "working_copy_dirty":
+      return { label: "working copy has unpublished edits", tone: "amber", glyph: "●" };
+    case "broken_source":
+      return { label: "on-disk file won't parse — fix & retry", tone: "amber", glyph: "✎" };
+    case "not_installed":
+      return { label: "not installed", tone: "default", glyph: "○" };
+    case "install_missing":
+      return { label: "install path is gone", tone: "cyan", glyph: "⊘" };
   }
 }
 
