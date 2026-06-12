@@ -47,6 +47,32 @@ export type WorkingContent =
   | { kind: "md"; frontmatter: string; body: string }
   | { kind: "toml"; text: string };
 
+// ---------------------------------------------------------------------------
+// Working-file (editor) wire models (working-copy slice)
+//
+// Mirror core's `working_files.rs` serde exactly: `WorkingFileEntry` (the bundle
+// list) and the `WorkingFileBytes` tagged union (`#[serde(tag="kind")]`). Binary
+// files carry their size ONLY — bytes are never streamed — so the editor must
+// branch on `kind` and render a placeholder, not a textarea. `size_bytes`/`size`
+// saturate at u32::MAX on the Rust side (specta legacy); they ride the JSON wire
+// as plain numbers.
+// ---------------------------------------------------------------------------
+
+export type WorkingFileRole = "primary" | "ref";
+
+/** One entry in a primitive's `working/base/` bundle list. */
+export interface WorkingFileEntry {
+  path: string;
+  role: WorkingFileRole;
+  is_text: boolean;
+  size_bytes: number;
+}
+
+/** Bytes of one ref file — tagged on `kind`. Binary files carry size only. */
+export type WorkingFileBytes =
+  | { kind: "text"; text: string; ext: string | null }
+  | { kind: "binary"; size: number };
+
 export interface PrimitiveMetadata {
   allowed_targets: TargetName[];
   created_at: string;
@@ -455,4 +481,49 @@ export function parseInstalledTargets(v: unknown): InstalledTarget[] {
 export function parseImportResult(v: unknown): ImportResult {
   if (!isObject(v)) fail("ImportResult");
   return { imported: asNumber(v.imported, "ImportResult.imported") };
+}
+
+// ---------------------------------------------------------------------------
+// Working-file (editor) validators
+//
+// The discriminant is load-bearing: `role` for the list, `kind` for the bytes
+// union. A serde rename (e.g. `text`→`utf8`) must throw a typed BridgeShapeError
+// here, never surface as `undefined` in the editor pane. A `binary` payload
+// legitimately carries no `text` — size only — and must parse fine.
+// ---------------------------------------------------------------------------
+
+function parseWorkingFileRole(v: unknown): WorkingFileRole {
+  if (v === "primary" || v === "ref") return v;
+  return fail("WorkingFileRole");
+}
+
+function parseWorkingFileEntry(v: unknown): WorkingFileEntry {
+  if (!isObject(v)) fail("WorkingFileEntry");
+  return {
+    path: asString(v.path, "WorkingFileEntry.path"),
+    role: parseWorkingFileRole(v.role),
+    is_text: asBool(v.is_text, "WorkingFileEntry.is_text"),
+    size_bytes: asNumber(v.size_bytes, "WorkingFileEntry.size_bytes"),
+  };
+}
+
+export function parseWorkingFileEntries(v: unknown): WorkingFileEntry[] {
+  if (!Array.isArray(v)) fail("WorkingFileEntry[]");
+  return v.map(parseWorkingFileEntry);
+}
+
+export function parseWorkingFileBytes(v: unknown): WorkingFileBytes {
+  if (!isObject(v)) fail("WorkingFileBytes");
+  switch (v.kind) {
+    case "text":
+      return {
+        kind: "text",
+        text: asString(v.text, "WorkingFileBytes.text"),
+        ext: asNullableString(v.ext, "WorkingFileBytes.ext"),
+      };
+    case "binary":
+      return { kind: "binary", size: asNumber(v.size, "WorkingFileBytes.size") };
+    default:
+      return fail("WorkingFileBytes (unknown kind)");
+  }
 }

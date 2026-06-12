@@ -6,6 +6,8 @@ import {
   parseDriftReports,
   parseInstalledTargets,
   parseImportResult,
+  parseWorkingFileEntries,
+  parseWorkingFileBytes,
 } from "./library_models.ts";
 
 // These parsers guard the WRITE-side process boundary. The load-bearing check
@@ -169,5 +171,72 @@ describe("parseImportResult", () => {
   test("rejects a non-number imported count", () => {
     expect(() => parseImportResult({ imported: "119" })).toThrow(BridgeShapeError);
     expect(() => parseImportResult({})).toThrow(BridgeShapeError);
+  });
+});
+
+describe("parseWorkingFileEntries", () => {
+  test("parses a primary-first list with both roles", () => {
+    const entries = [
+      { path: "SKILL.md", role: "primary", is_text: true, size_bytes: 13 },
+      { path: "logo.bin", role: "ref", is_text: false, size_bytes: 4 },
+      { path: "notes.md", role: "ref", is_text: true, size_bytes: 6 },
+    ];
+    const r = parseWorkingFileEntries(entries);
+    expect(r).toHaveLength(3);
+    expect(r[0]).toEqual({ path: "SKILL.md", role: "primary", is_text: true, size_bytes: 13 });
+    expect(r[1]!.role).toBe("ref");
+    expect(r[1]!.is_text).toBe(false);
+  });
+
+  test("an empty list parses to an empty array (absent working/base)", () => {
+    expect(parseWorkingFileEntries([])).toEqual([]);
+  });
+
+  test("rejects an unknown role discriminant (serde rename guard)", () => {
+    expect(() =>
+      parseWorkingFileEntries([{ path: "x.md", role: "secondary", is_text: true, size_bytes: 1 }]),
+    ).toThrow(BridgeShapeError);
+  });
+
+  test("rejects an entry missing a required field", () => {
+    expect(() =>
+      parseWorkingFileEntries([{ path: "x.md", role: "ref", is_text: true }]),
+    ).toThrow(BridgeShapeError);
+    expect(() => parseWorkingFileEntries({})).toThrow(BridgeShapeError);
+  });
+});
+
+describe("parseWorkingFileBytes", () => {
+  test("parses the text variant with a present extension", () => {
+    expect(parseWorkingFileBytes({ kind: "text", text: "hello\n", ext: "md" })).toEqual({
+      kind: "text",
+      text: "hello\n",
+      ext: "md",
+    });
+  });
+
+  test("parses the text variant with a null extension (no dot in the path)", () => {
+    expect(parseWorkingFileBytes({ kind: "text", text: "x", ext: null })).toEqual({
+      kind: "text",
+      text: "x",
+      ext: null,
+    });
+  });
+
+  test("parses the binary variant — size only, no bytes", () => {
+    const r = parseWorkingFileBytes({ kind: "binary", size: 4 });
+    expect(r).toEqual({ kind: "binary", size: 4 });
+    if (r.kind === "binary") expect(r.size).toBe(4);
+  });
+
+  test("rejects an unknown kind discriminant (serde rename guard)", () => {
+    expect(() => parseWorkingFileBytes({ kind: "utf8", text: "x", ext: null })).toThrow(
+      BridgeShapeError,
+    );
+    expect(() => parseWorkingFileBytes({ text: "x" })).toThrow(BridgeShapeError);
+  });
+
+  test("rejects a text variant missing its text", () => {
+    expect(() => parseWorkingFileBytes({ kind: "text", ext: "md" })).toThrow(BridgeShapeError);
   });
 });
