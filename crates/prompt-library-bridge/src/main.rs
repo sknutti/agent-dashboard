@@ -46,9 +46,10 @@ use prompt_library_core::{
         list_overlays, read_primitive_detail, read_primitive_for_target,
         read_primitive_version_view, revert_primitive_to_version,
     },
-    install, listing::list_primitives, reimport_install_as_version, scan_drift_for_primitive,
-    scan_record, uninstall, update_primitive_metadata, working_files, DriftReport,
-    Error as CoreError, InstallPaths, InstallRequest, InstallsFile, KindInfoTable, LibraryLayout,
+    find_in_library, install, listing::list_primitives, reimport_install_as_version,
+    scan_drift_for_primitive, scan_record, uninstall, update_primitive_metadata, working_files,
+    DriftReport, Error as CoreError, FindOptions, InstallPaths, InstallRequest, InstallsFile,
+    KindInfoTable, LibraryLayout,
     MetadataUpdate, PrimitiveKind, PrimitiveName, ReimportRequest, ReimportResult, Target,
     UninstallRequest, VersionLabel, VersionMetadata, VersionStore, WorkingCopy,
     INSTALLS_FORMAT_VERSION,
@@ -112,6 +113,11 @@ async fn dispatch(command: &str, args: &Value) -> Result<Value, LibraryError> {
         "target_info" => cmd_target_info(),
         "list_primitives" => cmd_list_primitives(args),
         "primitive_detail" => cmd_primitive_detail(args),
+        // Search slice. Read-only, sync — `find_in_library` walks each
+        // primitive's working-copy PRIMARY file with std::fs only (no ref files,
+        // no commit, no mutex, no secrets). An empty query short-circuits in-core
+        // to `[]`, so there is no special-casing here.
+        "find_in_library" => cmd_find_in_library(args),
         // Write/drift slice. All sync core work — no `.await`; they touch
         // std::fs only (the current_thread runtime is only needed by the async
         // git calls in `library_status`).
@@ -230,6 +236,25 @@ fn cmd_primitive_detail(args: &Value) -> Result<Value, LibraryError> {
     }
     let detail = read_primitive_detail(layout, kind, &name).map_err(map_core_error)?;
     serde_json::to_value(detail).map_err(serialize_err)
+}
+
+/// Library-wide content search across every primitive's working-copy PRIMARY
+/// file (ref files are excluded in-core). Read-only: one `std::fs::read` per
+/// primitive, capped at 500 hits. An empty `query` returns `[]` (core
+/// short-circuits without walking). `case_sensitive` is an optional, forward-
+/// compatible toggle defaulting to `false` (the interactive default) so a future
+/// UI toggle needs no bridge change. The only failure mode is a read fault
+/// (`CoreError::Io` → `library_unreadable`), already mapped.
+fn cmd_find_in_library(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let query = args.get("query").and_then(Value::as_str).unwrap_or("");
+    let case_sensitive = args
+        .get("case_sensitive")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let hits = find_in_library(LibraryLayout::new(&root), query, FindOptions { case_sensitive })
+        .map_err(map_core_error)?;
+    serde_json::to_value(hits).map_err(serialize_err)
 }
 
 /// Lightweight, informational git/marker status. Unlike list/detail this NEVER
@@ -1631,6 +1656,46 @@ mod tests {
         assert_eq!(data["working"]["kind"], json!("md"));
         assert!(data["working"]["frontmatter"].is_string());
         assert!(data["metadata"]["allowed_targets"].is_array());
+    }
+
+    #[tokio::test]
+    async fn find_in_library_returns_matching_hits() {
+        let (_tmp, root) = fixture_library();
+        // Seed the diagnose skill's primary file with a needle on a known line.
+        let n = PrimitiveName::try_new("diagnose").unwrap();
+        WorkingCopy::new(LibraryLayout::new(&root))
+            .save_base_file(
+                PrimitiveKind::Skill,
+                &n,
+                camino::Utf8Path::new("SKILL.md"),
+                b"---\n---\nfirst\nneedle here\n",
+            )
+            .unwrap();
+        let mut args = args_path(&root);
+        args["query"] = json!("needle");
+        let data = cmd_find_in_library(&args).unwrap();
+        let arr = data.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["kind"], json!("skill"));
+        assert_eq!(arr[0]["name"], json!("diagnose"));
+        assert_eq!(arr[0]["line_number"], json!(4));
+        assert_eq!(arr[0]["line_text"], json!("needle here"));
+    }
+
+    #[tokio::test]
+    async fn find_in_library_empty_query_returns_empty() {
+        let (_tmp, root) = fixture_library();
+        let mut args = args_path(&root);
+        args["query"] = json!("");
+        let data = cmd_find_in_library(&args).unwrap();
+        assert_eq!(data, json!([]));
+    }
+
+    #[tokio::test]
+    async fn find_in_library_unconfigured_path_is_unconfigured() {
+        // No `path` arg at all → require_library refuses before any fs walk.
+        let err = cmd_find_in_library(&json!({ "query": "needle" })).unwrap_err();
+        assert_eq!(err.code, "library_unconfigured");
     }
 
     #[tokio::test]

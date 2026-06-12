@@ -488,6 +488,20 @@ export const getLibraryPrimitiveDetail = (kind: string, name: string) =>
     `/api/library/primitives/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`,
   );
 
+/** One content-search match — mirrors core's `find::FindHit` (scripts/
+ *  library_models.ts `SearchResult`). Each hit is one matching line in one
+ *  primitive's working-copy PRIMARY file (ref files excluded in-core).
+ *  `line_number` is 1-based; `line_text` is truncated with `…` past 500 chars. */
+export interface LibrarySearchResult {
+  kind: LibraryKind;
+  name: string;
+  line_number: number;
+  line_text: string;
+}
+
+export const searchLibrary = (q: string) =>
+  getJson<LibrarySearchResult[]>(`/api/library/search?q=${encodeURIComponent(q)}`);
+
 // ── Prompt Library install / drift (write-flow slice, ADR-0008) ─────────────
 // Mirror the bridge write models in scripts/library_models.ts (real Rust serde).
 // Every per-target outcome is tagged on `kind`; `colliding_content` / `drifted`

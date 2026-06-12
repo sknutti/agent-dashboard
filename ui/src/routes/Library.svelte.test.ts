@@ -642,3 +642,79 @@ describe("Library route — reimport-from-drift", () => {
     }));
   });
 });
+
+describe("Library route — content search (search slice)", () => {
+  const HIT = { kind: "command" as const, name: "deploy", line_number: 3, line_text: "deploy the thing" };
+
+  test("typing debounces to a SINGLE fetch with the final term (not per keystroke)", async () => {
+    mockValidLibrary();
+    const search = vi.spyOn(api, "searchLibrary").mockResolvedValue([HIT]);
+    render(Library);
+    const box = await screen.findByPlaceholderText("Search file contents");
+    // Three rapid keystrokes (well under the 250ms debounce) coalesce to one timer.
+    await fireEvent.input(box, { target: { value: "dep" } });
+    await fireEvent.input(box, { target: { value: "deplo" } });
+    await fireEvent.input(box, { target: { value: "deploy" } });
+    // The result surfaces only after the debounce settles + the fetch resolves.
+    expect(await screen.findByText("deploy the thing")).toBeTruthy();
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(search).toHaveBeenCalledWith("deploy");
+  });
+
+  test("a whitespace-only term fetches nothing and shows no results section", async () => {
+    mockValidLibrary();
+    const search = vi.spyOn(api, "searchLibrary").mockResolvedValue([HIT]);
+    render(Library);
+    const box = await screen.findByPlaceholderText("Search file contents");
+    await fireEvent.input(box, { target: { value: "   " } });
+    // Give any (incorrectly scheduled) debounce time to fire.
+    await new Promise((r) => setTimeout(r, 300));
+    expect(search).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Content matches/)).toBeNull();
+  });
+
+  test("results render name + kind + line, and are independent of the name filter", async () => {
+    mockValidLibrary();
+    vi.spyOn(api, "searchLibrary").mockResolvedValue([HIT]);
+    render(Library);
+    const box = await screen.findByPlaceholderText("Search file contents");
+    await fireEvent.input(box, { target: { value: "deploy" } });
+    expect(await screen.findByText("Content matches")).toBeTruthy();
+    expect(screen.getByText("deploy the thing")).toBeTruthy();
+    expect(screen.getByText("L3")).toBeTruthy();
+    // The name-filter input is untouched — both filters are separate state.
+    expect((screen.getByPlaceholderText("Filter primitives") as HTMLInputElement).value).toBe("");
+  });
+
+  test("clicking a result selects the matched primitive (loads its detail)", async () => {
+    mockValidLibrary();
+    vi.spyOn(api, "searchLibrary").mockResolvedValue([HIT]);
+    const detailSpy = vi.spyOn(api, "getLibraryPrimitiveDetail");
+    render(Library);
+    const box = await screen.findByPlaceholderText("Search file contents");
+    await fireEvent.input(box, { target: { value: "deploy" } });
+    await fireEvent.click(await screen.findByText("deploy the thing"));
+    // Selecting routes detail to (command, deploy) — the matched primitive.
+    expect(detailSpy).toHaveBeenCalledWith("command", "deploy");
+  });
+
+  test("a non-idle empty result shows the 'No content matches' state", async () => {
+    mockValidLibrary();
+    vi.spyOn(api, "searchLibrary").mockResolvedValue([]);
+    render(Library);
+    const box = await screen.findByPlaceholderText("Search file contents");
+    await fireEvent.input(box, { target: { value: "zzz" } });
+    expect(await screen.findByText(/No content matches/)).toBeTruthy();
+  });
+
+  test("a fetch error shows the error state (Retry), not a blank panel", async () => {
+    mockValidLibrary();
+    vi.spyOn(api, "searchLibrary").mockRejectedValue(new Error("boom"));
+    render(Library);
+    const box = await screen.findByPlaceholderText("Search file contents");
+    await fireEvent.input(box, { target: { value: "boom" } });
+    // The honest error EmptyState (amber glyph + Retry) — distinct from the
+    // genuinely-empty "No content matches" state, which has no Retry button.
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeTruthy();
+  });
+});

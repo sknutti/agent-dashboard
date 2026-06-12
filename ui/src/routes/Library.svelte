@@ -29,6 +29,7 @@
     setCurrentVersion,
     revertToVersion,
     readPrimitiveVersion,
+    searchLibrary,
     LibraryApiError,
     type LibraryKind,
     type LibraryTarget,
@@ -89,6 +90,47 @@
   const filtered = $derived(filterPrimitives(primitives, query));
   const groups = $derived(groupByKind(filtered));
   const filtering = $derived(query.trim() !== "");
+
+  // ── content search (search slice) ─────────────────────────────────────────
+  // DISTINCT from the `query` name-filter above: this searches each primitive's
+  // working-copy PRIMARY file CONTENT via the Rust `find_in_library` bridge. The
+  // typed term updates immediately (input value); a DEBOUNCED copy drives the
+  // resource key so we spawn at most one bridge process per ~250ms pause, not
+  // per keystroke. No useEffect — the debounce is a timer cleared in the input
+  // handler; the refetch is resource()-key-driven.
+  const SEARCH_PREFIX = "library:search:";
+  const SEARCH_IDLE = `${SEARCH_PREFIX}idle`;
+  const SEARCH_DEBOUNCE_MS = 250;
+  let searchTerm = $state("");
+  let debouncedTerm = $state("");
+  let searchTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function onSearchInput(value: string): void {
+    searchTerm = value;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      debouncedTerm = searchTerm;
+    }, SEARCH_DEBOUNCE_MS);
+  }
+  function clearSearch(): void {
+    clearTimeout(searchTimer);
+    searchTerm = "";
+    debouncedTerm = "";
+  }
+
+  // An empty (or unconfigured) term short-circuits to the idle key → no bridge
+  // call. The trimmed needle is encoded into the key so the fetcher reads it
+  // back from `k` (never from reactive state inside run() — see resource.svelte).
+  const searchKey = $derived.by(() => {
+    const q = debouncedTerm.trim();
+    return valid && q !== "" ? `${SEARCH_PREFIX}${q}` : SEARCH_IDLE;
+  });
+  const searchRes = resource(
+    () => searchKey,
+    (k) => (k === SEARCH_IDLE ? Promise.resolve([]) : searchLibrary(k.slice(SEARCH_PREFIX.length))),
+  );
+  const searching = $derived(debouncedTerm.trim() !== "");
+  const searchHits = $derived(searchRes.data ?? []);
 
   function isOpen(kind: string): boolean {
     return filtering || expanded.has(kind);
@@ -785,6 +827,58 @@
           <Icon name="search" size={14} />
           <input type="text" bind:value={query} placeholder="Filter primitives" />
         </label>
+        <!-- Content search (search slice): distinct from the name filter above —
+             searches each primitive's working-copy primary file via the bridge. -->
+        <label class="search content-search">
+          <Icon name="file-text" size={14} />
+          <input
+            type="text"
+            value={searchTerm}
+            oninput={(e) => onSearchInput(e.currentTarget.value)}
+            placeholder="Search file contents"
+            aria-label="Search primitive file contents"
+          />
+          {#if searchTerm}
+            <button type="button" class="search-clear" title="Clear search" onclick={clearSearch}>
+              <Icon name="x" size={13} />
+            </button>
+          {/if}
+        </label>
+
+        {#if searching}
+          <section class="search-results" aria-label="Content search results">
+            {#if searchRes.loading && !searchRes.data}
+              <div class="muted">Searching…</div>
+            {:else if searchRes.error}
+              <EmptyState icon="alert" title="Search failed" error={true} onRetry={searchRes.reload} />
+            {:else if !searchHits.length}
+              <EmptyState icon="search" title="No content matches" message={`Nothing in any primitive matches “${debouncedTerm.trim()}”.`} />
+            {:else}
+              <div class="search-head">
+                <span class="group-label">Content matches</span>
+                <span class="group-count">{searchHits.length}</span>
+              </div>
+              <div class="hit-list">
+                {#each searchHits as hit, i (hit.kind + "/" + hit.name + ":" + hit.line_number + ":" + i)}
+                  {@const hitKey = selectionKey(hit.kind, hit.name)}
+                  <button
+                    type="button"
+                    class="hit"
+                    class:selected={selected === hitKey}
+                    onclick={() => selectPrimitive(hitKey)}
+                  >
+                    <span class="hit-head">
+                      <span class="hit-name">{hit.name}</span>
+                      <Badge tone={kindTone(hit.kind)}>{KIND_LABELS[hit.kind]}</Badge>
+                      <small class="hit-line">L{hit.line_number}</small>
+                    </span>
+                    <code class="hit-text">{hit.line_text}</code>
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </section>
+        {/if}
 
         {#if primitivesRes.loading && !primitivesRes.data}
           <div class="muted">Loading…</div>
@@ -1388,6 +1482,79 @@
     background: transparent;
     color: var(--text);
     font-size: 12px;
+  }
+  /* Content search box — sits just below the name filter, visually distinct. */
+  .content-search {
+    margin-top: 6px;
+  }
+  .search-clear {
+    display: flex;
+    align-items: center;
+    color: var(--text-subtle);
+    border-radius: 5px;
+    padding: 1px;
+  }
+  .search-clear:hover {
+    color: var(--text);
+  }
+  /* Content-search results — a flat, line-oriented list (NOT the kind tree). */
+  .search-results {
+    margin-top: 12px;
+    display: grid;
+    gap: 6px;
+  }
+  .search-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 0 6px;
+  }
+  .hit-list {
+    display: grid;
+    gap: 3px;
+  }
+  .hit {
+    display: grid;
+    gap: 4px;
+    width: 100%;
+    padding: 8px;
+    border-radius: 7px;
+    color: var(--text-dim);
+    text-align: left;
+  }
+  .hit:hover,
+  .hit.selected {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+  .hit-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+  }
+  .hit-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+  }
+  .hit-line {
+    margin-left: auto;
+    color: var(--text-subtle);
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+  .hit-text {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-subtle);
+    font-family: var(--font-mono);
+    font-size: 11px;
   }
   .kind-groups {
     display: grid;
