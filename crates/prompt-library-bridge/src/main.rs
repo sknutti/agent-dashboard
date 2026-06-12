@@ -64,16 +64,43 @@ use prompt_library_core::{
     ReimportRequest, ReimportResult, RenamePrimitiveRequest, Target, UninstallRequest,
     VersionLabel, VersionMetadata, VersionStore, WorkingCopy, INSTALLS_FORMAT_VERSION,
 };
+use std::time::Duration;
+
 use prompt_library_core::remote_url::{validate_remote_url, RemoteUrlError};
 use prompt_library_git::{
-    git_ops::{current_branch, git_add_all, git_commit, git_diff_changed_files},
+    askpass::{init_askpass_script, AskpassError},
+    conflict::{
+        is_rebase_in_progress, list_unmerged_paths, read_conflict_side, rebase_abort,
+        rebase_continue, resolve_with_side, Side,
+    },
+    file_scan::FileFinding,
+    git_ops::{
+        current_branch, git_add_all, git_commit, git_diff_changed_files, git_pull, git_push,
+        git_push_with_upstream, remote_branch_exists,
+    },
+    push_gate::scan_pending_push,
     runner::{GitRunner, RunnerError, TokioProcessRunner},
+    secret_scan::FindingKind,
 };
 use prompt_library_secrets::{redact_pat, InMemoryStore, SecretError, SecretStore};
 #[cfg(target_os = "macos")]
 use prompt_library_secrets::KeychainStore;
 
 const PROTOCOL_VERSION: u32 = 1;
+
+/// Empty-tree blob hash — the "from" side of a diff range for the first push of
+/// a branch (`<empty-tree>..HEAD` enumerates every path so the secret-scan gate
+/// sees the whole initial import, not just commits since a non-existent
+/// upstream). Ported verbatim from the reference (`commands.rs:1646`).
+const EMPTY_TREE_HASH: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// Wall-clock cap on an interactive `git pull --rebase`. Longer than the
+/// reference's 2 s launch-hook cap (an interactive user-initiated pull should
+/// tolerate a slow-but-healthy network) but bounded so a hung network can't
+/// wedge the route's write chain forever. The TS NETWORK_TIMEOUT (Phase 3) is
+/// the outer SIGKILL bound — set larger than this so this inner timeout fires
+/// first with a clean `git_timed_out`, never a torn SIGKILL (D5).
+const PULL_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -237,6 +264,33 @@ async fn dispatch(command: &str, args: &Value) -> Result<Value, LibraryError> {
         "set_pat" => cmd_set_pat(args, secret_store(args)?.as_ref()),
         "delete_pat" => cmd_delete_pat(secret_store(args)?.as_ref()),
         "get_remote_status" => cmd_get_remote_status(args, secret_store(args)?.as_ref()),
+        // Git-remote-sync Phase 2 — the network EGRESS break + the stateful
+        // rebase-conflict family. `push_now`/`pull_now` get the PAT from a DI'd
+        // `SecretStore` and deliver it env→askpass→git child (never argv/log/
+        // return — D6); they re-write the askpass script into the TS-injected
+        // `askpass_dir` per-invocation (idempotent, no launch hook — D3). The
+        // conflict family (`is_pull_paused`…`abort_pull`) is secrets-free +
+        // network-free: it reads the mid-rebase state that lives in `.git`, not
+        // in this one-shot process (the saving grace that lets a later
+        // invocation continue a rebase a prior one paused — D4). The TS route
+        // serializes the whole family under the write mutex (D5). `pull_now`'s
+        // conflict outcome rides the OK envelope as data (D7), not an error.
+        "scan_before_push" => cmd_scan_before_push(args).await,
+        "count_unpushed_commits" => cmd_count_unpushed_commits(args).await,
+        "push_now" => {
+            let store = secret_store(args)?;
+            cmd_push_now(args, store.as_ref()).await
+        }
+        "pull_now" => {
+            let store = secret_store(args)?;
+            cmd_pull_now(args, store.as_ref()).await
+        }
+        "is_pull_paused" => cmd_is_pull_paused(args),
+        "list_pull_conflicts" => cmd_list_pull_conflicts(args).await,
+        "read_conflict_blob" => cmd_read_conflict_blob(args).await,
+        "resolve_conflict" => cmd_resolve_conflict(args).await,
+        "continue_pull" => cmd_continue_pull(args).await,
+        "abort_pull" => cmd_abort_pull(args).await,
         other => Err(LibraryError::new(
             "unknown_command",
             "unknown bridge command",
@@ -1822,15 +1876,12 @@ fn cmd_get_remote_status(args: &Value, store: &dyn SecretStore) -> Result<Value,
 
 /// Construct the PAT secret store for a git-sync command. Real `KeychainStore`
 /// by default (verified headless across one-shot processes in Phase 0); an
-/// `InMemoryStore` when `secret_store: "memory"` (arg) or
-/// `CC_LIBRARY_SECRET_STORE=memory` (env) is set, so `cargo test` and CI never
-/// block on the keychain consent prompt. This is the ONLY constructor of a
-/// `SecretStore` in the bridge — called only by the four arms above (and the
-/// Phase-2 push/pull family), keeping every other command path secrets-free.
+/// `InMemoryStore` for tests (see `use_memory_store`). This is the ONLY
+/// constructor of a `SecretStore` in the bridge — called only by the four arms
+/// above (and the Phase-2 push/pull family), keeping every other command path
+/// secrets-free.
 fn secret_store(args: &Value) -> Result<Box<dyn SecretStore>, LibraryError> {
-    let use_memory = args.get("secret_store").and_then(Value::as_str) == Some("memory")
-        || std::env::var("CC_LIBRARY_SECRET_STORE").as_deref() == Ok("memory");
-    if use_memory {
+    if use_memory_store(args) {
         return Ok(Box::new(InMemoryStore::new()));
     }
     #[cfg(target_os = "macos")]
@@ -1842,9 +1893,33 @@ fn secret_store(args: &Value) -> Result<Box<dyn SecretStore>, LibraryError> {
         Err(LibraryError::new(
             "secret_store_unavailable",
             "no secret store available on this platform",
-            "KeychainStore is macOS-only; set secret_store=memory for tests",
+            "KeychainStore is macOS-only; set CC_LIBRARY_SECRET_STORE=memory for tests",
         ))
     }
+}
+
+/// Whether to use the test-only in-memory secret store instead of the keychain.
+///
+/// Two switches, deliberately asymmetric (security review, Slice 8 Phase 2):
+/// - **`CC_LIBRARY_SECRET_STORE=memory` (env):** honored in ANY build. Flipping
+///   it requires control of the server process environment, which is already
+///   out of the threat model.
+/// - **`secret_store: "memory"` (arg):** honored ONLY in `#[cfg(test)]` builds.
+///   A production bridge can therefore NEVER be downgraded off the keychain by
+///   request data — defense-in-depth even if a future route mistakenly forwarded
+///   `secret_store` from an HTTP body (it MUST NOT; like `home`/`installs_path`/
+///   `askpass_dir` this is route-controlled-only, D7).
+fn use_memory_store(args: &Value) -> bool {
+    if std::env::var("CC_LIBRARY_SECRET_STORE").as_deref() == Ok("memory") {
+        return true;
+    }
+    #[cfg(test)]
+    if args.get("secret_store").and_then(Value::as_str) == Some("memory") {
+        return true;
+    }
+    #[cfg(not(test))]
+    let _ = args; // arg switch is test-only; silence unused in production builds
+    false
 }
 
 /// `RemoteUrlError` → the one route-mappable code (D7: `invalid_remote_url`→422).
@@ -1864,6 +1939,361 @@ fn map_secret_error(e: SecretError) -> LibraryError {
         "secret store operation failed",
         e.to_string(),
     )
+}
+
+// ---------------------------------------------------------------------------
+// Git remote sync (Slice 8, Phase 2) — scan / push / pull / conflict family
+// ---------------------------------------------------------------------------
+
+/// Run the secret-scan gate against the changes the next push would publish.
+/// Returns every finding; the UI decides whether to proceed (D4 — the gate
+/// BLOCKS, never auto-bypasses; `push_now` does NOT re-run it). Range mirrors
+/// the reference: `origin/<branch>..HEAD` if the upstream exists, else
+/// `<empty-tree>..HEAD` so nothing slips through unexamined on a first push.
+/// Reads refs only — no secrets, no egress.
+async fn cmd_scan_before_push(args: &Value) -> Result<Value, LibraryError> {
+    let repo = require_library(args)?;
+    let repo_std = repo.as_std_path();
+    let runner = TokioProcessRunner::new();
+    let range = push_range(&runner, repo_std).await?;
+    let findings = scan_pending_push(&runner, repo_std, &range)
+        .await
+        .map_err(map_runner_error)?;
+    let dtos: Vec<Value> = findings.into_iter().map(file_finding_json).collect();
+    Ok(json!({ "findings": dtos }))
+}
+
+/// Count commits on the current branch not yet pushed to `origin/<branch>` —
+/// the "Push N" badge. `0` when the library isn't a git repo yet (the only safe
+/// answer with nothing to compare against). No secrets, no egress.
+async fn cmd_count_unpushed_commits(args: &Value) -> Result<Value, LibraryError> {
+    let repo = require_library(args)?;
+    let repo_std = repo.as_std_path();
+    if !repo.join(".git").exists() {
+        return Ok(json!({ "count": 0 }));
+    }
+    let runner = TokioProcessRunner::new();
+    let range = push_range(&runner, repo_std).await?;
+    let output = runner
+        .run(&["rev-list", "--count", &range], repo_std, &[])
+        .await
+        .map_err(map_runner_error)?;
+    if output.status != 0 {
+        return Err(LibraryError::new(
+            "git_failed",
+            "git command failed",
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let count = stdout.trim().parse::<u32>().map_err(|e| {
+        LibraryError::new(
+            "git_failed",
+            "git command failed",
+            format!("rev-list --count returned non-integer {stdout:?}: {e}"),
+        )
+    })?;
+    Ok(json!({ "count": count }))
+}
+
+/// Push the current branch to `origin`. First push uses `-u origin <branch>`;
+/// subsequent pushes plain `git push`. The secret-scan gate is intentionally NOT
+/// folded in (the UI runs `scan_before_push` first — D4). The PAT flows
+/// store→env→askpass→git child, NEVER argv/log/return (D6). NETWORK EGRESS.
+async fn cmd_push_now(args: &Value, store: &dyn SecretStore) -> Result<Value, LibraryError> {
+    let repo = require_library(args)?;
+    let repo_std = repo.as_std_path();
+    let pat = require_pat(store)?;
+    let askpass = init_askpass_script(parse_askpass_dir(args)?.as_std_path())
+        .map_err(map_askpass_error)?;
+    let runner = TokioProcessRunner::new();
+    let branch = current_branch(&runner, repo_std)
+        .await
+        .map_err(map_runner_error)?;
+    let exists = remote_branch_exists(&runner, repo_std, &branch)
+        .await
+        .map_err(map_runner_error)?;
+    if exists {
+        git_push(&runner, repo_std, askpass.as_path(), &pat)
+            .await
+            .map_err(map_runner_error)?;
+    } else {
+        git_push_with_upstream(&runner, repo_std, askpass.as_path(), &pat, &branch)
+            .await
+            .map_err(map_runner_error)?;
+    }
+    Ok(json!({}))
+}
+
+/// `git pull --rebase` (PAT via askpass, NETWORK EGRESS). On a rebase conflict
+/// the failure is reshaped into a routable `{outcome:"conflict", conflict_count}`
+/// that rides the OK envelope as data (D7) — the UI renders the resolve banner.
+/// A timeout → `git_timed_out`; any other failure → `git_failed`.
+async fn cmd_pull_now(args: &Value, store: &dyn SecretStore) -> Result<Value, LibraryError> {
+    let repo = require_library(args)?;
+    let repo_std = repo.as_std_path();
+    let pat = require_pat(store)?;
+    let askpass = init_askpass_script(parse_askpass_dir(args)?.as_std_path())
+        .map_err(map_askpass_error)?;
+    let runner = TokioProcessRunner::new();
+    let result = git_pull(&runner, repo_std, askpass.as_path(), &pat, PULL_TIMEOUT).await;
+    match result {
+        Ok(()) => Ok(json!({ "outcome": "ok" })),
+        // Conflict detection is only meaningful on `Failed` — `TimedOut`/`Spawn`
+        // never leave a rebase mid-flight.
+        Err(err) if matches!(err, RunnerError::Failed { .. }) && is_rebase_in_progress(repo_std) => {
+            let paths = list_unmerged_paths(&runner, repo_std)
+                .await
+                .map_err(map_runner_error)?;
+            Ok(json!({ "outcome": "conflict", "conflict_count": paths.len() as u32 }))
+        }
+        Err(err) => Err(map_runner_error(err)),
+    }
+}
+
+/// Whether the library has a rebase in progress — a cheap `.git/rebase-*` check
+/// (the conflict banner gate). Sync, no git child, no secrets.
+fn cmd_is_pull_paused(args: &Value) -> Result<Value, LibraryError> {
+    let repo = require_library(args)?;
+    Ok(json!({ "paused": is_rebase_in_progress(repo.as_std_path()) }))
+}
+
+/// List every unmerged path from the in-progress rebase, classified for the
+/// resolver UI. Empty when no rebase is active. No secrets, no egress.
+async fn cmd_list_pull_conflicts(args: &Value) -> Result<Value, LibraryError> {
+    let repo = require_library(args)?;
+    let runner = TokioProcessRunner::new();
+    let paths = list_unmerged_paths(&runner, repo.as_std_path())
+        .await
+        .map_err(map_runner_error)?;
+    let conflicts: Vec<Value> = paths
+        .into_iter()
+        .map(|p| {
+            let path = p.to_string_lossy().into_owned();
+            let kind = classify_conflict_path(&path);
+            json!({ "path": path, "kind": kind })
+        })
+        .collect();
+    Ok(json!({ "conflicts": conflicts }))
+}
+
+/// Read the bytes of `conflict_path` at the requested side, decoded as UTF-8.
+/// `content` is null if the side has no index entry (e.g. one side deleted the
+/// file); a non-UTF-8 blob → `conflict_blob_not_utf8` (the resolver renders text
+/// only). `Side::Local` reads the user's change (stage 3 during a rebase),
+/// `Side::Remote` the incoming change (stage 2) — the `--ours`/`--theirs` swap
+/// is hidden in-crate, so the UI only ever sees Local/Remote. No egress.
+async fn cmd_read_conflict_blob(args: &Value) -> Result<Value, LibraryError> {
+    let repo = require_library(args)?;
+    let path = parse_conflict_path(args)?;
+    let side = parse_conflict_side(args)?;
+    let runner = TokioProcessRunner::new();
+    let bytes = read_conflict_side(&runner, repo.as_std_path(), std::path::Path::new(&path), side)
+        .await
+        .map_err(map_runner_error)?;
+    let content = match bytes {
+        None => Value::Null,
+        Some(b) => Value::String(String::from_utf8(b).map_err(|e| {
+            LibraryError::new(
+                "conflict_blob_not_utf8",
+                "conflict blob is not valid UTF-8",
+                e.to_string(),
+            )
+        })?),
+    };
+    Ok(json!({ "content": content }))
+}
+
+/// Resolve a conflict by writing the chosen side to the working tree + staging
+/// it (`git checkout <side> -- <path>` then `git add`). git scopes the path to
+/// the index/worktree, so a `../` path can't escape the repo. No egress.
+async fn cmd_resolve_conflict(args: &Value) -> Result<Value, LibraryError> {
+    let repo = require_library(args)?;
+    let path = parse_conflict_path(args)?;
+    let side = parse_conflict_side(args)?;
+    let runner = TokioProcessRunner::new();
+    resolve_with_side(&runner, repo.as_std_path(), std::path::Path::new(&path), side)
+        .await
+        .map_err(map_runner_error)?;
+    Ok(json!({}))
+}
+
+/// `git rebase --continue` (editor suppressed). `{outcome:"done"}` when the
+/// rebase finishes, or `{outcome:"still_conflicted", conflict_count}` when the
+/// next replayed commit collides afresh (the resolver loops). No egress.
+async fn cmd_continue_pull(args: &Value) -> Result<Value, LibraryError> {
+    let repo = require_library(args)?;
+    let repo_std = repo.as_std_path();
+    let runner = TokioProcessRunner::new();
+    let done = rebase_continue(&runner, repo_std)
+        .await
+        .map_err(map_runner_error)?;
+    if done {
+        return Ok(json!({ "outcome": "done" }));
+    }
+    let remaining = list_unmerged_paths(&runner, repo_std)
+        .await
+        .map_err(map_runner_error)?;
+    Ok(json!({ "outcome": "still_conflicted", "conflict_count": remaining.len() as u32 }))
+}
+
+/// `git rebase --abort` — unwind the in-progress rebase back to the pre-pull
+/// branch state (the resolver's "Cancel" escape hatch). No egress.
+async fn cmd_abort_pull(args: &Value) -> Result<Value, LibraryError> {
+    let repo = require_library(args)?;
+    let runner = TokioProcessRunner::new();
+    rebase_abort(&runner, repo.as_std_path())
+        .await
+        .map_err(map_runner_error)?;
+    Ok(json!({}))
+}
+
+/// Shared push/scan range: `origin/<branch>..HEAD` when the upstream exists,
+/// else `<empty-tree>..HEAD` (first push). Used by `scan_before_push` and
+/// `count_unpushed_commits` so the gate and the badge agree on what "pending"
+/// means.
+async fn push_range(runner: &TokioProcessRunner, repo: &std::path::Path) -> Result<String, LibraryError> {
+    let branch = current_branch(runner, repo).await.map_err(map_runner_error)?;
+    let exists = remote_branch_exists(runner, repo, &branch)
+        .await
+        .map_err(map_runner_error)?;
+    Ok(if exists {
+        format!("origin/{branch}..HEAD")
+    } else {
+        format!("{EMPTY_TREE_HASH}..HEAD")
+    })
+}
+
+/// Get the PAT from the injected store or fail with `no_pat_stored` (a
+/// precondition the UI resolves by configuring a PAT first). The returned
+/// `String` is held only for the duration of the push/pull, passed to the git
+/// crate which puts it in env (never argv/log) and drops it.
+fn require_pat(store: &dyn SecretStore) -> Result<String, LibraryError> {
+    store
+        .get_pat()
+        .map_err(map_secret_error)?
+        .ok_or_else(|| {
+            LibraryError::new(
+                "no_pat_stored",
+                "no personal access token configured",
+                "set a PAT before pushing or pulling",
+            )
+        })
+}
+
+/// Resolve the askpass state-dir the bridge writes `git-askpass.sh` into.
+/// TS-injected from server config (`askpass_dir`, default `DATA_DIR/askpass`),
+/// NEVER from an HTTP body (D3/D7). Missing/empty is a config fault.
+fn parse_askpass_dir(args: &Value) -> Result<Utf8PathBuf, LibraryError> {
+    let dir = args.get("askpass_dir").and_then(Value::as_str).unwrap_or("");
+    if dir.is_empty() {
+        return Err(LibraryError::new(
+            "askpass_unconfigured",
+            "no askpass dir configured",
+            "request args.askpass_dir was missing or empty",
+        ));
+    }
+    Ok(Utf8PathBuf::from(dir))
+}
+
+/// The conflict path the resolver operates on. Read from `conflict_path` (NOT
+/// `path`, which `require_library` owns as the library root). git bounds it to
+/// the index/worktree, so traversal can't escape the repo.
+fn parse_conflict_path(args: &Value) -> Result<String, LibraryError> {
+    let p = args.get("conflict_path").and_then(Value::as_str).unwrap_or("");
+    if p.is_empty() {
+        return Err(LibraryError::new(
+            "conflict_path_missing",
+            "no conflict path given",
+            "request args.conflict_path was missing or empty",
+        ));
+    }
+    Ok(p.to_string())
+}
+
+/// Parse the user-facing conflict side (`local`/`remote`) into the git crate's
+/// `Side`. The `--ours`/`--theirs` rebase swap stays hidden in-crate.
+fn parse_conflict_side(args: &Value) -> Result<Side, LibraryError> {
+    match args.get("side").and_then(Value::as_str) {
+        Some("local") => Ok(Side::Local),
+        Some("remote") => Ok(Side::Remote),
+        other => Err(LibraryError::new(
+            "invalid_conflict_side",
+            "invalid conflict side",
+            format!("expected `local` or `remote`, got {other:?}"),
+        )),
+    }
+}
+
+/// Per-conflict classification the resolver uses to pick a renderer (ported from
+/// the reference `classify_conflict_path`). `current.txt`/`metadata.yaml` get
+/// value-pickers; `versions/` files + everything else fall back to the
+/// copy-absolute-path escape hatch (Slice 10c — no native Finder reveal).
+fn classify_conflict_path(path: &str) -> &'static str {
+    let last = path.rsplit('/').next().unwrap_or(path);
+    if last == "current.txt" {
+        return "current_txt";
+    }
+    if last == "metadata.yaml" {
+        return "metadata_yaml";
+    }
+    if path.contains("/versions/") || path.starts_with("versions/") {
+        return "version_file";
+    }
+    "other"
+}
+
+/// IPC view of a `FileFinding` — carries the matched bytes VERBATIM so the UI
+/// can show the user exactly what tripped the gate (D4). The matched string is
+/// scanned-repo content, not the stored PAT.
+fn file_finding_json(f: FileFinding) -> Value {
+    json!({
+        "path": f.path.to_string_lossy(),
+        "line": f.line,
+        "kind": finding_kind_str(f.finding.kind),
+        "matched": f.finding.matched,
+    })
+}
+
+/// `FindingKind` → its snake_case wire string (ported from the reference's
+/// `FileFindingDto::from`).
+fn finding_kind_str(kind: FindingKind) -> &'static str {
+    match kind {
+        FindingKind::GithubClassicPat => "github_classic_pat",
+        FindingKind::GithubFineGrainedPat => "github_fine_grained_pat",
+        FindingKind::GithubOauth => "github_oauth",
+        FindingKind::OpenAiKey => "openai_key",
+        FindingKind::AwsAccessKey => "aws_access_key",
+        FindingKind::SlackToken => "slack_token",
+        FindingKind::PrivateKeyBlock => "private_key_block",
+        FindingKind::JsonApiKeyField => "json_api_key_field",
+        FindingKind::HighEntropyString => "high_entropy_string",
+    }
+}
+
+/// `AskpassError` → `askpass_init_failed` (502). The detail names the state-dir
+/// path (server-side only, m4), never a secret.
+fn map_askpass_error(e: AskpassError) -> LibraryError {
+    LibraryError::new(
+        "askpass_init_failed",
+        "could not initialize the git askpass helper",
+        e.to_string(),
+    )
+}
+
+/// `RunnerError` → a dashboard-stable code. `TimedOut` → `git_timed_out`;
+/// everything else → `git_failed` with git's own stderr as `detail`
+/// (server-side only, m4). git stderr is PAT-free — the token travels via env,
+/// never echoed by git — so even the server-side detail can't leak it.
+fn map_runner_error(e: RunnerError) -> LibraryError {
+    match e {
+        RunnerError::TimedOut => LibraryError::new(
+            "git_timed_out",
+            "git operation timed out",
+            "git pull exceeded the network timeout",
+        ),
+        other => LibraryError::new("git_failed", "git command failed", runner_error_message(&other)),
+    }
 }
 
 /// Map every `core::Error` to a dashboard-stable code. `message` is a fixed
@@ -4530,5 +4960,291 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(status["pat_redacted"], json!(null));
+    }
+
+    // ---- git remote sync (Slice 8, Phase 2: scan/push/pull/conflict) -------
+    //
+    // Exercised against a temp BARE remote on a local path — `git push`/`pull`
+    // to a `file://`-style local remote needs no auth, so these verify the
+    // command MECHANICS (range selection, first-push -u, the stateful rebase
+    // loop) without a real network or a real credential. The real-PAT egress is
+    // Phase 4 browser QA. The PAT-never-leaks tripwire still runs here (a forced
+    // push failure with a PAT in the store).
+
+    // (`run_git(&Utf8PathBuf, …)` is the shared test git driver, defined above.)
+
+    /// Give a repo a deterministic local identity so bridge-driven commits
+    /// (rebase replays) have a committer regardless of the dev machine config.
+    fn set_identity(dir: &Utf8PathBuf, who: &str) {
+        run_git(dir, &["config", "user.email", &format!("{who}@example.test")]);
+        run_git(dir, &["config", "user.name", who]);
+    }
+
+    /// A library repo wired to a temp bare remote on a local path, plus an
+    /// askpass dir. Temps held so they outlive the test.
+    struct GitSyncFx {
+        _remote: TempDir,
+        _work: TempDir,
+        _askpass: TempDir,
+        root: Utf8PathBuf,
+        remote: Utf8PathBuf,
+        askpass_dir: Utf8PathBuf,
+    }
+
+    impl GitSyncFx {
+        /// Base args every git-sync command needs: the library path, the
+        /// injected askpass dir, and the memory secret store (headless).
+        fn args(&self) -> Value {
+            json!({
+                "path": self.root.as_str(),
+                "askpass_dir": self.askpass_dir.as_str(),
+                "secret_store": "memory",
+            })
+        }
+        /// Args for a conflict-family command: library path + the conflict path
+        /// (under its own key, not `path`) + the side.
+        fn conflict_args(&self, conflict_path: &str, side: &str) -> Value {
+            json!({ "path": self.root.as_str(), "conflict_path": conflict_path, "side": side })
+        }
+    }
+
+    fn git_sync_fx() -> GitSyncFx {
+        let remote_tmp = TempDir::new().unwrap();
+        let remote = Utf8PathBuf::from_path_buf(remote_tmp.path().canonicalize().unwrap()).unwrap();
+        run_git(&remote, &["-c", "init.defaultBranch=main", "init", "--bare"]);
+
+        let work = TempDir::new().unwrap();
+        let root = Utf8PathBuf::from_path_buf(work.path().canonicalize().unwrap()).unwrap();
+        init_library(&root, NOW).unwrap();
+        run_git(&root, &["-c", "init.defaultBranch=main", "init"]);
+        set_identity(&root, "Worker");
+        run_git(&root, &["add", "-A"]);
+        run_git(&root, &["commit", "-m", "init library"]);
+        run_git(&root, &["remote", "add", "origin", remote.as_str()]);
+
+        let askpass = TempDir::new().unwrap();
+        let askpass_dir =
+            Utf8PathBuf::from_path_buf(askpass.path().canonicalize().unwrap()).unwrap();
+        GitSyncFx {
+            _remote: remote_tmp,
+            _work: work,
+            _askpass: askpass,
+            root,
+            remote,
+            askpass_dir,
+        }
+    }
+
+    fn pat_store() -> InMemoryStore {
+        let store = InMemoryStore::new();
+        store.set_pat(FIXTURE_PAT).unwrap();
+        store
+    }
+
+    #[test]
+    fn classify_conflict_path_maps_known_layout_paths() {
+        assert_eq!(classify_conflict_path("skills/x/current.txt"), "current_txt");
+        assert_eq!(classify_conflict_path("skills/x/metadata.yaml"), "metadata_yaml");
+        assert_eq!(
+            classify_conflict_path("skills/x/versions/v1/SKILL.md"),
+            "version_file"
+        );
+        assert_eq!(classify_conflict_path("README.md"), "other");
+    }
+
+    #[tokio::test]
+    async fn scan_before_push_flags_a_planted_secret() {
+        let fx = git_sync_fx();
+        // a classic PAT token committed to a tracked file — never pushed.
+        let token = format!("ghp_{}", "a".repeat(36));
+        std::fs::write(fx.root.join("CLAUDE.md"), &token).unwrap();
+        run_git(&fx.root, &["add", "-A"]);
+        run_git(&fx.root, &["commit", "-m", "oops secret"]);
+
+        let data = cmd_scan_before_push(&fx.args()).await.unwrap();
+        let findings = data["findings"].as_array().unwrap();
+        assert!(!findings.is_empty(), "expected the gate to flag the token");
+        assert!(findings
+            .iter()
+            .any(|f| f["kind"] == json!("github_classic_pat")));
+    }
+
+    #[tokio::test]
+    async fn count_unpushed_counts_local_commits_then_zero_after_push() {
+        let fx = git_sync_fx();
+        // one commit ahead of a never-pushed branch (empty-tree range).
+        let before = cmd_count_unpushed_commits(&fx.args()).await.unwrap();
+        assert_eq!(before["count"], json!(1));
+
+        cmd_push_now(&fx.args(), &pat_store()).await.unwrap();
+        let after = cmd_count_unpushed_commits(&fx.args()).await.unwrap();
+        assert_eq!(after["count"], json!(0), "everything pushed");
+    }
+
+    #[tokio::test]
+    async fn count_unpushed_is_zero_when_not_a_git_repo() {
+        // a library with the marker but no `.git`.
+        let (_tmp, root) = fixture_library();
+        let data = cmd_count_unpushed_commits(&json!({ "path": root.as_str() }))
+            .await
+            .unwrap();
+        assert_eq!(data["count"], json!(0));
+    }
+
+    #[tokio::test]
+    async fn push_now_first_push_sets_upstream_and_publishes() {
+        let fx = git_sync_fx();
+        // first push: no upstream → -u origin main. Succeeds against the local
+        // bare remote (no auth needed); the stored PAT is set but unused.
+        cmd_push_now(&fx.args(), &pat_store()).await.unwrap();
+        // origin/main now exists locally → a second push takes the plain path.
+        cmd_push_now(&fx.args(), &pat_store()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn push_now_without_pat_is_no_pat_stored() {
+        let fx = git_sync_fx();
+        let empty = InMemoryStore::new();
+        let err = cmd_push_now(&fx.args(), &empty).await.unwrap_err();
+        assert_eq!(err.code, "no_pat_stored");
+    }
+
+    #[tokio::test]
+    async fn push_failure_never_leaks_the_pat() {
+        // D6 tripwire on the egress path: force a push failure with a PAT in the
+        // store, assert the token appears nowhere in the error envelope.
+        let fx = git_sync_fx();
+        run_git(
+            &fx.root,
+            &["remote", "set-url", "origin", "/nonexistent/repo.git"],
+        );
+        std::fs::write(fx.root.join("f.txt"), "x").unwrap();
+        run_git(&fx.root, &["add", "-A"]);
+        run_git(&fx.root, &["commit", "-m", "c"]);
+
+        let err = cmd_push_now(&fx.args(), &pat_store()).await.unwrap_err();
+        assert_eq!(err.code, "git_failed");
+        let serialized = serde_json::to_string(&err_envelope(&err)).unwrap();
+        assert!(
+            !serialized.contains(FIXTURE_PAT),
+            "PAT leaked into the error envelope: {serialized}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pull_clean_fast_forward_returns_ok() {
+        let fx = git_sync_fx();
+        cmd_push_now(&fx.args(), &pat_store()).await.unwrap();
+        // a clean pull (nothing new on the remote) is a no-op `ok`.
+        let data = cmd_pull_now(&fx.args(), &pat_store()).await.unwrap();
+        assert_eq!(data["outcome"], json!("ok"));
+    }
+
+    /// Drive two clones to a rebase conflict on `notes.txt` and leave fx mid-
+    /// rebase (paused). Returns fx; the second clone is `.keep()`-leaked so its
+    /// path stays valid for the test's duration.
+    async fn pull_into_conflict() -> GitSyncFx {
+        let fx = git_sync_fx();
+        std::fs::write(fx.root.join("notes.txt"), "base\n").unwrap();
+        run_git(&fx.root, &["add", "-A"]);
+        run_git(&fx.root, &["commit", "-m", "base notes"]);
+        cmd_push_now(&fx.args(), &pat_store()).await.unwrap();
+
+        // clone B, change the same line, push first.
+        let b = Utf8PathBuf::from_path_buf(TempDir::new().unwrap().keep()).unwrap();
+        run_git(&fx.remote, &["clone", fx.remote.as_str(), b.as_str()]);
+        set_identity(&b, "Other");
+        std::fs::write(b.join("notes.txt"), "remote-change\n").unwrap();
+        run_git(&b, &["add", "-A"]);
+        run_git(&b, &["commit", "-m", "remote change"]);
+        run_git(&b, &["push", "origin", "main"]);
+
+        // A diverges on the same line, then pulls --rebase → conflict.
+        std::fs::write(fx.root.join("notes.txt"), "local-change\n").unwrap();
+        run_git(&fx.root, &["add", "-A"]);
+        run_git(&fx.root, &["commit", "-m", "local change"]);
+
+        let pull = cmd_pull_now(&fx.args(), &pat_store()).await.unwrap();
+        assert_eq!(pull["outcome"], json!("conflict"), "{pull:?}");
+        assert_eq!(pull["conflict_count"], json!(1));
+        fx
+    }
+
+    #[tokio::test]
+    async fn pull_conflict_resolves_local_and_continues_to_done() {
+        let fx = pull_into_conflict().await;
+        assert_eq!(cmd_is_pull_paused(&fx.args()).unwrap()["paused"], json!(true));
+
+        let conflicts = cmd_list_pull_conflicts(&fx.args()).await.unwrap();
+        let list = conflicts["conflicts"].as_array().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["path"], json!("notes.txt"));
+        assert_eq!(list[0]["kind"], json!("other"));
+
+        // Local = the user's change (stage 3 during rebase); Remote = incoming.
+        let local = cmd_read_conflict_blob(&fx.conflict_args("notes.txt", "local"))
+            .await
+            .unwrap();
+        assert_eq!(local["content"], json!("local-change\n"));
+        let remote = cmd_read_conflict_blob(&fx.conflict_args("notes.txt", "remote"))
+            .await
+            .unwrap();
+        assert_eq!(remote["content"], json!("remote-change\n"));
+
+        cmd_resolve_conflict(&fx.conflict_args("notes.txt", "local"))
+            .await
+            .unwrap();
+        let cont = cmd_continue_pull(&fx.args()).await.unwrap();
+        assert_eq!(cont["outcome"], json!("done"));
+        assert_eq!(cmd_is_pull_paused(&fx.args()).unwrap()["paused"], json!(false));
+        // the working tree carries the chosen (local) side.
+        assert_eq!(
+            std::fs::read_to_string(fx.root.join("notes.txt")).unwrap(),
+            "local-change\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn pull_conflict_abort_unwinds_to_pre_pull_state() {
+        let fx = pull_into_conflict().await;
+        cmd_abort_pull(&fx.args()).await.unwrap();
+        assert_eq!(cmd_is_pull_paused(&fx.args()).unwrap()["paused"], json!(false));
+        // back to A's pre-pull commit.
+        assert_eq!(
+            std::fs::read_to_string(fx.root.join("notes.txt")).unwrap(),
+            "local-change\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_conflict_blob_requires_a_conflict_path() {
+        let fx = git_sync_fx();
+        let err = cmd_read_conflict_blob(&json!({ "path": fx.root.as_str(), "side": "local" }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "conflict_path_missing");
+    }
+
+    #[tokio::test]
+    async fn conflict_side_must_be_local_or_remote() {
+        let fx = git_sync_fx();
+        let err = cmd_resolve_conflict(&fx.conflict_args("notes.txt", "sideways"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_conflict_side");
+    }
+
+    #[tokio::test]
+    async fn push_without_askpass_dir_is_a_config_fault() {
+        // askpass_dir is route-injected → absent is a config fault, not a user
+        // error. (Checked after the PAT precondition.)
+        let fx = git_sync_fx();
+        let err = cmd_push_now(
+            &json!({ "path": fx.root.as_str() }),
+            &pat_store(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "askpass_unconfigured");
     }
 }
