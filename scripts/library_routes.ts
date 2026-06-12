@@ -30,6 +30,7 @@ import {
   parseTargetView,
   parseOverlayLists,
   parseMetadataUpdateResult,
+  parseReimportResult,
   type LibraryStatus,
 } from "./library_models.ts";
 import { importInstalls } from "./library_migration.ts";
@@ -358,6 +359,64 @@ export async function buildScanDrift(
     "scan_drift",
     { home: config.home, installs_path: config.installsPath, kind, name },
     { validate: parseDriftReports },
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** A reimport-from-drift request: pull a `(kind, name, source_target)` install's
+ *  on-disk bytes back into the library as `version_label`. `discard_working`
+ *  confirms blowing away unpublished working-copy edits (the two-phase
+ *  `working_copy_dirty` confirm); `fixed_primary_text` is the broken-source retry
+ *  payload (the user-corrected primary file). */
+interface ReimportBody {
+  source_target?: unknown;
+  version_label?: unknown;
+  notes?: unknown;
+  discard_working?: unknown;
+  fixed_primary_text?: unknown;
+}
+
+/** Write: snapshot an installed copy's on-disk (drifted) bytes as a new library
+ *  version and re-baseline the install record. Reimport is the INVERSE of
+ *  install. Unlike its publish sibling, this handler takes `withWriteLock`: core
+ *  re-baselines `installs.json` (reimport.rs re-introduces the load→mutate→save
+ *  ledger cycle D1 serializes), so without the lock a concurrent install/
+ *  acknowledge could lost-update the record. Needs the library layout (the
+ *  snapshot materializes into `versions/`), so refuse early when unconfigured.
+ *
+ *  All five ReimportResult variants ride HTTP 200 as DATA the UI routes on
+ *  (reimported / working_copy_dirty / broken_source / not_installed /
+ *  install_missing) — exactly as a `colliding_content` InstallSummary rides 200.
+ *  Only genuine core faults map to 422/409/404/502. The reimport timestamp is
+ *  server-stamped (route owns the clock, like publish/install), never
+ *  body-derived. */
+export async function buildReimport(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  body: ReimportBody,
+  run: Run = runBridge,
+  now: string = new Date().toISOString(),
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const args = {
+    path: config.libraryPath,
+    home: config.home,
+    installs_path: config.installsPath,
+    kind,
+    name,
+    target: body.source_target ?? null,
+    version_label: body.version_label,
+    notes: typeof body.notes === "string" ? body.notes : null,
+    discard_working: body.discard_working === true,
+    fixed_primary_text: typeof body.fixed_primary_text === "string" ? body.fixed_primary_text : null,
+    created_at: now,
+  };
+  const r = await withWriteLock(() =>
+    run(config.bridgePath, "reimport_install", args, {
+      validate: parseReimportResult,
+      timeoutMs: WRITE_TIMEOUT_MS,
+    }),
   );
   return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
 }
@@ -873,6 +932,13 @@ export function registerLibraryRoutes(
   );
   app.post("/api/library/primitives/:kind/:name/acknowledge-drift", async (c) =>
     json(c, await buildAcknowledgeDrift(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
+  );
+  // Reimport-from-drift: pull a drifted install's on-disk bytes back into the
+  // library as a new version. The third drift-row write (beside acknowledge +
+  // reinstall), it takes the write lock (it re-baselines installs.json) and
+  // WRITE_TIMEOUT in the handler. All ReimportResult variants ride 200 as data.
+  app.post("/api/library/primitives/:kind/:name/reimport", async (c) =>
+    json(c, await buildReimport(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
   );
   app.post("/api/library/import-installs", async (c) => json(c, await buildImportInstalls(loadConfig())));
   // Working-file editor writes (WRITE_TIMEOUT + SIGKILL; no ledger mutex — they

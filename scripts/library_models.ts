@@ -264,6 +264,27 @@ export interface ImportResult {
 }
 
 // ---------------------------------------------------------------------------
+// Reimport-from-drift wire model (reimport slice)
+//
+// `reimport_install` pulls an installed copy's on-disk (drifted) bytes back into
+// the library as a new version. Like `DriftStatus`/`TargetOutcome`, every variant
+// is a RESULT the UI routes on (it rides the bridge `ok` envelope as data, NOT an
+// error). Only `reimported` carries the non-fatal commit contract (the new
+// version tree is git-tracked, publish posture); the other variants wrote nothing
+// git-tracked, so they have no commit fields. `broken_source.raw_bytes` is the
+// on-disk primary file's bytes (a JSON number array) the UI decodes into its
+// fix buffer.
+// ---------------------------------------------------------------------------
+
+/** Outcome of a `reimport_install`. Tagged on `kind`. */
+export type ReimportResult =
+  | { kind: "reimported"; new_version: string; committed: boolean; commit_error: string | null }
+  | { kind: "working_copy_dirty" }
+  | { kind: "broken_source"; primary_path: string; raw_bytes: number[]; parse_error: string }
+  | { kind: "not_installed" }
+  | { kind: "install_missing" };
+
+// ---------------------------------------------------------------------------
 // Runtime validators
 // ---------------------------------------------------------------------------
 
@@ -305,6 +326,14 @@ function asNullableBool(v: unknown, what: string): boolean | null {
 function asStringArray(v: unknown, what: string): string[] {
   if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) fail(what);
   return v as string[];
+}
+
+/** A `Vec<u8>` on the wire (a JSON array of byte-valued numbers). Used for
+ *  `broken_source.raw_bytes` — the on-disk primary file's bytes the UI decodes
+ *  into its fix buffer. */
+function asByteArray(v: unknown, what: string): number[] {
+  if (!Array.isArray(v) || !v.every((x) => typeof x === "number")) fail(what);
+  return v as number[];
 }
 
 function parsePrimaryFilename(v: unknown): PrimaryFilename {
@@ -564,6 +593,34 @@ function parseDriftStatus(v: unknown): DriftStatus {
       return { kind: "missing", missing: asStringArray(v.missing, "DriftStatus.missing") };
     default:
       return fail("DriftStatus (unknown kind)");
+  }
+}
+
+export function parseReimportResult(v: unknown): ReimportResult {
+  if (!isObject(v)) fail("ReimportResult");
+  switch (v.kind) {
+    case "reimported":
+      return {
+        kind: "reimported",
+        new_version: asString(v.new_version, "ReimportResult.new_version"),
+        committed: asBool(v.committed, "ReimportResult.committed"),
+        commit_error: asNullableString(v.commit_error, "ReimportResult.commit_error"),
+      };
+    case "working_copy_dirty":
+      return { kind: "working_copy_dirty" };
+    case "broken_source":
+      return {
+        kind: "broken_source",
+        primary_path: asString(v.primary_path, "ReimportResult.primary_path"),
+        raw_bytes: asByteArray(v.raw_bytes, "ReimportResult.raw_bytes"),
+        parse_error: asString(v.parse_error, "ReimportResult.parse_error"),
+      };
+    case "not_installed":
+      return { kind: "not_installed" };
+    case "install_missing":
+      return { kind: "install_missing" };
+    default:
+      return fail("ReimportResult (unknown kind)");
   }
 }
 
