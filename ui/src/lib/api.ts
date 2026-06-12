@@ -820,3 +820,97 @@ export interface LibraryMetadataUpdateResult {
  *  unless `discard_orphan_overlays` is set. */
 export const updateMetadata = (kind: string, name: string, body: LibraryMetadataUpdate) =>
   sendJson<LibraryMetadataUpdateResult>(`${primPath(kind, name)}/metadata`, "PUT", body);
+
+// ── Prompt Library lifecycle fetchers (lifecycle slice) ─────────────────────
+// Structural CRUD over the library. create/delete/rename/duplicate/import edit
+// the git-tracked tree, so each carries the non-fatal {committed, commit_error}
+// contract (the library write already landed; the commit is advisory — render it
+// as a colorblind-safe cue, never an error). A name collision →
+// LibraryApiError("library_primitive_exists") (409). `delete`'s result rides 200
+// as DATA the UI inspects — a bail (uninstall failures, dir untouched) is NOT an
+// error. `forget` touches only installs.json (no commit). The clock is
+// server-stamped route-side; the UI never sends created_at.
+
+/** Outcome of a delete_primitive: the per-target force-uninstall summary the UI
+ *  inspects, plus whether the dir was removed and the advisory commit. A bail
+ *  (uninstall `failures` non-empty) → library_dir_removed:false, committed:false;
+ *  the library survives and the UI surfaces the failures instead of success. */
+export interface LibraryDeletePrimitiveResult {
+  uninstall: LibraryUninstallSummary;
+  library_dir_removed: boolean;
+  committed: boolean;
+  commit_error: string | null;
+}
+
+/** Outcome of a rename_primitive: how many installs.json records were rewritten
+ *  to the new name (the "N installed copies keep the old name until reinstalled"
+ *  caveat) + the advisory commit. */
+export interface LibraryRenameResult {
+  install_records_updated: number;
+  committed: boolean;
+  commit_error: string | null;
+}
+
+/** Outcome of a duplicate_primitive: the new name + the advisory commit. */
+export interface LibraryDuplicateResult {
+  new_name: string;
+  committed: boolean;
+  commit_error: string | null;
+}
+
+/** Outcome of an import_primitive_from_path (the local-path classify flavor, NOT
+ *  url import). Every variant rides 200 as data the UI routes on. Only `imported`
+ *  wrote a git-tracked tree, so only it carries commit fields; `not_classifiable`
+ *  points the user at the bootstrap wizard. */
+export type LibraryImportFromPathResult =
+  | {
+      kind: "imported";
+      primitive_kind: LibraryKind;
+      name: string;
+      committed: boolean;
+      commit_error: string | null;
+    }
+  | { kind: "already_exists"; primitive_kind: LibraryKind; name: string }
+  | { kind: "not_classifiable"; reason: string };
+
+/** Outcome of a forget_primitive: whether any installs.json record was dropped
+ *  (idempotent — false when nothing matched). */
+export interface LibraryForgetResult {
+  removed: boolean;
+}
+
+/** Scaffold a new (blank) primitive, then commit. A name collision →
+ *  LibraryApiError("library_primitive_exists") (409); a malformed name →
+ *  "library_invalid_name" (422). Returns the advisory commit result. */
+export const createPrimitive = (kind: LibraryKind, name: string) =>
+  sendJson<LibraryPublishResult>("/api/library/primitives", "POST", { kind, name });
+
+/** Wipe a primitive — force-uninstall every target, rm -rf the dir, drop records,
+ *  commit. The result rides 200 as data: inspect `library_dir_removed` +
+ *  `uninstall.failures` before reporting success (a bail leaves the library). */
+export const deletePrimitive = (kind: string, name: string) =>
+  sendJson<LibraryDeletePrimitiveResult>(primPath(kind, name), "DELETE");
+
+/** Rename a primitive's library dir + migrate its install records, then commit.
+ *  A new_name collision → 409; a missing source → 404. */
+export const renamePrimitive = (kind: string, name: string, newName: string) =>
+  sendJson<LibraryRenameResult>(`${primPath(kind, name)}/rename`, "POST", { new_name: newName });
+
+/** Duplicate a primitive's working copy (no versions/installs carried), then
+ *  commit. A new_name collision → 409. */
+export const duplicatePrimitive = (kind: string, name: string, newName: string) =>
+  sendJson<LibraryDuplicateResult>(`${primPath(kind, name)}/duplicate`, "POST", { new_name: newName });
+
+/** Import a primitive from a local path already under a recognized install root
+ *  (the drag-drop fast path, NOT url import). The tagged result routes the UI:
+ *  imported → reload+select; already_exists → "already in the library";
+ *  not_classifiable → "not auto-importable" (→ bootstrap). */
+export const importFromPath = (sourcePath: string) =>
+  sendJson<LibraryImportFromPathResult>("/api/library/import-from-path", "POST", {
+    source_path: sourcePath,
+  });
+
+/** Drop a primitive's installs.json records (the Reconcile "mark removed" action
+ *  for a primitive whose library dir is already gone). No commit. */
+export const forgetPrimitive = (kind: string, name: string) =>
+  sendJson<LibraryForgetResult>(`${primPath(kind, name)}/forget`, "POST", {});

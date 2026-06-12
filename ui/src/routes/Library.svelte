@@ -30,6 +30,11 @@
     revertToVersion,
     readPrimitiveVersion,
     searchLibrary,
+    createPrimitive,
+    deletePrimitive,
+    renamePrimitive,
+    duplicatePrimitive,
+    importFromPath,
     LibraryApiError,
     type LibraryKind,
     type LibraryTarget,
@@ -55,7 +60,12 @@
     anyDrift,
     publishStateCue,
     currentVersionCue,
+    lifecycleCommitCue,
+    renameInstallCaveat,
+    deleteResultCue,
+    importResultCue,
     KIND_LABELS,
+    KIND_ORDER,
   } from "../lib/library";
 
   // Status gates everything — the route always 200s, so error here means the
@@ -342,6 +352,12 @@
     reimportDirty = null;
     reimportBroken = null;
     reimportNotice = null;
+    // Lifecycle surfaces are scoped to the open primitive too — never leak a
+    // rename/duplicate/delete confirm or a success banner across a selection.
+    renameDialog = null;
+    duplicateDialog = null;
+    deleteDialog = null;
+    lifecycleNotice = null;
   }
 
   /** Publish the SAVED working copy as a new immutable version. Refuses while the
@@ -750,6 +766,234 @@
       importing = false;
     }
   }
+
+  // ── primitive lifecycle (lifecycle slice) ─────────────────────────────────
+  // Structural CRUD: create / delete / rename / duplicate / import-from-path.
+  // (forget is a reconcile action with no natural home in this surface until the
+  // bootstrap wizard's Reconcile view — Slice 2 — so it is intentionally NOT
+  // wired here; its bridge/route/fetcher ship ready for that slice.)
+  //
+  // Every op is event-handler-driven (.reload() after the write, never an
+  // effect) and routes a route-local LibraryApiError to an INLINE notice (never
+  // the shell). Delete is the headline: a two-phase confirm that lists the blast
+  // radius (installed targets + version count) from already-loaded data, fires
+  // nothing before the second confirm, locks the confirm button in-flight, and
+  // surfaces a bailed force-uninstall instead of reporting false success.
+  let lifecycleBusy = $state(false);
+  // A transient, colorblind-safe success banner shown after a create / rename /
+  // duplicate / import (the affected primitive is reloaded + selected).
+  let lifecycleNotice = $state<{ tone: "default" | "amber" | "cyan"; text: string } | null>(null);
+
+  // Create form (collection-level): kind select + name input; an inline error on
+  // a collision/invalid-name, never a shell toast.
+  let createOpen = $state(false);
+  let createKind = $state<LibraryKind>("skill");
+  let createName = $state("");
+  let createNotice = $state<{ tone: "amber"; text: string } | null>(null);
+
+  function openCreate(): void {
+    createOpen = true;
+    createKind = "skill";
+    createName = "";
+    createNotice = null;
+  }
+
+  async function doCreate(): Promise<void> {
+    if (lifecycleBusy) return;
+    const name = createName.trim();
+    if (!name) {
+      createNotice = { tone: "amber", text: "Enter a name for the new primitive." };
+      return;
+    }
+    lifecycleBusy = true;
+    createNotice = null;
+    try {
+      const res = await createPrimitive(createKind, name);
+      createOpen = false;
+      primitivesRes.reload();
+      selectPrimitive(selectionKey(createKind, name));
+      const cue = lifecycleCommitCue(res.committed, res.commit_error);
+      lifecycleNotice = { tone: cue.tone, text: `Created ${name} · ${cue.label}` };
+    } catch (e) {
+      createNotice = { tone: "amber", text: noticeFor(e, "Couldn’t create the primitive.") };
+    } finally {
+      lifecycleBusy = false;
+    }
+  }
+
+  // Import-from-path: a TYPED path (the 10a web redesign — no native picker). The
+  // tagged result routes the UI; only `imported` reloads+selects.
+  let importPathOpen = $state(false);
+  let importPathValue = $state("");
+  let importPathNotice = $state<{ tone: "default" | "amber" | "cyan"; text: string } | null>(null);
+
+  function openImportPath(): void {
+    importPathOpen = true;
+    importPathValue = "";
+    importPathNotice = null;
+  }
+
+  async function doImportFromPath(): Promise<void> {
+    if (lifecycleBusy) return;
+    const path = importPathValue.trim();
+    if (!path) {
+      importPathNotice = { tone: "amber", text: "Enter the path to import." };
+      return;
+    }
+    lifecycleBusy = true;
+    importPathNotice = null;
+    try {
+      const res = await importFromPath(path);
+      const cue = importResultCue(res);
+      if (res.kind === "imported") {
+        importPathOpen = false;
+        primitivesRes.reload();
+        selectPrimitive(selectionKey(res.primitive_kind, res.name));
+        lifecycleNotice = { tone: cue.tone, text: `Imported ${res.name} · ${cue.label}` };
+      } else if (res.kind === "already_exists") {
+        importPathOpen = false;
+        primitivesRes.reload();
+        selectPrimitive(selectionKey(res.primitive_kind, res.name));
+        lifecycleNotice = { tone: cue.tone, text: `${res.name} is already in the library` };
+      } else {
+        // not_classifiable — keep the dialog open with guidance toward bootstrap.
+        importPathNotice = { tone: cue.tone, text: `${cue.label}. (${res.reason})` };
+      }
+    } catch (e) {
+      importPathNotice = { tone: "amber", text: noticeFor(e, "Couldn’t import from that path.") };
+    } finally {
+      lifecycleBusy = false;
+    }
+  }
+
+  // Rename / duplicate share a captured-intent dialog shape ({kind,name,newName},
+  // D2): the confirm re-issues against the SNAPSHOT, so a selection change across
+  // the await can't redirect the write.
+  let renameDialog = $state<{ kind: LibraryKind; name: string; newName: string } | null>(null);
+  let renameNotice = $state<{ tone: "amber"; text: string } | null>(null);
+
+  function askRename(): void {
+    if (!detail) return;
+    renameDialog = { kind: detail.kind, name: detail.name, newName: detail.name };
+    renameNotice = null;
+  }
+
+  async function confirmRename(): Promise<void> {
+    const intent = renameDialog;
+    if (!intent || lifecycleBusy) return;
+    const newName = intent.newName.trim();
+    if (!newName || newName === intent.name) {
+      renameNotice = { tone: "amber", text: "Enter a different name." };
+      return;
+    }
+    lifecycleBusy = true;
+    renameNotice = null;
+    try {
+      const res = await renamePrimitive(intent.kind, intent.name, newName);
+      renameDialog = null;
+      primitivesRes.reload();
+      reloadInstallState(); // records were migrated to the new name
+      selectPrimitive(selectionKey(intent.kind, newName));
+      const cue = lifecycleCommitCue(res.committed, res.commit_error);
+      const caveat = renameInstallCaveat(res.install_records_updated);
+      lifecycleNotice = {
+        tone: caveat ? "amber" : cue.tone,
+        text: `Renamed to ${newName} · ${cue.label}${caveat ? ` — ${caveat}` : ""}`,
+      };
+    } catch (e) {
+      renameNotice = { tone: "amber", text: noticeFor(e, "Couldn’t rename the primitive.") };
+    } finally {
+      lifecycleBusy = false;
+    }
+  }
+
+  let duplicateDialog = $state<{ kind: LibraryKind; name: string; newName: string } | null>(null);
+  let duplicateNotice = $state<{ tone: "amber"; text: string } | null>(null);
+
+  function askDuplicate(): void {
+    if (!detail) return;
+    duplicateDialog = { kind: detail.kind, name: detail.name, newName: `${detail.name}-copy` };
+    duplicateNotice = null;
+  }
+
+  async function confirmDuplicate(): Promise<void> {
+    const intent = duplicateDialog;
+    if (!intent || lifecycleBusy) return;
+    const newName = intent.newName.trim();
+    if (!newName || newName === intent.name) {
+      duplicateNotice = { tone: "amber", text: "Enter a name for the copy." };
+      return;
+    }
+    lifecycleBusy = true;
+    duplicateNotice = null;
+    try {
+      const res = await duplicatePrimitive(intent.kind, intent.name, newName);
+      duplicateDialog = null;
+      primitivesRes.reload();
+      selectPrimitive(selectionKey(intent.kind, res.new_name));
+      const cue = lifecycleCommitCue(res.committed, res.commit_error);
+      lifecycleNotice = { tone: cue.tone, text: `Duplicated to ${res.new_name} · ${cue.label}` };
+    } catch (e) {
+      duplicateNotice = { tone: "amber", text: noticeFor(e, "Couldn’t duplicate the primitive.") };
+    } finally {
+      lifecycleBusy = false;
+    }
+  }
+
+  // Delete — the headline two-phase, captured-intent confirm. Snapshots the blast
+  // radius (installed targets + version count) at OPEN time from already-loaded
+  // data (D2/A4), so the confirm shows exactly what gets wiped and a selection
+  // change across the await can't redirect the delete. The confirm button is
+  // locked in-flight (lifecycleBusy). No request fires before the second confirm.
+  let deleteDialog = $state<{
+    kind: LibraryKind;
+    name: string;
+    installedTargets: LibraryTarget[];
+    versionCount: number;
+  } | null>(null);
+  let deleteNotice = $state<{ tone: "amber"; text: string } | null>(null);
+
+  function askDelete(): void {
+    if (!detail) return;
+    deleteDialog = {
+      kind: detail.kind,
+      name: detail.name,
+      installedTargets: installs.map((i) => i.target),
+      versionCount: detail.versions.length,
+    };
+    deleteNotice = null;
+  }
+
+  async function confirmDelete(): Promise<void> {
+    const intent = deleteDialog;
+    if (!intent || lifecycleBusy) return;
+    lifecycleBusy = true;
+    deleteNotice = null;
+    try {
+      const res = await deletePrimitive(intent.kind, intent.name);
+      if (!res.library_dir_removed) {
+        // A bailed force-uninstall: the library was NOT deleted. Surface the
+        // unreachable targets in the dialog instead of reporting false success.
+        const targets = res.uninstall.failures.map((f) => f.target).join(", ");
+        deleteNotice = {
+          tone: "amber",
+          text: `Not deleted — couldn’t uninstall from ${targets || "a target"}. Resolve on disk and retry.`,
+        };
+        reloadInstallState();
+        return;
+      }
+      deleteDialog = null;
+      selected = null; // the selection no longer resolves — clear it
+      primitivesRes.reload();
+      driftBatchRes.reload();
+      const cue = deleteResultCue(res.library_dir_removed, res.commit_error);
+      lifecycleNotice = { tone: cue.tone, text: `Deleted ${intent.name} · ${cue.label}` };
+    } catch (e) {
+      deleteNotice = { tone: "amber", text: noticeFor(e, "Couldn’t delete the primitive.") };
+    } finally {
+      lifecycleBusy = false;
+    }
+  }
 </script>
 
 <div class="library">
@@ -821,8 +1065,31 @@
       <aside class="explorer panel">
         <div class="panel-head">
           <h3>Library</h3>
-          <Badge>{filtered.length} items</Badge>
+          <div class="head-actions">
+            <Badge>{filtered.length} items</Badge>
+            <button type="button" class="head-btn" title="Create a new primitive" onclick={openCreate}>
+              <Icon name="plus" size={13} /> New
+            </button>
+            <button
+              type="button"
+              class="head-btn"
+              title="Import a primitive from a local install path"
+              onclick={openImportPath}
+            >
+              <Icon name="folder" size={13} /> Import
+            </button>
+          </div>
         </div>
+        {#if lifecycleNotice}
+          <div
+            class="route-notice"
+            class:warn={lifecycleNotice.tone === "amber"}
+            class:info={lifecycleNotice.tone === "cyan"}
+            role="status"
+          >
+            {lifecycleNotice.text}
+          </div>
+        {/if}
         <label class="search">
           <Icon name="search" size={14} />
           <input type="text" bind:value={query} placeholder="Filter primitives" />
@@ -950,7 +1217,25 @@
                 <p>{detail.metadata.display_name}</p>
               {/if}
             </div>
-            <Badge tone={headCue.tone}>{headCue.glyph} {headCue.label}</Badge>
+            <div class="head-right">
+              <Badge tone={headCue.tone}>{headCue.glyph} {headCue.label}</Badge>
+              <div class="doc-actions">
+                <button type="button" class="head-btn" title="Rename this primitive" onclick={askRename}>
+                  <Icon name="edit" size={13} /> Rename
+                </button>
+                <button type="button" class="head-btn" title="Duplicate this primitive" onclick={askDuplicate}>
+                  <Icon name="layers" size={13} /> Duplicate
+                </button>
+                <button
+                  type="button"
+                  class="head-btn danger-btn"
+                  title="Delete this primitive from the library"
+                  onclick={askDelete}
+                >
+                  <Icon name="trash" size={13} /> Delete
+                </button>
+              </div>
+            </div>
           </header>
 
           <!-- Editable metadata (display_name / author / allowed_targets) — keyed
@@ -1373,6 +1658,177 @@
           <button type="button" class="act" onclick={() => (reimportBroken = null)}>Cancel</button>
           <button type="button" class="act primary" onclick={saveReimportFix}>
             Fix &amp; reimport as {reimportBroken.intent.label}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Create a new (blank) primitive: kind select + name input. A collision /
+       invalid-name surfaces INLINE (createNotice), never as a shell toast. -->
+  {#if createOpen}
+    <div class="dialog-scrim" role="dialog" aria-modal="true" aria-labelledby="create-title">
+      <div class="dialog">
+        <h3 id="create-title">New primitive</h3>
+        <p>Scaffold an empty primitive in the library. You can edit its working copy and publish a version next.</p>
+        <label class="dialog-field">
+          <span>Kind</span>
+          <select bind:value={createKind} disabled={lifecycleBusy}>
+            {#each KIND_ORDER as k (k)}
+              <option value={k}>{KIND_LABELS[k]}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="dialog-field">
+          <span>Name</span>
+          <input
+            class="mono"
+            type="text"
+            placeholder="my-primitive"
+            bind:value={createName}
+            disabled={lifecycleBusy}
+          />
+        </label>
+        {#if createNotice}
+          <div class="route-notice warn" role="status">{createNotice.text}</div>
+        {/if}
+        <div class="dialog-actions">
+          <button type="button" class="act" onclick={() => (createOpen = false)}>Cancel</button>
+          <button type="button" class="act primary" disabled={lifecycleBusy} onclick={doCreate}>
+            {lifecycleBusy ? "Creating…" : "Create"}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Import-from-path: a TYPED path (the 10a web redesign — no native picker).
+       Only a path already under a recognized install root auto-imports; anything
+       else returns not_classifiable with a pointer toward the bootstrap wizard. -->
+  {#if importPathOpen}
+    <div class="dialog-scrim" role="dialog" aria-modal="true" aria-labelledby="import-path-title">
+      <div class="dialog">
+        <h3 id="import-path-title">Import from a path</h3>
+        <p>
+          Enter the path to a primitive already installed under a recognized root (e.g.
+          <span class="mono">~/.claude/skills/my-skill</span>). It’s copied <em>into</em> the library as a new
+          version — nothing on disk changes.
+        </p>
+        <label class="dialog-field">
+          <span>Source path</span>
+          <input
+            class="mono"
+            type="text"
+            placeholder="/Users/you/.claude/skills/my-skill"
+            bind:value={importPathValue}
+            disabled={lifecycleBusy}
+          />
+        </label>
+        {#if importPathNotice}
+          <div
+            class="route-notice"
+            class:warn={importPathNotice.tone === "amber"}
+            class:info={importPathNotice.tone === "cyan"}
+            role="status"
+          >
+            {importPathNotice.text}
+          </div>
+        {/if}
+        <div class="dialog-actions">
+          <button type="button" class="act" onclick={() => (importPathOpen = false)}>Cancel</button>
+          <button type="button" class="act primary" disabled={lifecycleBusy} onclick={doImportFromPath}>
+            {lifecycleBusy ? "Importing…" : "Import"}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Rename: captured-intent {kind,name,newName} (D2). Surfaces the install
+       caveat AFTER the write (records migrate; on-disk copies keep the old name). -->
+  {#if renameDialog}
+    <div class="dialog-scrim" role="dialog" aria-modal="true" aria-labelledby="rename-title">
+      <div class="dialog">
+        <h3 id="rename-title">Rename primitive</h3>
+        <p>
+          Rename <strong>{renameDialog.name}</strong> in the library. Any installed copies keep the old name on
+          disk until you reinstall.
+        </p>
+        <label class="dialog-field">
+          <span>New name</span>
+          <input class="mono" type="text" bind:value={renameDialog.newName} disabled={lifecycleBusy} />
+        </label>
+        {#if renameNotice}
+          <div class="route-notice warn" role="status">{renameNotice.text}</div>
+        {/if}
+        <div class="dialog-actions">
+          <button type="button" class="act" onclick={() => (renameDialog = null)}>Cancel</button>
+          <button type="button" class="act primary" disabled={lifecycleBusy} onclick={confirmRename}>
+            {lifecycleBusy ? "Renaming…" : "Rename"}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Duplicate: captured-intent {kind,name,newName} (D2). Copies the working
+       copy only — versions and install records are not carried. -->
+  {#if duplicateDialog}
+    <div class="dialog-scrim" role="dialog" aria-modal="true" aria-labelledby="duplicate-title">
+      <div class="dialog">
+        <h3 id="duplicate-title">Duplicate primitive</h3>
+        <p>
+          Copy <strong>{duplicateDialog.name}</strong>’s working copy to a new primitive. The copy starts with no
+          published version and is not installed anywhere.
+        </p>
+        <label class="dialog-field">
+          <span>New name</span>
+          <input class="mono" type="text" bind:value={duplicateDialog.newName} disabled={lifecycleBusy} />
+        </label>
+        {#if duplicateNotice}
+          <div class="route-notice warn" role="status">{duplicateNotice.text}</div>
+        {/if}
+        <div class="dialog-actions">
+          <button type="button" class="act" onclick={() => (duplicateDialog = null)}>Cancel</button>
+          <button type="button" class="act primary" disabled={lifecycleBusy} onclick={confirmDuplicate}>
+            {lifecycleBusy ? "Duplicating…" : "Duplicate"}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Delete — the headline two-phase confirm. Lists the blast radius (installed
+       targets + version count) captured at OPEN time (D2/A4), fires nothing
+       before this second confirm, and locks the button in-flight. The danger cue
+       is label+glyph+amber tone (never bare red — Scott is red/green CVD). -->
+  {#if deleteDialog}
+    <div class="dialog-scrim" role="dialog" aria-modal="true" aria-labelledby="delete-title">
+      <div class="dialog">
+        <h3 id="delete-title">Delete {deleteDialog.name}?</h3>
+        <p>
+          This permanently removes <strong>{deleteDialog.name}</strong> from the library — its working copy and
+          <strong>{deleteDialog.versionCount}</strong>
+          {deleteDialog.versionCount === 1 ? "version" : "versions"}.
+        </p>
+        {#if deleteDialog.installedTargets.length}
+          <p>It is currently installed to, and will be force-uninstalled from:</p>
+          <ul class="conflict-list">
+            {#each deleteDialog.installedTargets as t (t)}
+              <li class="mono">{t}</li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="muted-line">It is not installed to any target.</p>
+        {/if}
+        <p class="dialog-warn">⚠ This deletes the library files and the on-disk installs. There is no backup.</p>
+        {#if deleteNotice}
+          <div class="route-notice warn" role="status">{deleteNotice.text}</div>
+        {/if}
+        <div class="dialog-actions">
+          <button type="button" class="act" onclick={() => (deleteDialog = null)}>Cancel</button>
+          <button type="button" class="act danger" disabled={lifecycleBusy} onclick={confirmDelete}>
+            {lifecycleBusy ? "Deleting…" : "Delete permanently"}
           </button>
         </div>
       </div>
@@ -1909,6 +2365,49 @@
   .route-notice.warn {
     border-left-color: var(--amber);
   }
+  .route-notice.info {
+    border-left-color: var(--cyan, var(--accent-from));
+  }
+  /* Explorer + detail header action buttons (lifecycle slice). Chrome matches
+     .import-btn; the delete variant is amber-bordered, NEVER red (Scott is
+     red/green colorblind — the trash glyph + label carry the destructive cue). */
+  .head-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .head-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+  }
+  .doc-actions {
+    display: flex;
+    gap: 6px;
+  }
+  .head-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 9px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 11px;
+  }
+  .head-btn:hover:not(:disabled) {
+    border-color: var(--border-glow);
+  }
+  .head-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .head-btn.danger-btn {
+    border-color: color-mix(in srgb, var(--amber) 55%, var(--border));
+    color: var(--amber);
+  }
   .targets-section,
   .overlays-section {
     margin-top: 16px;
@@ -2064,6 +2563,7 @@
     font-style: normal;
   }
   .dialog-field input,
+  .dialog-field select,
   .dialog-field textarea {
     padding: 6px 8px;
     border: 1px solid var(--border);

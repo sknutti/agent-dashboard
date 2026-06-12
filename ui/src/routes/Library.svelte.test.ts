@@ -718,3 +718,190 @@ describe("Library route — content search (search slice)", () => {
     expect(await screen.findByRole("button", { name: "Retry" })).toBeTruthy();
   });
 });
+
+// ── primitive lifecycle (lifecycle slice) ───────────────────────────────────
+// The deliverables: create / rename / duplicate / import affordances, and — the
+// headline — a TWO-PHASE delete confirm that lists the blast radius, fires
+// nothing before the second confirm, and surfaces a bailed force-uninstall
+// instead of reporting false success.
+
+const DELETE_OK = {
+  uninstall: { successes: [{ target: "claude" as const, outcome: { kind: "removed" as const } }], failures: [] },
+  library_dir_removed: true,
+  committed: true,
+  commit_error: null,
+};
+const DELETE_BAILED = {
+  uninstall: {
+    successes: [],
+    failures: [{ target: "claude" as const, reason: { kind: "io" as const, path: "p", message: "ENOTDIR" } }],
+  },
+  library_dir_removed: false,
+  committed: false,
+  commit_error: null,
+};
+
+describe("Library route — primitive lifecycle (create / rename / duplicate / import)", () => {
+  test("create: New → form → Create calls createPrimitive(kind,name) and shows a success cue", async () => {
+    mockValidLibrary();
+    const spy = vi.spyOn(api, "createPrimitive").mockResolvedValue({ committed: true, commit_error: null });
+    render(Library);
+    await fireEvent.click(await screen.findByRole("button", { name: "New" }));
+    await fireEvent.input(screen.getByPlaceholderText("my-primitive"), { target: { value: "triage" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(spy).toHaveBeenCalledWith("skill", "triage");
+    expect(await screen.findByText(/Created triage/)).toBeTruthy();
+  });
+
+  test("create: an empty name is refused client-side before any round-trip", async () => {
+    mockValidLibrary();
+    const spy = vi.spyOn(api, "createPrimitive").mockResolvedValue({ committed: true, commit_error: null });
+    render(Library);
+    await fireEvent.click(await screen.findByRole("button", { name: "New" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(screen.getByText(/Enter a name/)).toBeTruthy();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("create: a name collision (409) shows an INLINE field notice, never a shell toast", async () => {
+    mockValidLibrary();
+    vi.spyOn(api, "createPrimitive").mockRejectedValue(
+      new api.LibraryApiError("library_primitive_exists", "a primitive with that name already exists"),
+    );
+    render(Library);
+    await fireEvent.click(await screen.findByRole("button", { name: "New" }));
+    await fireEvent.input(screen.getByPlaceholderText("my-primitive"), { target: { value: "diagnose" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    // The route-local message renders inline; the dialog stays open to fix the name.
+    expect(await screen.findByText(/already exists/)).toBeTruthy();
+    expect(screen.getByPlaceholderText("my-primitive")).toBeTruthy();
+  });
+
+  test("import-from-path: a NotClassifiable result routes to a bootstrap hint, not an error", async () => {
+    mockValidLibrary();
+    const spy = vi.spyOn(api, "importFromPath").mockResolvedValue({
+      kind: "not_classifiable",
+      reason: "path is not under a recognized install root",
+    });
+    render(Library);
+    await fireEvent.click(await screen.findByRole("button", { name: "Import" }));
+    const dlg = await screen.findByRole("dialog");
+    await fireEvent.input(within(dlg).getByPlaceholderText(/\.claude\/skills/), { target: { value: "/tmp/stray" } });
+    await fireEvent.click(within(dlg).getByRole("button", { name: "Import" }));
+    expect(spy).toHaveBeenCalledWith("/tmp/stray");
+    expect(await screen.findByText(/not auto-importable/)).toBeTruthy();
+  });
+
+  test("import-from-path: an Imported result selects the new primitive + shows a success cue", async () => {
+    mockValidLibrary();
+    vi.spyOn(api, "importFromPath").mockResolvedValue({
+      kind: "imported",
+      primitive_kind: "skill",
+      name: "imported-skill",
+      committed: true,
+      commit_error: null,
+    });
+    const detailSpy = vi.spyOn(api, "getLibraryPrimitiveDetail");
+    render(Library);
+    await fireEvent.click(await screen.findByRole("button", { name: "Import" }));
+    const dlg = await screen.findByRole("dialog");
+    await fireEvent.input(within(dlg).getByPlaceholderText(/\.claude\/skills/), {
+      target: { value: "/home/me/.claude/skills/imported-skill" },
+    });
+    await fireEvent.click(within(dlg).getByRole("button", { name: "Import" }));
+    expect(await screen.findByText(/Imported imported-skill/)).toBeTruthy();
+    expect(detailSpy).toHaveBeenCalledWith("skill", "imported-skill"); // routed selection
+  });
+
+  test("rename: confirming calls renamePrimitive and surfaces the 'installed copies keep the old name' caveat", async () => {
+    mockValidLibrary(INSTALLABLE, { installs: [INSTALLED_CLAUDE] });
+    const spy = vi.spyOn(api, "renamePrimitive").mockResolvedValue({
+      install_records_updated: 1,
+      committed: true,
+      commit_error: null,
+    });
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    const dlg = await screen.findByRole("dialog");
+    await fireEvent.input(within(dlg).getByRole("textbox"), { target: { value: "triage" } });
+    await fireEvent.click(within(dlg).getByRole("button", { name: "Rename" }));
+    expect(spy).toHaveBeenCalledWith("skill", "diagnose", "triage");
+    expect(await screen.findByText(/1 installed copy keeps the old name/)).toBeTruthy();
+  });
+
+  test("duplicate: confirming calls duplicatePrimitive with the prefilled '-copy' name", async () => {
+    mockValidLibrary();
+    const spy = vi.spyOn(api, "duplicatePrimitive").mockResolvedValue({
+      new_name: "diagnose-copy",
+      committed: true,
+      commit_error: null,
+    });
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+    const dlg = await screen.findByRole("dialog");
+    // The new-name input is prefilled with `<name>-copy`.
+    expect((within(dlg).getByRole("textbox") as HTMLInputElement).value).toBe("diagnose-copy");
+    await fireEvent.click(within(dlg).getByRole("button", { name: "Duplicate" }));
+    expect(spy).toHaveBeenCalledWith("skill", "diagnose", "diagnose-copy");
+    expect(await screen.findByText(/Duplicated to diagnose-copy/)).toBeTruthy();
+  });
+});
+
+describe("Library route — delete (the headline two-phase confirm)", () => {
+  test("delete is TWO-PHASE: the confirm lists the blast radius and NO request fires before the second confirm", async () => {
+    mockValidLibrary(INSTALLABLE, { installs: [INSTALLED_CLAUDE] });
+    const spy = vi.spyOn(api, "deletePrimitive").mockResolvedValue(DELETE_OK);
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    // Phase 1: the confirm is up, listing what's installed + the version count.
+    const dlg = await screen.findByRole("dialog");
+    expect(within(dlg).getByText("claude")).toBeTruthy(); // the installed target (blast radius)
+    expect(within(dlg).getByText(/no backup/i)).toBeTruthy(); // the destructive warning
+    expect(spy).not.toHaveBeenCalled(); // nothing fired yet
+    // Phase 2: only the explicit confirm dispatches the delete.
+    await fireEvent.click(within(dlg).getByRole("button", { name: "Delete permanently" }));
+    expect(spy).toHaveBeenCalledWith("skill", "diagnose");
+    expect(await screen.findByText(/Deleted diagnose/)).toBeTruthy();
+  });
+
+  test("a BAILED delete (uninstall failure, dir untouched) surfaces the unreachable target, never a flat success", async () => {
+    mockValidLibrary(INSTALLABLE, { installs: [INSTALLED_CLAUDE] });
+    vi.spyOn(api, "deletePrimitive").mockResolvedValue(DELETE_BAILED);
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const dlg = await screen.findByRole("dialog");
+    await fireEvent.click(within(dlg).getByRole("button", { name: "Delete permanently" }));
+    // The bail is surfaced in the still-open dialog; success is NOT claimed.
+    expect(await screen.findByText(/uninstall from claude/)).toBeTruthy(); // names the unreachable target
+    expect(screen.queryByText(/Deleted diagnose ·/)).toBeNull(); // never a false success cue
+  });
+
+  test("the destructive confirm is distinguishable WITHOUT color: an explicit label + warning copy", async () => {
+    mockValidLibrary(INSTALLABLE, { installs: [INSTALLED_CLAUDE] });
+    vi.spyOn(api, "deletePrimitive").mockResolvedValue(DELETE_OK);
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const dlg = await screen.findByRole("dialog");
+    // The danger is carried by an unambiguous LABEL + copy (Scott is red/green
+    // CVD — color alone must never be the signal).
+    expect(within(dlg).getByRole("button", { name: "Delete permanently" })).toBeTruthy();
+    expect(within(dlg).getByText(/There is no backup/)).toBeTruthy();
+  });
+
+  test("cancelling the delete confirm fires no request and keeps the primitive selected", async () => {
+    mockValidLibrary(INSTALLABLE, { installs: [INSTALLED_CLAUDE] });
+    const spy = vi.spyOn(api, "deletePrimitive").mockResolvedValue(DELETE_OK);
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const dlg = await screen.findByRole("dialog");
+    await fireEvent.click(within(dlg).getByRole("button", { name: "Cancel" }));
+    expect(spy).not.toHaveBeenCalled();
+    expect(screen.getByText("Install targets")).toBeTruthy(); // still on the detail
+  });
+});
