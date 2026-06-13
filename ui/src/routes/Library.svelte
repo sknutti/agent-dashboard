@@ -33,12 +33,14 @@
     readPrimitiveVersion,
     searchLibrary,
     createPrimitive,
+    fetchPrimitiveFromUrl,
     deletePrimitive,
     renamePrimitive,
     duplicatePrimitive,
     importFromPath,
     LibraryApiError,
     type LibraryKind,
+    type LibraryFetchedPrimitive,
     type LibraryTarget,
     type LibraryInstallSummary,
     type LibraryUninstallSummary,
@@ -810,12 +812,50 @@
   let createKind = $state<LibraryKind>("skill");
   let createName = $state("");
   let createNotice = $state<{ tone: "amber"; text: string } | null>(null);
+  // URL import (Slice 10b): the fetched preview, stashed so `doCreate` can
+  // forward it as the `imported` seed. It is INVALIDATED whenever the URL input
+  // changes (`onUrlInput`) — so a fetch of URL A followed by editing to B never
+  // creates A's content (stale-fetch guard; event-driven, no effect).
+  let createUrl = $state("");
+  let createFetched = $state<LibraryFetchedPrimitive | null>(null);
+  let createFetching = $state(false);
 
   function openCreate(): void {
     createOpen = true;
     createKind = "skill";
     createName = "";
     createNotice = null;
+    createUrl = "";
+    createFetched = null;
+  }
+
+  /** Editing the URL invalidates a prior fetch — the stash only ever holds the
+   *  preview for the CURRENT URL, so `doCreate` can forward it safely. */
+  function onUrlInput(): void {
+    createFetched = null;
+  }
+
+  async function doFetch(): Promise<void> {
+    if (createFetching) return;
+    const url = createUrl.trim();
+    if (!url) {
+      createNotice = { tone: "amber", text: "Paste a GitHub file or SKILL.md URL to fetch." };
+      return;
+    }
+    createFetching = true;
+    createNotice = null;
+    try {
+      const fetched = await fetchPrimitiveFromUrl(url);
+      createFetched = fetched;
+      // Pre-fill the name from the URL's stem (editable); never clobber a name
+      // the user already typed.
+      if (!createName.trim() && fetched.suggested_name) createName = fetched.suggested_name;
+    } catch (e) {
+      createFetched = null;
+      createNotice = { tone: "amber", text: noticeFor(e, "Couldn’t fetch from that URL.") };
+    } finally {
+      createFetching = false;
+    }
   }
 
   async function doCreate(): Promise<void> {
@@ -828,12 +868,19 @@
     lifecycleBusy = true;
     createNotice = null;
     try {
-      const res = await createPrimitive(createKind, name);
+      // `createFetched` is non-null ONLY when it matches the current URL (cleared
+      // on every URL edit) — so a stale fetch can never seed the create (D5/D1).
+      // Pass the seed arg ONLY when present, so the empty-create call stays the
+      // unchanged 2-arg form.
+      const res = createFetched
+        ? await createPrimitive(createKind, name, createFetched)
+        : await createPrimitive(createKind, name);
       createOpen = false;
       primitivesRes.reload();
       selectPrimitive(selectionKey(createKind, name));
       const cue = lifecycleCommitCue(res.committed, res.commit_error);
-      lifecycleNotice = { tone: cue.tone, text: `Created ${name} · ${cue.label}` };
+      const how = createFetched ? `Imported ${name}` : `Created ${name}`;
+      lifecycleNotice = { tone: cue.tone, text: `${how} · ${cue.label}` };
     } catch (e) {
       createNotice = { tone: "amber", text: noticeFor(e, "Couldn’t create the primitive.") };
     } finally {
@@ -1707,7 +1754,7 @@
     <div class="dialog-scrim" role="dialog" aria-modal="true" aria-labelledby="create-title">
       <div class="dialog">
         <h3 id="create-title">New primitive</h3>
-        <p>Scaffold an empty primitive in the library. You can edit its working copy and publish a version next.</p>
+        <p>Scaffold an empty primitive, or seed it from a GitHub URL. You can edit its working copy and publish a version next.</p>
         <label class="dialog-field">
           <span>Kind</span>
           <select bind:value={createKind} disabled={lifecycleBusy}>
@@ -1716,6 +1763,48 @@
             {/each}
           </select>
         </label>
+        <!-- URL import (Slice 10b): optional. Fetch previews the content; the
+             actual write happens on Create with the stashed preview as the seed.
+             Only github.com / raw.githubusercontent.com URLs are accepted (the
+             SSRF allowlist lives in-core). -->
+        <label class="dialog-field">
+          <span>From URL <span class="field-hint">(optional)</span></span>
+          <div class="url-row">
+            <input
+              class="mono"
+              type="url"
+              placeholder="https://github.com/owner/repo/blob/main/skills/x/SKILL.md"
+              bind:value={createUrl}
+              oninput={onUrlInput}
+              disabled={lifecycleBusy || createFetching}
+              data-testid="create-url-input"
+            />
+            <button
+              type="button"
+              class="act"
+              disabled={lifecycleBusy || createFetching || !createUrl.trim()}
+              onclick={doFetch}
+              data-testid="create-fetch-btn"
+            >
+              {createFetching ? "Fetching…" : "Fetch"}
+            </button>
+          </div>
+        </label>
+        {#if createFetched}
+          <div class="fetch-preview" data-testid="fetch-preview">
+            <span class="cue cyan">◆ fetched</span>
+            <dl>
+              {#if createFetched.author}<dt>Author</dt><dd>{createFetched.author}</dd>{/if}
+              <dt>Source</dt>
+              <dd class="mono trunc">{createFetched.source_url}</dd>
+              {#if createFetched.ref_files.length > 0}
+                <dt>Supporting files</dt>
+                <dd>+ {createFetched.ref_files.length} file{createFetched.ref_files.length === 1 ? "" : "s"}</dd>
+              {/if}
+            </dl>
+            <pre class="excerpt">{createFetched.content.slice(0, 400)}{createFetched.content.length > 400 ? "…" : ""}</pre>
+          </div>
+        {/if}
         <label class="dialog-field">
           <span>Name</span>
           <input
@@ -2644,6 +2733,56 @@
   .dialog-field textarea {
     resize: vertical;
     font-family: inherit;
+  }
+  /* URL import (Slice 10b) */
+  .field-hint {
+    color: var(--text-dim);
+    font-weight: 400;
+  }
+  .url-row {
+    display: flex;
+    gap: 6px;
+  }
+  .url-row input {
+    flex: 1;
+    min-width: 0;
+  }
+  .fetch-preview {
+    margin: 0 0 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-inset, transparent);
+    font-size: 11.5px;
+  }
+  .fetch-preview dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 2px 10px;
+    margin: 6px 0;
+  }
+  .fetch-preview dt {
+    color: var(--text-dim);
+  }
+  .fetch-preview dd {
+    margin: 0;
+    color: var(--text-subtle);
+  }
+  .fetch-preview .trunc {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .fetch-preview .excerpt {
+    max-height: 7rem;
+    overflow: auto;
+    margin: 6px 0 0;
+    padding: 6px;
+    border-radius: 4px;
+    background: var(--bg, #111);
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
   .fix-buffer {
     width: 100%;

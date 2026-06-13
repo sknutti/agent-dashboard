@@ -882,8 +882,39 @@ export interface LibraryForgetResult {
 /** Scaffold a new (blank) primitive, then commit. A name collision →
  *  LibraryApiError("library_primitive_exists") (409); a malformed name →
  *  "library_invalid_name" (422). Returns the advisory commit result. */
-export const createPrimitive = (kind: LibraryKind, name: string) =>
-  sendJson<LibraryPublishResult>("/api/library/primitives", "POST", { kind, name });
+// --- URL import (Slice 10b) ------------------------------------------------
+export interface LibraryRefFile {
+  rel_path: string;
+  /** Raw bytes as a JSON number array (the Vec<u8> wire convention). */
+  content: number[];
+}
+export interface LibraryFetchedPrimitive {
+  content: string;
+  suggested_name: string;
+  author: string | null;
+  source_url: string;
+  ref_files: LibraryRefFile[];
+}
+
+/** Fetch a primitive from a GitHub URL (the second egress). A network READ; the
+ *  preview is reviewed before a separate create writes it. Disallowed/oversize/
+ *  rate-limited fetches ride LibraryApiError (`library_unsupported_source_url` /
+ *  `library_github_rate_limited` / `library_fetch_failed` / `library_bundle_invalid`). */
+export const fetchPrimitiveFromUrl = (url: string) =>
+  sendJson<LibraryFetchedPrimitive>("/api/library/import/fetch", "POST", { url });
+
+/** Create a primitive — optionally SEEDED from a fetched preview (Slice 10b).
+ *  Absent `imported` → the empty scaffold (byte-for-byte unchanged). */
+export const createPrimitive = (
+  kind: LibraryKind,
+  name: string,
+  imported?: LibraryFetchedPrimitive | null,
+) =>
+  sendJson<LibraryPublishResult>(
+    "/api/library/primitives",
+    "POST",
+    imported ? { kind, name, imported } : { kind, name },
+  );
 
 /** Wipe a primitive — force-uninstall every target, rm -rf the dir, drop records,
  *  commit. The result rides 200 as data: inspect `library_dir_removed` +

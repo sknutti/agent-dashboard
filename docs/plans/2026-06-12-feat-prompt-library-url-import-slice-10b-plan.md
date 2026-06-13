@@ -110,7 +110,10 @@ Test-first within each phase. Each phase is independently gate-able. The network
   - **m4 tripwire:** a `FetchFailed` whose detail contains the URL → the response body carries neither the URL nor the detail;
   - **route-local failure:** a bridge fetch failure leaves `/api/summary`, `/api/agents`, `/healthz`, doctor at 200.
 
-### Phase 3: UI — "Import from URL" on the create flow
+### Phase 3: UI — "Import from URL" on the create flow — ✅ DONE (2026-06-12, pending browser QA)
+> **Status:** Built. `api.ts`: `fetchPrimitiveFromUrl(url)` (POST `/api/library/import/fetch` via `sendJson` → typed `LibraryApiError`) + `createPrimitive` gains an optional `imported` arg (passed only when present, so the empty-create call stays the unchanged 2-arg form — the existing create test is preserved untouched). `Library.svelte` create modal gains a "From URL (optional)" input + Fetch button → a preview (author / source / content excerpt / "+ N supporting files") → seeded Create. **Stale-fetch guard:** `onUrlInput` clears the stashed preview on every URL edit, so a fetch of URL A then an edit to B never seeds A's content — event-driven, no effect (repo rule). Fetch errors reuse `noticeFor` (the bridge's `message` is already actionable — "unsupported source URL", "GitHub rate limit reached — wait and retry") shown as the inline amber `createNotice`, never a toast; CVD-safe (label-based + amber/cyan, no bare red/green). Tests (`Library.svelte.test.ts`): fetch pre-fills the name + shows the preview + ref-file count, unsupported URL → inline notice (no preview), rate-limited → distinct message, create forwards the seed, and editing the URL invalidates the stash (2-arg create, no stale seed). Gate: `bun run check` fully green — tsc 0, scripts 438, svelte-check 442/0, ui vitest **199 pass** (+5). **Remaining: browser QA** — paste a real public GitHub blob URL + a real SKILL.md folder URL (needs Scott; Claude can't drive the real network fetch or restart the session).
+
+### Phase 3 (original plan): UI — "Import from URL" on the create flow
 
 - **Objective:** Add a URL-paste affordance to the existing create form: fetch → preview (name/author/content + ref-file count) → edit the name → create (seeded).
 - **Changes:**
