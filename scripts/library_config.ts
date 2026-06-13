@@ -12,11 +12,12 @@
 // `null` — never a half-parsed or coerced path that could turn the read routes
 // into a filesystem-read oracle over an arbitrary directory.
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { parse as parseYaml } from "yaml";
+import { Document, parseDocument, parse as parseYaml } from "yaml";
 import {
   CONFIG_DIR,
+  DEFAULT_ASKPASS_DIR,
   DEFAULT_BACKUP_DIR,
   DEFAULT_BOOTSTRAP_SESSION_PATH,
   DEFAULT_BRIDGE_PATH,
@@ -55,6 +56,20 @@ export interface LibraryConfig {
    * fresh run; route-injected (D7). Defaults to `DATA_DIR/backups`.
    */
   backupDir: string;
+  /**
+   * The configured GitHub remote URL for git sync (Slice 8), or null when unset.
+   * Persisted in `library.yaml` (`remote_url`) by the configure-remote route —
+   * the ONE route that mutates this file (`persistRemoteUrl`). The bridge
+   * validates + normalizes it but never persists it (it owns no config file); the
+   * route layer injects it into `get_remote_status` as a passthrough.
+   */
+  remoteUrl: string | null;
+  /**
+   * Dashboard-owned directory the bridge writes the git askpass helper into
+   * before each push/pull (always set). Route-injected (D7, never from an HTTP
+   * body), like `installs_path`/`session_path`. Defaults to `DATA_DIR/askpass`.
+   */
+  askpassDir: string;
 }
 
 type Env = Record<string, string | undefined>;
@@ -93,8 +108,50 @@ export function loadLibraryConfig(
     DEFAULT_BOOTSTRAP_SESSION_PATH;
   const backupDir =
     str(env.CC_LIBRARY_BACKUP_DIR) ?? str(cfg?.backup_dir) ?? DEFAULT_BACKUP_DIR;
+  // remoteUrl: nullable (unset until a remote is configured). Same env > config
+  // precedence; no default — null means "not configured", surfaced by the status
+  // route. askpassDir: always-set, same precedence as installsPath/sessionPath.
+  const remoteUrl = str(env.CC_LIBRARY_REMOTE_URL) ?? str(cfg?.remote_url) ?? null;
+  const askpassDir =
+    str(env.CC_LIBRARY_ASKPASS_DIR) ?? str(cfg?.askpass_dir) ?? DEFAULT_ASKPASS_DIR;
 
-  return { libraryPath, bridgePath, installsPath, home, sessionPath, backupDir };
+  return {
+    libraryPath,
+    bridgePath,
+    installsPath,
+    home,
+    sessionPath,
+    backupDir,
+    remoteUrl,
+    askpassDir,
+  };
+}
+
+/**
+ * Persist the normalized remote URL to `config/library.yaml` — the ONLY routine
+ * that mutates the config file (Slice 8, D1). The bridge validates + normalizes
+ * but owns no config file, so persistence lives here.
+ *
+ * Uses the `yaml` Document API (not parse→stringify) to PRESERVE the file's
+ * human comments + key order, and writes atomically (temp + rename) so a crash
+ * never leaves a half-written config. Unrelated keys (`library_path`, …) are
+ * preserved untouched; a missing file starts a fresh document.
+ */
+export function persistRemoteUrl(url: string, configDir: string = CONFIG_DIR): void {
+  const path = join(configDir, "library.yaml");
+  let doc: Document;
+  try {
+    doc = parseDocument(readFileSync(path, "utf8"));
+    // An empty/blank file parses to a null-content doc — start a fresh map so
+    // `.set` has somewhere to write.
+    if (doc.contents === null) doc = new Document({});
+  } catch {
+    doc = new Document({}); // missing file → fresh document
+  }
+  doc.set("remote_url", url);
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, String(doc));
+  renameSync(tmp, path);
 }
 
 export interface BridgeHealth {

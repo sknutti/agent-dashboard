@@ -60,6 +60,8 @@ const CONFIGURED: LibraryConfig = {
   home: "/home/test",
   sessionPath: "/data/bootstrap-session.json",
   backupDir: "/data/backups",
+  remoteUrl: null,
+  askpassDir: "/data/askpass",
 };
 const UNCONFIGURED: LibraryConfig = {
   libraryPath: null,
@@ -68,6 +70,8 @@ const UNCONFIGURED: LibraryConfig = {
   home: "/home/test",
   sessionPath: "/data/bootstrap-session.json",
   backupDir: "/data/backups",
+  remoteUrl: null,
+  askpassDir: "/data/askpass",
 };
 
 // Stubs standing in for runBridge — the route logic is tested with NO subprocess.
@@ -1936,5 +1940,202 @@ describe("registerLibraryRoutes — bootstrap HTTP wiring", () => {
     const scan = await app.request("/api/library/bootstrap/scan");
     expect([409, 422, 502]).toContain(scan.status);
     expect((await app.request("/api/summary")).status).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Git remote sync routes (Slice 8) — incl. the D6 secret-redaction tripwire
+// ---------------------------------------------------------------------------
+import { spyOn } from "bun:test";
+import {
+  buildConfigureRemote,
+  buildSetPat,
+  buildDeletePat,
+  buildRemoteStatus,
+  buildScanBeforePush,
+  buildUnpushedCount,
+  buildPush,
+  buildPull,
+  buildIsPullPaused,
+  buildListConflicts,
+  buildReadConflictBlob,
+  buildResolveConflict,
+  buildContinuePull,
+  buildAbortPull,
+} from "./library_routes.ts";
+
+const WITH_REMOTE = { ...CONFIGURED, remoteUrl: "https://github.com/o/r" };
+const PLANTED_PAT = "ghp_PLANTEDsecret0123456789abcdefghijkl";
+
+describe("statusForCode — git-sync codes (Slice 8)", () => {
+  test("preconditions are 409", () => {
+    for (const c of ["no_pat_stored", "remote_not_configured", "askpass_unconfigured"])
+      expect(statusForCode(c)).toBe(409);
+  });
+  test("bad inputs are 422", () => {
+    for (const c of ["empty_pat", "invalid_remote_url", "invalid_conflict_side", "conflict_path_missing", "conflict_blob_not_utf8"])
+      expect(statusForCode(c)).toBe(422);
+  });
+  test("git/secret faults are 502", () => {
+    for (const c of ["git_failed", "git_timed_out", "secret_store_error"]) expect(statusForCode(c)).toBe(502);
+  });
+});
+
+describe("buildConfigureRemote (validate + persist — D1)", () => {
+  test("a valid URL persists the normalized form and returns it", async () => {
+    const persisted: string[] = [];
+    const r = await buildConfigureRemote(
+      CONFIGURED,
+      { url: "https://github.com/o/r" },
+      okRun({ remote_url: "https://github.com/o/r" }),
+      (u) => persisted.push(u),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ remote_url: "https://github.com/o/r" });
+    expect(persisted).toEqual(["https://github.com/o/r"]);
+  });
+  test("an invalid URL is 422 and NEVER persists", async () => {
+    const persisted: string[] = [];
+    const r = await buildConfigureRemote(
+      CONFIGURED,
+      { url: "http://evil" },
+      errRun({ code: "invalid_remote_url", message: "invalid remote URL", detail: "non-https" }),
+      (u) => persisted.push(u),
+    );
+    expect(r.status).toBe(422);
+    expect(persisted).toEqual([]);
+  });
+  test("passes the library path (origin lives in the repo) and refuses when unconfigured", async () => {
+    const { run, calls } = captureRun({ ok: true, data: { remote_url: "https://github.com/o/r" } });
+    await buildConfigureRemote(CONFIGURED, { url: "https://github.com/o/r" }, run, () => {});
+    expect(calls[0]!.args).toEqual({ path: CONFIGURED.libraryPath, url: "https://github.com/o/r" });
+    // no library → refuse before any spawn or persist
+    const persisted: string[] = [];
+    const r = await buildConfigureRemote(UNCONFIGURED, { url: "https://github.com/o/r" }, okRun({ remote_url: "x" }), (u) => persisted.push(u));
+    expect(r.status).toBe(409); // library_unconfigured
+    expect(persisted).toEqual([]);
+  });
+});
+
+describe("set_pat / get_remote_status — the D6 secret discipline", () => {
+  test("the request PAT is never echoed in the body and never logged (ok path)", async () => {
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    const r = await buildSetPat(CONFIGURED, { pat: PLANTED_PAT }, okRun({}));
+    expect(r.status).toBe(200);
+    expect(JSON.stringify(r.body)).not.toContain(PLANTED_PAT);
+    expect(spy.mock.calls.flat().join(" ")).not.toContain(PLANTED_PAT);
+    spy.mockRestore();
+  });
+  test("even on a bridge error, neither the body nor a forwarded detail leaks (m4)", async () => {
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    // a benign (PAT-free) error detail; assert it stays server-side, never in the body
+    const r = await buildSetPat(
+      CONFIGURED,
+      { pat: PLANTED_PAT },
+      errRun({ code: "secret_store_error", message: "secret store operation failed", detail: "keychain errSecAuthFailed" }),
+    );
+    expect(r.status).toBe(502);
+    expect(r.body).toEqual({ code: "secret_store_error", message: "secret store operation failed" });
+    expect(JSON.stringify(r.body)).not.toContain("keychain errSecAuthFailed"); // detail not forwarded
+    expect(JSON.stringify(r.body)).not.toContain(PLANTED_PAT);
+    spy.mockRestore();
+  });
+  test("get_remote_status injects the config URL and surfaces only the redacted PAT", async () => {
+    const { run, calls } = captureRun({ ok: true, data: { remote_url: WITH_REMOTE.remoteUrl, pat_redacted: "ghp_••••••••cdef" } });
+    const r = await buildRemoteStatus(WITH_REMOTE, run);
+    expect(calls[0]!.command).toBe("get_remote_status");
+    expect(calls[0]!.args).toEqual({ remote_url: "https://github.com/o/r" }); // injected from config
+    expect(r.body).toEqual({ remote_url: "https://github.com/o/r", pat_redacted: "ghp_••••••••cdef" });
+  });
+});
+
+describe("git-sync args are config-built — `secret_store` is NEVER forwarded (security review)", () => {
+  test("set_pat forwards only the pat, never an injected secret_store from the body", async () => {
+    const { run, calls } = captureRun({ ok: true, data: {} });
+    await buildSetPat(CONFIGURED, { pat: PLANTED_PAT, secret_store: "memory" } as any, run);
+    expect(calls[0]!.args).toEqual({ pat: PLANTED_PAT });
+    expect(calls[0]!.args).not.toHaveProperty("secret_store");
+  });
+  test("push forwards only path + askpass_dir — no secret_store, no pat", async () => {
+    const { run, calls } = captureRun({ ok: true, data: {} });
+    await buildPush(WITH_REMOTE, run);
+    expect(calls[0]!.command).toBe("push_now");
+    expect(calls[0]!.args).toEqual({ path: WITH_REMOTE.libraryPath, askpass_dir: WITH_REMOTE.askpassDir });
+    expect(calls[0]!.args).not.toHaveProperty("secret_store");
+    expect(calls[0]!.args).not.toHaveProperty("pat");
+  });
+});
+
+describe("push / pull preconditions + outcomes", () => {
+  test("push refuses without a library (UNCONFIGURED) and without a remote (409)", async () => {
+    expect((await buildPush(UNCONFIGURED, okRun({}))).status).toBe(409); // library_unconfigured → 409
+    const r = await buildPush(CONFIGURED, okRun({})); // CONFIGURED has remoteUrl: null
+    expect(r.status).toBe(409);
+    expect((r.body as any).code).toBe("remote_not_configured");
+  });
+  test("a clean push is 200 {}", async () => {
+    const r = await buildPush(WITH_REMOTE, okRun({}));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({});
+  });
+  test("a pull conflict rides 200 as DATA (not an error)", async () => {
+    const r = await buildPull(WITH_REMOTE, okRun({ outcome: "conflict", conflict_count: 2 }));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ outcome: "conflict", conflict_count: 2 });
+  });
+  test("a git failure is a 502 error envelope", async () => {
+    const r = await buildPull(
+      WITH_REMOTE,
+      errRun({ code: "git_failed", message: "git command failed", detail: "fatal: could not read from remote" }),
+    );
+    expect(r.status).toBe(502);
+    expect((r.body as any).code).toBe("git_failed");
+  });
+});
+
+describe("conflict family (Slice 8)", () => {
+  test("scan-before-push returns findings; unconfigured → 409", async () => {
+    // okRun bypasses `validate`, so pass the PARSED shape (parseScanFindings
+    // unwraps {findings} → a bare array). The parser itself is tested in models.
+    const r = await buildScanBeforePush(WITH_REMOTE, okRun([{ path: "C.md", line: 1, kind: "github_classic_pat", matched: "ghp_x" }]));
+    expect(r.status).toBe(200);
+    expect((r.body as any[]).length).toBe(1);
+    expect((await buildScanBeforePush(UNCONFIGURED, okRun([]))).status).toBe(409);
+  });
+  test("read-conflict-blob forwards conflict_path + side distinctly from the library path", async () => {
+    const { run, calls } = captureRun({ ok: true, data: { content: "local-change\n" } });
+    const r = await buildReadConflictBlob(WITH_REMOTE, "notes.txt", "local", run);
+    expect(calls[0]!.args).toEqual({ path: WITH_REMOTE.libraryPath, conflict_path: "notes.txt", side: "local" });
+    expect(r.body).toEqual({ content: "local-change\n" });
+  });
+  test("resolve-conflict maps body.path → conflict_path", async () => {
+    const { run, calls } = captureRun({ ok: true, data: {} });
+    await buildResolveConflict(WITH_REMOTE, { path: "notes.txt", side: "remote" }, run);
+    expect(calls[0]!.args).toEqual({ path: WITH_REMOTE.libraryPath, conflict_path: "notes.txt", side: "remote" });
+  });
+  test("continue-pull routes done vs still_conflicted", async () => {
+    expect((await buildContinuePull(WITH_REMOTE, okRun({ outcome: "done" }))).body).toEqual({ outcome: "done" });
+    const still = await buildContinuePull(WITH_REMOTE, okRun({ outcome: "still_conflicted", conflict_count: 1 }));
+    expect(still.body).toEqual({ outcome: "still_conflicted", conflict_count: 1 });
+  });
+  test("is-pull-paused + abort + unpushed-count + delete-pat round-trip their shapes", async () => {
+    expect((await buildIsPullPaused(WITH_REMOTE, okRun({ paused: true }))).body).toEqual({ paused: true });
+    expect((await buildAbortPull(WITH_REMOTE, okRun({}))).body).toEqual({});
+    expect((await buildUnpushedCount(WITH_REMOTE, okRun({ count: 4 }))).body).toEqual({ count: 4 });
+    expect((await buildDeletePat(CONFIGURED, okRun({}))).body).toEqual({});
+    expect((await buildListConflicts(WITH_REMOTE, okRun([]))).body).toEqual([]); // parsed shape (parseConflictList unwraps)
+  });
+});
+
+describe("route-local failure — a git route failing leaves the rest of the app at 200", () => {
+  test("a failed git push keeps /api/summary + /healthz at 200", async () => {
+    const app = new Hono();
+    app.get("/api/summary", (c) => c.json({ ok: true }));
+    app.get("/healthz", (c) => c.text("ok"));
+    registerLibraryRoutes(app, () => ({ ...WITH_REMOTE, bridgePath: "/no/such/bridge" }));
+    const push = await app.request("/api/library/git/push", { method: "POST" });
+    expect([409, 422, 502]).toContain(push.status);
+    expect((await app.request("/api/summary")).status).toBe(200);
+    expect((await app.request("/healthz")).status).toBe(200);
   });
 });

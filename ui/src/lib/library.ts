@@ -392,3 +392,29 @@ export function orphanInstalls(
 export function orphanCue(): Cue {
   return { label: "no library primitive", tone: "cyan", glyph: "⊘" };
 }
+
+// --- Git remote sync cues (Slice 8) ----------------------------------------
+// All CVD-safe: label + glyph + Okabe-Ito tone (amber/cyan), never bare
+// red/green (Scott is red/green colorblind). The push-gate "blocked" state is
+// amber ▲ — NOT red — so it reads as "stop and review", not a hard error.
+
+/** The secret-scan push gate. A finding BLOCKS push pending review (D4). */
+export function pushGateCue(findingCount: number): Cue {
+  return findingCount > 0
+    ? { label: `${findingCount} secret${findingCount === 1 ? "" : "s"} found — review before pushing`, tone: "amber", glyph: "▲" }
+    : { label: "no secrets found", tone: "default", glyph: "✓" };
+}
+
+/** Overall sync state for the panel header. Paused (mid-rebase) outranks
+ *  ahead-count; both are distinguishable from synced by label + glyph, not tone. */
+export function syncStateCue(unpushed: number, paused: boolean): Cue {
+  if (paused) return { label: "pull paused — resolve conflicts", tone: "amber", glyph: "⚠" };
+  if (unpushed > 0) return { label: `${unpushed} to push`, tone: "cyan", glyph: "↑" };
+  return { label: "up to date", tone: "default", glyph: "✓" };
+}
+
+/** A conflict-row renderer hint: side-by-side value-pickers for the structured
+ *  files, a copy-path escape hatch for the rest (Slice 10c — no native reveal). */
+export function conflictResolvable(kind: import("./api").LibraryConflictKind): boolean {
+  return kind === "current_txt" || kind === "metadata_yaml";
+}

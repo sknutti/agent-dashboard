@@ -9,15 +9,21 @@ license.workspace = true
 name = "prompt-library-bridge"
 path = "src/main.rs"
 
-# m5 invariant (read slice is secrets-free): the bridge deliberately does NOT
-# depend on prompt-library-secrets, so a SecretStore is unconstructible at
-# compile time. The secrets crate stays a workspace member (built + tested) for
-# boundary parity per ADR-0007, just not reachable from the read path.
-# core links reqwest transitively, but the read path never constructs a Client
-# (no url_import calls) — a code-discipline invariant covered by tests.
+# m5 invariant, AMENDED by Slice 8 (git remote sync): through Slice 7 + bootstrap
+# the bridge was deliberately secrets-free — `prompt-library-secrets` was NOT a
+# dependency, so a SecretStore was unconstructible at compile time. Slice 8 is the
+# ONE deliberate break (ADR-noted, mirroring how the install slice amended
+# ADR-0008): the PAT for git push/pull must live in the macOS Keychain, so the
+# secrets crate is now linked. The break is *contained*: a `SecretStore` is
+# constructed ONLY by the git-sync commands (configure/PAT/status/push/pull) via
+# `secret_store(args)`; every other command path constructs none, and the
+# redaction tripwire (D6) guarantees the raw PAT never reaches a log or response.
+# core links reqwest transitively, but only the git-sync push/pull egress (Phase 2)
+# makes a network call — every other path stays network-free (code-discipline).
 [dependencies]
 prompt-library-core = { path = "../core" }
 prompt-library-git = { path = "../git" }
+prompt-library-secrets = { path = "../secrets" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 camino = { workspace = true }

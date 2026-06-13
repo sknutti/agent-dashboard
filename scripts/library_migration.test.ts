@@ -8,6 +8,10 @@ const CONFIG: LibraryConfig = {
   bridgePath: "/bin/bridge",
   installsPath: "/data/installs.json",
   home: "/home/test",
+  sessionPath: "/data/bootstrap-session.json",
+  backupDir: "/data/backups",
+  remoteUrl: null,
+  askpassDir: "/data/askpass",
 };
 
 // A `run` stub that records its call and returns a canned BridgeResult. Typed

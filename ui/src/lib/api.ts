@@ -1013,3 +1013,77 @@ export const bootstrapExecute = (body: LibraryBootstrapExecuteBody) =>
 /** Clear the bootstrap session (Discard / start over). Idempotent. */
 export const clearBootstrapSession = () =>
   sendJson<Record<string, never>>("/api/library/bootstrap/session", "DELETE");
+
+// --- Git remote sync (Slice 8) ---------------------------------------------
+// push/pull are the only calls that egress. The PAT is write-only: it leaves the
+// browser ONLY in setRemotePat's body and is NEVER read back (status returns the
+// redacted form). Every fetcher rides sendJson so a precondition code
+// (remote_not_configured / no_pat_stored / invalid_remote_url / git_failed)
+// surfaces as a typed LibraryApiError the panel maps to an inline message.
+
+export interface LibraryRemoteStatus {
+  remote_url: string | null;
+  /** The redacted PAT (e.g. `ghp_••••••••6789`) — never the raw token. */
+  pat_redacted: string | null;
+}
+export interface LibraryScanFinding {
+  path: string;
+  line: number;
+  kind: string;
+  /** The verbatim offending bytes — shown so the user sees what tripped the gate. */
+  matched: string;
+}
+export type LibraryPullResult =
+  | { outcome: "ok" }
+  | { outcome: "conflict"; conflict_count: number };
+export type LibraryPullContinue =
+  | { outcome: "done" }
+  | { outcome: "still_conflicted"; conflict_count: number };
+export type LibraryConflictKind = "current_txt" | "metadata_yaml" | "version_file" | "other";
+export interface LibraryConflictEntry {
+  path: string;
+  kind: LibraryConflictKind;
+}
+export type LibraryConflictSide = "local" | "remote";
+
+/** Remote URL + redacted PAT for the sync panel. */
+export const getGitStatus = () => sendJson<LibraryRemoteStatus>("/api/library/git/status", "GET");
+/** Validate + normalize the URL, wire `origin`, and persist it. Bad URL →
+ *  LibraryApiError("invalid_remote_url"); no library → "library_unconfigured". */
+export const configureRemote = (url: string) =>
+  sendJson<{ remote_url: string }>("/api/library/git/remote", "POST", { url });
+/** Store the PAT (write-only — never echoed back). Empty → "empty_pat". */
+export const setRemotePat = (pat: string) =>
+  sendJson<Record<string, never>>("/api/library/git/pat", "PUT", { pat });
+/** Remove the stored PAT. Idempotent. */
+export const deleteRemotePat = () =>
+  sendJson<Record<string, never>>("/api/library/git/pat", "DELETE");
+/** The secret-scan gate — run BEFORE push; the UI surfaces every finding. */
+export const scanBeforePush = () =>
+  sendJson<LibraryScanFinding[]>("/api/library/git/scan-before-push", "GET");
+/** Commits ahead of the upstream — the "Push N" badge. */
+export const getUnpushedCount = () =>
+  sendJson<{ count: number }>("/api/library/git/unpushed-count", "GET");
+/** Push (egress). no_pat_stored / remote_not_configured / git_failed are errors. */
+export const gitPush = () => sendJson<Record<string, never>>("/api/library/git/push", "POST");
+/** Pull --rebase (egress). A conflict rides 200 as `{outcome:"conflict",…}`. */
+export const gitPull = () => sendJson<LibraryPullResult>("/api/library/git/pull", "POST");
+/** Whether a rebase is paused awaiting conflict resolution. */
+export const isPullPaused = () => sendJson<{ paused: boolean }>("/api/library/git/paused", "GET");
+/** The classified conflict paths for the resolver. */
+export const listPullConflicts = () =>
+  sendJson<LibraryConflictEntry[]>("/api/library/git/conflicts", "GET");
+/** One side of a conflicted file as text (`content` null if that side deleted it). */
+export const readConflictBlob = (path: string, side: LibraryConflictSide) =>
+  sendJson<{ content: string | null }>(
+    `/api/library/git/conflicts/blob?path=${encodeURIComponent(path)}&side=${side}`,
+    "GET",
+  );
+/** Stage the chosen side for `path`. */
+export const resolveConflict = (path: string, side: LibraryConflictSide) =>
+  sendJson<Record<string, never>>("/api/library/git/conflicts/resolve", "POST", { path, side });
+/** Continue the rebase. `done` or `still_conflicted` (the resolver loops). */
+export const continuePull = () =>
+  sendJson<LibraryPullContinue>("/api/library/git/pull/continue", "POST");
+/** Abort the rebase — unwind to the pre-pull state. */
+export const abortPull = () => sendJson<Record<string, never>>("/api/library/git/pull/abort", "POST");
