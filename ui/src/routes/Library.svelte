@@ -1506,7 +1506,7 @@
                   <div class="target-row" data-target={row.target}>
                     <span class="target-name mono">{row.target}</span>
                     <Badge tone={cue.tone}>{cue.glyph} {cue.label}</Badge>
-                    <span class="target-ver">{row.installed ? `v${row.installed.installed_version}` : ""}</span>
+                    <span class="target-ver">{row.installed ? row.installed.installed_version : ""}</span>
                     <div class="row-actions">
                       {#if row.state === "not_installed"}
                         <button type="button" class="act" disabled={busy} onclick={() => doInstall(detail.kind, detail.name, row.target)}>Install</button>
@@ -2059,9 +2059,10 @@
   }
   .panel-head {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: center;
-    gap: 12px;
+    gap: 8px 12px;
     margin-bottom: 12px;
   }
   .panel-head h3,
@@ -2522,8 +2523,11 @@
      red/green colorblind — the trash glyph + label carry the destructive cue). */
   .head-actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
+    justify-content: flex-end;
     gap: 6px;
+    min-width: 0;
   }
   .head-right {
     display: flex;
