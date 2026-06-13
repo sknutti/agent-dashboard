@@ -11,6 +11,7 @@
   import TargetOverlayPane from "../lib/components/TargetOverlayPane.svelte";
   import MetadataForm from "../lib/components/MetadataForm.svelte";
   import BootstrapWizard from "../lib/components/BootstrapWizard.svelte";
+  import GitSyncPanel from "../lib/components/GitSyncPanel.svelte";
   import { resource } from "../lib/resource.svelte";
   import {
     getLibraryStatus,
@@ -793,6 +794,11 @@
   let bootstrapOpen = $state(false);
   const orphans = $derived(orphanInstalls(driftBatch, primitives));
 
+  // Git remote sync panel (Slice 8) — library-wide push/pull, opened from the
+  // explorer header like the bootstrap wizard. onChanged reloads the status read
+  // so the rail's git summary (branch · unpushed) reflects a push/pull.
+  let gitSyncOpen = $state(false);
+
   function onBootstrapImported(): void {
     primitivesRes.reload();
     driftBatchRes.reload();
@@ -1100,6 +1106,14 @@
             >
               <Icon name="search" size={13} /> Bootstrap
               {#if orphans.length}<span class="head-badge" title="orphaned install records to reconcile">{orphans.length}</span>{/if}
+            </button>
+            <button
+              type="button"
+              class="head-btn"
+              title="Push, pull, and configure the git remote"
+              onclick={() => (gitSyncOpen = true)}
+            >
+              <Icon name="git-branch" size={13} /> Sync
             </button>
           </div>
         </div>
@@ -1776,6 +1790,17 @@
       onClose={() => (bootstrapOpen = false)}
       onImported={onBootstrapImported}
       onForgotten={() => driftBatchRes.reload()}
+    />
+  {/if}
+
+  <!-- Git remote sync (Slice 8): library-wide push/pull + remote/PAT config +
+       the conflict resolver. Self-contained modal; onChanged reloads the status
+       read so the rail git summary reflects a push/pull. -->
+  {#if gitSyncOpen}
+    <GitSyncPanel
+      libraryPath={null}
+      onClose={() => (gitSyncOpen = false)}
+      onChanged={() => status.reload()}
     />
   {/if}
 

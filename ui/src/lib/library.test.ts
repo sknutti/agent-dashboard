@@ -526,3 +526,41 @@ describe("orphanCue (CVD-safe)", () => {
     expect(["amber", "cyan", "default"]).toContain(c.tone);
   });
 });
+
+// --- Git remote sync cues (Slice 8) ----------------------------------------
+import { pushGateCue, syncStateCue, conflictResolvable } from "./library";
+
+describe("git-sync cues (Slice 8) — CVD-safe (label+glyph, never bare red/green)", () => {
+  test("pushGateCue: a finding BLOCKS with an amber ▲ (not red); zero is a clean ✓", () => {
+    const blocked = pushGateCue(2);
+    expect(blocked.tone).toBe("amber");
+    expect(blocked.glyph).toBe("▲");
+    expect(blocked.label).toContain("2 secrets");
+    const clean = pushGateCue(0);
+    expect(clean.tone).toBe("default");
+    expect(clean.glyph).toBe("✓");
+    // singular vs plural
+    expect(pushGateCue(1).label).toContain("1 secret found");
+    expect(blocked.label).toContain("2 secrets found");
+  });
+
+  test("syncStateCue: paused outranks ahead; both distinguishable from synced by glyph", () => {
+    const paused = syncStateCue(3, true);
+    expect(paused.glyph).toBe("⚠");
+    expect(paused.tone).toBe("amber");
+    const ahead = syncStateCue(3, false);
+    expect(ahead.glyph).toBe("↑");
+    expect(ahead.label).toBe("3 to push");
+    const synced = syncStateCue(0, false);
+    expect(synced.glyph).toBe("✓");
+    // every state has a distinct glyph (CVD: never color-only)
+    expect(new Set([paused.glyph, ahead.glyph, synced.glyph]).size).toBe(3);
+  });
+
+  test("conflictResolvable: structured kinds get value-pickers; the rest get the escape hatch", () => {
+    expect(conflictResolvable("current_txt")).toBe(true);
+    expect(conflictResolvable("metadata_yaml")).toBe(true);
+    expect(conflictResolvable("version_file")).toBe(false);
+    expect(conflictResolvable("other")).toBe(false);
+  });
+});
