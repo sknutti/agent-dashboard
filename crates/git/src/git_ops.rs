@@ -263,6 +263,36 @@ pub async fn git_commit<R: GitRunner>(
     })
 }
 
+/// Point `origin` at `url`, idempotently: `git remote set-url origin <url>`,
+/// falling back to `git remote add origin <url>` when no `origin` exists yet
+/// (set-url exits non-zero on a missing remote). Used by `configure_remote` so a
+/// locally-created library — not just a fresh clone — can push to the remote the
+/// user configured. The URL is the credential-free https github URL (the PAT is
+/// delivered separately via askpass), so it is safe to embed in git config.
+pub async fn set_origin_remote<R: GitRunner>(
+    runner: &R,
+    repo_dir: &Path,
+    url: &str,
+) -> Result<(), RunnerError> {
+    let set = runner
+        .run(&["remote", "set-url", "origin", url], repo_dir, &[])
+        .await?;
+    if set.status == 0 {
+        return Ok(());
+    }
+    // No `origin` yet → add it. Any other failure surfaces from the add.
+    let add = runner
+        .run(&["remote", "add", "origin", url], repo_dir, &[])
+        .await?;
+    if add.status != 0 {
+        return Err(RunnerError::Failed {
+            status: add.status,
+            stderr: String::from_utf8_lossy(&add.stderr).into_owned(),
+        });
+    }
+    Ok(())
+}
+
 pub async fn git_init<R: GitRunner>(runner: &R, target: &Path) -> Result<(), RunnerError> {
     let target_str = target
         .to_str()
@@ -281,8 +311,47 @@ pub async fn git_init<R: GitRunner>(runner: &R, target: &Path) -> Result<(), Run
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runner::FakeRunner;
+    use crate::runner::{CommandOutput, FakeRunner};
     use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn set_origin_updates_existing_remote_with_one_set_url_call() {
+        let runner = FakeRunner::new(); // default success → set-url succeeds
+        set_origin_remote(&runner, &PathBuf::from("/repo"), "https://github.com/o/r")
+            .await
+            .unwrap();
+        let calls = runner.captured_calls();
+        assert_eq!(calls.len(), 1, "only set-url when origin already exists");
+        assert_eq!(calls[0].args, vec!["remote", "set-url", "origin", "https://github.com/o/r"]);
+    }
+
+    #[tokio::test]
+    async fn set_origin_adds_remote_when_set_url_fails() {
+        // set-url exits non-zero (no origin yet) → fall back to remote add.
+        let runner = FakeRunner::new().with_response_queue(vec![
+            CommandOutput { status: 2, stdout: Vec::new(), stderr: b"No such remote".to_vec() },
+            CommandOutput::success(),
+        ]);
+        set_origin_remote(&runner, &PathBuf::from("/repo"), "https://github.com/o/r")
+            .await
+            .unwrap();
+        let calls = runner.captured_calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].args, vec!["remote", "set-url", "origin", "https://github.com/o/r"]);
+        assert_eq!(calls[1].args, vec!["remote", "add", "origin", "https://github.com/o/r"]);
+    }
+
+    #[tokio::test]
+    async fn set_origin_surfaces_a_failing_add() {
+        let runner = FakeRunner::new().with_response_queue(vec![
+            CommandOutput { status: 2, stdout: Vec::new(), stderr: b"no remote".to_vec() },
+            CommandOutput { status: 128, stdout: Vec::new(), stderr: b"not a git repository".to_vec() },
+        ]);
+        let err = set_origin_remote(&runner, &PathBuf::from("/repo"), "https://github.com/o/r")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RunnerError::Failed { status: 128, .. }));
+    }
 
     #[tokio::test]
     async fn git_push_passes_askpass_path_and_pat_via_env() {

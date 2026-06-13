@@ -2005,6 +2005,16 @@ describe("buildConfigureRemote (validate + persist — D1)", () => {
     expect(r.status).toBe(422);
     expect(persisted).toEqual([]);
   });
+  test("passes the library path (origin lives in the repo) and refuses when unconfigured", async () => {
+    const { run, calls } = captureRun({ ok: true, data: { remote_url: "https://github.com/o/r" } });
+    await buildConfigureRemote(CONFIGURED, { url: "https://github.com/o/r" }, run, () => {});
+    expect(calls[0]!.args).toEqual({ path: CONFIGURED.libraryPath, url: "https://github.com/o/r" });
+    // no library → refuse before any spawn or persist
+    const persisted: string[] = [];
+    const r = await buildConfigureRemote(UNCONFIGURED, { url: "https://github.com/o/r" }, okRun({ remote_url: "x" }), (u) => persisted.push(u));
+    expect(r.status).toBe(409); // library_unconfigured
+    expect(persisted).toEqual([]);
+  });
 });
 
 describe("set_pat / get_remote_status — the D6 secret discipline", () => {

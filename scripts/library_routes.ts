@@ -1247,21 +1247,23 @@ interface GitBody {
 
 const gitStr = (v: unknown): string => (typeof v === "string" ? v : "");
 
-/** configure_remote: validate + normalize in-bridge, then persist the URL to
- *  config/library.yaml (D1 — the ONE route that mutates the config file).
- *  Validation + persistence both run inside the write lock; persist only on a
- *  valid URL. Needs no library (URL-only). `persist` is injected for tests. */
+/** configure_remote: validate + normalize in-bridge, WIRE the library's git
+ *  `origin` to the URL (so a locally-created library can push, not just a clone),
+ *  then persist the URL to config/library.yaml (D1 — the ONE route that mutates
+ *  the config file). All inside the write lock; persist only on success. Needs a
+ *  configured library now (origin lives in the repo). `persist` injected for tests. */
 export async function buildConfigureRemote(
   config: LibraryConfig,
   body: GitBody,
   run: Run = runBridge,
   persist: (url: string, configDir?: string) => void = persistRemoteUrl,
 ): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
   const r = await withWriteLock(async () => {
     const res = await run(
       config.bridgePath,
       "configure_remote",
-      { url: gitStr(body.url) },
+      { path: config.libraryPath, url: gitStr(body.url) },
       { validate: parseConfiguredRemote, timeoutMs: WRITE_TIMEOUT_MS },
     );
     if (res.ok) persist(res.data.remote_url);

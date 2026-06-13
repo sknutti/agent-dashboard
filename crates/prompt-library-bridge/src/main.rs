@@ -76,7 +76,7 @@ use prompt_library_git::{
     file_scan::FileFinding,
     git_ops::{
         current_branch, git_add_all, git_commit, git_diff_changed_files, git_pull, git_push,
-        git_push_with_upstream, remote_branch_exists,
+        git_push_with_upstream, remote_branch_exists, set_origin_remote,
     },
     push_gate::scan_pending_push,
     runner::{GitRunner, RunnerError, TokioProcessRunner},
@@ -260,7 +260,7 @@ async fn dispatch(command: &str, args: &Value) -> Result<Value, LibraryError> {
         // the raw PAT never leaves the store except as `redact_pat` (D6). Sync —
         // no network, no `.await`. The push/pull/conflict family (egress) lands
         // in Phase 2.
-        "configure_remote" => cmd_configure_remote(args),
+        "configure_remote" => cmd_configure_remote(args).await,
         "set_pat" => cmd_set_pat(args, secret_store(args)?.as_ref()),
         "delete_pat" => cmd_delete_pat(secret_store(args)?.as_ref()),
         "get_remote_status" => cmd_get_remote_status(args, secret_store(args)?.as_ref()),
@@ -1828,14 +1828,29 @@ fn is_numeric_offset(s: &str) -> bool {
 // Git remote sync (Slice 8, Phase 1) — configure / PAT / status
 // ---------------------------------------------------------------------------
 
-/// Validate the remote URL and RETURN its normalized form. Persistence is the
-/// TS route's job (`config/library.yaml`), not the bridge's — the bridge owns no
-/// config file (it stays config-file-free the same way it stays clock-free).
-/// A deliberate divergence from the reference's `state.set_remote_url` (D1).
-/// No secrets, no network.
-fn cmd_configure_remote(args: &Value) -> Result<Value, LibraryError> {
+/// Validate the remote URL, wire `origin` to it, and RETURN the normalized form.
+/// Persistence is the TS route's job (`config/library.yaml`) — the bridge owns no
+/// config file (it stays config-file-free the way it stays clock-free), a
+/// deliberate divergence from the reference's `state.set_remote_url` (D1).
+///
+/// UNLIKE the reference, which only persists, this also points the library repo's
+/// `origin` at the URL (`set_origin_remote`, idempotent) so a locally-created
+/// library — not just a fresh clone — can push (Scott's call, 2026-06-12). The
+/// URL is credential-free (the PAT travels via askpass), so embedding it in git
+/// config leaks nothing. Best-effort-when-git: a non-git library skips the wiring
+/// silently (the same posture as `commit_change`); the push precondition catches
+/// it later. Validation runs FIRST so a bad URL is `invalid_remote_url` (422)
+/// even before the library is resolved. No secrets, no network (set-url is local).
+async fn cmd_configure_remote(args: &Value) -> Result<Value, LibraryError> {
     let raw = args.get("url").and_then(Value::as_str).unwrap_or("");
     let normalized = validate_remote_url(raw).map_err(map_remote_url_error)?;
+    let repo = require_library(args)?;
+    if repo.join(".git").exists() {
+        let runner = TokioProcessRunner::new();
+        set_origin_remote(&runner, repo.as_std_path(), &normalized)
+            .await
+            .map_err(map_runner_error)?;
+    }
     Ok(json!({ "remote_url": normalized }))
 }
 
@@ -4818,18 +4833,48 @@ mod tests {
     /// enough that `redact_pat` keeps the prefix + last 4 (its `< 8` branch).
     const FIXTURE_PAT: &str = "ghp_TESTtoken0123456789abcdefghijklmnop";
 
-    #[test]
-    fn configure_remote_returns_normalized_url() {
-        // Uppercase host is lowercased; surrounding whitespace trimmed.
-        let data = cmd_configure_remote(&json!({ "url": "  https://GitHub.com/owner/Repo  " }))
-            .unwrap();
+    #[tokio::test]
+    async fn configure_remote_normalizes_and_wires_origin() {
+        // Uppercase host lowercased, whitespace trimmed; origin re-pointed at it.
+        let fx = git_sync_fx(); // fixture's origin starts at the local bare remote
+        let data = cmd_configure_remote(&json!({
+            "path": fx.root.as_str(),
+            "url": "  https://GitHub.com/owner/Repo  ",
+        }))
+        .await
+        .unwrap();
         assert_eq!(data["remote_url"], json!("https://github.com/owner/Repo"));
+        // set-url re-pointed the existing origin at the normalized URL.
+        assert_eq!(git_origin_url(&fx.root), "https://github.com/owner/Repo");
     }
 
-    #[test]
-    fn configure_remote_rejects_each_url_error_as_invalid_remote_url() {
-        // Every RemoteUrlError variant funnels to the one route-mappable code;
-        // the specific reason rides `detail` (server-side only, m4).
+    #[tokio::test]
+    async fn configure_remote_adds_origin_when_absent() {
+        let fx = git_sync_fx();
+        run_git(&fx.root, &["remote", "remove", "origin"]); // force the add path
+        cmd_configure_remote(&json!({ "path": fx.root.as_str(), "url": "https://github.com/o/r" }))
+            .await
+            .unwrap();
+        assert_eq!(git_origin_url(&fx.root), "https://github.com/o/r");
+    }
+
+    #[tokio::test]
+    async fn configure_remote_skips_wiring_for_a_non_git_library() {
+        // A marker-valid library with no `.git` persists the URL but wires nothing
+        // (best-effort-when-git, the commit_change posture) — no error.
+        let (_tmp, root) = fixture_library();
+        let data = cmd_configure_remote(&json!({ "path": root.as_str(), "url": "https://github.com/o/r" }))
+            .await
+            .unwrap();
+        assert_eq!(data["remote_url"], json!("https://github.com/o/r"));
+        assert!(!root.join(".git").exists());
+    }
+
+    #[tokio::test]
+    async fn configure_remote_rejects_each_url_error_as_invalid_remote_url() {
+        // Validation runs BEFORE the library is resolved, so a bad URL is
+        // invalid_remote_url (422) even with no path. Every RemoteUrlError variant
+        // funnels to the one route-mappable code; the reason rides detail (m4).
         for bad in [
             "",                                   // Empty
             "http://github.com/o/r",              // NonHttps
@@ -4838,7 +4883,7 @@ mod tests {
             "https://gitlab.com/o/r",             // HostNotAllowed
             "https://github.com",                 // MissingPath
         ] {
-            let err = cmd_configure_remote(&json!({ "url": bad })).unwrap_err();
+            let err = cmd_configure_remote(&json!({ "url": bad })).await.unwrap_err();
             assert_eq!(err.code, "invalid_remote_url", "url={bad:?}");
         }
     }
@@ -4940,9 +4985,10 @@ mod tests {
         // keychain prompt in `cargo test`. Cross-process persistence is the
         // keychain's job (verified in Phase 0), not InMemoryStore's, so this
         // asserts WIRING, not round-trip.
+        let fx = git_sync_fx(); // configure_remote now resolves + wires the library
         let cfg = dispatch(
             "configure_remote",
-            &json!({ "url": "https://github.com/owner/repo" }),
+            &json!({ "path": fx.root.as_str(), "url": "https://github.com/owner/repo" }),
         )
         .await
         .unwrap();
@@ -4978,6 +5024,17 @@ mod tests {
     fn set_identity(dir: &Utf8PathBuf, who: &str) {
         run_git(dir, &["config", "user.email", &format!("{who}@example.test")]);
         run_git(dir, &["config", "user.name", who]);
+    }
+
+    /// The repo's `origin` URL (trimmed), for asserting `set_origin_remote`.
+    fn git_origin_url(dir: &Utf8PathBuf) -> String {
+        let out = std::process::Command::new("git")
+            .args(["remote", "get-url", "origin"])
+            .current_dir(dir.as_std_path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git remote get-url origin: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
     /// A library repo wired to a temp bare remote on a local path, plus an
