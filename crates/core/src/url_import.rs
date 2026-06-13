@@ -71,6 +71,20 @@ pub struct RefFile {
     pub content: Vec<u8>,
 }
 
+/// The reqwest client for every url_import egress (the primary fetch AND the
+/// Skill-folder walk share this one client). Redirects are DISABLED
+/// (`Policy::none()`): `normalize_url` only allowlists the INITIAL host, so
+/// following a redirect could steer the fetch off-allowlist to an internal host
+/// (an SSRF bypass). GitHub's raw/contents/download URLs serve content directly,
+/// so refusing redirects costs nothing legitimate; a 3xx is returned as a
+/// non-success status and surfaces as `FetchFailed` rather than being chased.
+fn http_client() -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+}
+
 pub async fn fetch_from_url(input: &str) -> Result<FetchedPrimitive, Error> {
     fetch_from_url_with_api_base(input, GITHUB_API_BASE).await
 }
@@ -93,13 +107,10 @@ async fn fetch_from_url_with_api_base(
     let normalized = normalize_url(trimmed)?;
     let owner_from_url = github_owner(&normalized);
 
-    let client = reqwest::Client::builder()
-        .timeout(TIMEOUT)
-        .build()
-        .map_err(|e| Error::FetchFailed {
-            url: normalized.clone(),
-            message: format!("client build: {e}"),
-        })?;
+    let client = http_client().map_err(|e| Error::FetchFailed {
+        url: normalized.clone(),
+        message: format!("client build: {e}"),
+    })?;
 
     let resp = client
         .get(&normalized)
@@ -560,6 +571,34 @@ mod tests {
     fn passes_raw_through() {
         let url = "https://raw.githubusercontent.com/anthropic/skills/main/SKILL.md";
         assert_eq!(normalize_url(url).unwrap(), url);
+    }
+
+    // SSRF: `normalize_url` only allowlists the INITIAL host, so the egress
+    // client must NOT follow a redirect that could steer to an internal host.
+    #[tokio::test]
+    async fn http_client_does_not_follow_redirects() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        let start = server.mock(|when, then| {
+            when.method(GET).path("/start");
+            then.status(302).header("location", server.url("/internal"));
+        });
+        let internal = server.mock(|when, then| {
+            when.method(GET).path("/internal");
+            then.status(200).body("SSRF-TARGET");
+        });
+
+        let resp = http_client()
+            .unwrap()
+            .get(server.url("/start"))
+            .send()
+            .await
+            .unwrap();
+
+        // the 3xx is returned as-is, never chased to the redirect target
+        assert_eq!(resp.status().as_u16(), 302);
+        start.assert();
+        internal.assert_hits(0); // SSRF closed: the internal host was never hit
     }
 
     #[test]

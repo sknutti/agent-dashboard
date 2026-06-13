@@ -26,10 +26,13 @@
 //!   prompt-library-secrets. The break is contained — a `SecretStore` is
 //!   constructed ONLY by `configure_remote`/`set_pat`/`delete_pat`/
 //!   `get_remote_status` (and the Phase-2 push/pull family) via
-//!   `secret_store(args)`; every other command constructs none. Likewise only
-//!   push/pull egress to the network; no other command touches core's
-//!   reqwest-backed url_import. The raw PAT never reaches a log or a response
-//!   body — the only wire form is `redact_pat` (D6 tripwire).
+//!   `secret_store(args)`; every other command constructs none. The raw PAT
+//!   never reaches a log or a response body — the only wire form is `redact_pat`
+//!   (D6 tripwire). TWO commands egress to the network: the git-sync push/pull
+//!   family (Slice 8, via the git child) and `fetch_primitive_from_url` (Slice
+//!   10b, via core's reqwest-backed url_import — github-only allowlist, redirects
+//!   disabled). url_import is NOT secrets-bearing (constructs no `SecretStore`);
+//!   every other command stays network-free.
 //! - **current_thread runtime only** — the fns touch std::fs; only the git
 //!   status calls are async. No multi-thread worker pool per one-shot call.
 //! - **writes are crash-safe at the file level.** core writes every target's
@@ -54,9 +57,10 @@ use prompt_library_core::{
         list_overlays, read_primitive_detail, read_primitive_for_target,
         read_primitive_version_view, revert_primitive_to_version,
     },
-    delete_primitive, derive_plan, duplicate_primitive, find_in_library, forget_primitive,
-    import_primitive_from_path, install, listing::list_primitives, reimport_install_as_version,
-    rename_primitive, scaffold_primitive, scan_drift_for_primitive, scan_record, uninstall,
+    delete_primitive, derive_plan, duplicate_primitive, fetch_from_url, find_in_library,
+    forget_primitive, import_primitive_from_path, install, listing::list_primitives,
+    reimport_install_as_version, rename_primitive, scaffold_primitive, scan_drift_for_primitive,
+    scan_record, uninstall, RefFile, ScaffoldSource,
     update_primitive_metadata, working_files, BootstrapExecuteRequest, BootstrapPlan,
     BootstrapSession, DeletePrimitiveRequest, DriftReport, DuplicatePrimitiveRequest,
     Error as CoreError, FindOptions, ImportFromPathResult, InstallPaths, InstallRequest,
@@ -224,6 +228,12 @@ async fn dispatch(command: &str, args: &Value) -> Result<Value, LibraryError> {
         // rename/import/forget mutate `installs.json`, so the route serializes
         // them under the write mutex.
         "create_primitive" => cmd_create_primitive(args).await,
+        // URL import (Slice 10b) — the SECOND network-egress command (reqwest,
+        // distinct from Slice 8's git-child egress). A network READ: no library,
+        // no commit, no lock, no SecretStore. The SSRF boundary is in-core
+        // (`normalize_url` allowlist + redirect-disabled client); `create_primitive`
+        // above gained the optional `imported` arm that writes a fetched preview.
+        "fetch_primitive_from_url" => cmd_fetch_primitive_from_url(args).await,
         "delete_primitive" => cmd_delete_primitive(args).await,
         "rename_primitive" => cmd_rename_primitive(args).await,
         "duplicate_primitive" => cmd_duplicate_primitive(args).await,
@@ -1062,12 +1072,90 @@ async fn cmd_create_primitive(args: &Value) -> Result<Value, LibraryError> {
     let name = parse_name(args)?;
     let created_at = parse_created_at(args)?;
 
-    scaffold_primitive(LibraryLayout::new(&root), kind, &name, &created_at, None)
+    // Slice 10b: an OPTIONAL `imported` payload (from a URL fetch) seeds the new
+    // primitive's content + `metadata.yaml` provenance. Absent → the empty
+    // scaffold, byte-for-byte unchanged (D5). The `ref_files` (binary-tolerant)
+    // are owned here as `(Utf8PathBuf, Vec<u8>)` pairs so `ScaffoldSource` can
+    // borrow them across the scaffold call.
+    let imported = parse_imported(args)?;
+    let ref_pairs: Vec<(Utf8PathBuf, Vec<u8>)> = imported
+        .as_ref()
+        .map(|i| {
+            i.ref_files
+                .iter()
+                .map(|rf| (Utf8PathBuf::from(&rf.rel_path), rf.content.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let source = imported.as_ref().map(|i| ScaffoldSource {
+        content: i.content.as_bytes(),
+        source_url: &i.source_url,
+        author: i.author.as_deref(),
+        ref_files: &ref_pairs,
+    });
+
+    scaffold_primitive(LibraryLayout::new(&root), kind, &name, &created_at, source)
         .map_err(map_core_error)?;
 
     let message = format!("create({}/{})", kind.dir_name(), name.as_str());
     let (committed, commit_error) = commit_change(&root, &message).await;
     Ok(json!({ "committed": committed, "commit_error": commit_error }))
+}
+
+/// Fetch a primitive from a GitHub URL (Slice 10b) — the SECOND network-egress
+/// command (reqwest-backed, distinct from Slice 8's git-child egress). A READ:
+/// no library, no commit, no write lock, NO `SecretStore` (this path is never
+/// secrets-bearing). The SSRF boundary is in-core (`normalize_url`'s github-only
+/// https allowlist + the redirect-disabled client); a disallowed host/scheme is
+/// rejected BEFORE any byte leaves the process. Returns a `FetchedPrimitive`
+/// preview the UI reviews before a (separate) create writes it (D1 — fetch ≠
+/// create). The 4 url_import errors map to typed codes (D4); their detail
+/// (which embeds the URL — could carry a token) stays server-side (m4).
+async fn cmd_fetch_primitive_from_url(args: &Value) -> Result<Value, LibraryError> {
+    let url = args.get("url").and_then(Value::as_str).unwrap_or("").trim();
+    if url.is_empty() {
+        return Err(LibraryError::new(
+            "library_unsupported_source_url",
+            "no source URL given",
+            "request args.url was missing or empty",
+        ));
+    }
+    let fetched = fetch_from_url(url).await.map_err(map_core_error)?;
+    serde_json::to_value(fetched).map_err(serialize_err)
+}
+
+/// The create-time seed payload (Slice 10b) — the reference's `ImportedPrimitive`
+/// shape, built by the frontend from a `FetchedPrimitive` preview (minus
+/// `suggested_name`, which becomes the user-supplied `name`). `ref_files` reuses
+/// core's `RefFile` (binary-tolerant `Vec<u8>` content, JSON number-array on the
+/// wire). All fields but `content`/`source_url` default, so an absent author /
+/// empty ref-file list deserialize cleanly.
+#[derive(Deserialize)]
+struct ImportedPrimitive {
+    content: String,
+    source_url: String,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    ref_files: Vec<RefFile>,
+}
+
+/// Parse the OPTIONAL create-time import payload. Absent/null → `None` (the
+/// empty-scaffold path, no regression). A present-but-malformed payload is a
+/// client bug → a typed 422 code, not a panic.
+fn parse_imported(args: &Value) -> Result<Option<ImportedPrimitive>, LibraryError> {
+    match args.get("imported") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => serde_json::from_value::<ImportedPrimitive>(v.clone())
+            .map(Some)
+            .map_err(|e| {
+                LibraryError::new(
+                    "library_invalid_import_payload",
+                    "invalid import payload",
+                    e.to_string(),
+                )
+            }),
+    }
 }
 
 /// Wipe `(kind, name)` from the library: force-uninstall every recorded target,
@@ -2395,6 +2483,19 @@ fn map_core_error(e: CoreError) -> LibraryError {
             ("library_version_exists", "a version with that label already exists")
         }
         CoreError::VersionNotFound(_) => ("library_version_not_found", "no such version"),
+        // URL-import variants (Slice 10b) — promoted out of the catch-all so the
+        // route maps each to an actionable HTTP status (D4). The `reason`/`url`/
+        // `message` payloads stay in `detail` (server-side only, m4) — the
+        // FetchFailed URL could carry a token in its path, so it is NEVER
+        // forwarded to the client.
+        CoreError::UnsupportedSourceUrl { .. } => {
+            ("library_unsupported_source_url", "unsupported source URL")
+        }
+        CoreError::FetchFailed { .. } => ("library_fetch_failed", "could not fetch from the URL"),
+        CoreError::BundleInvalid { .. } => ("library_bundle_invalid", "the fetched bundle is invalid"),
+        CoreError::GitHubRateLimited => {
+            ("library_github_rate_limited", "GitHub rate limit reached — wait and retry")
+        }
         // Anything still unmapped is a genuine bridge bug, not a known
         // application state.
         _ => ("bridge_command_failed", "library command failed"),
@@ -5303,5 +5404,92 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.code, "askpass_unconfigured");
+    }
+
+    // ---- URL import (Slice 10b: fetch_primitive_from_url + seeded create) ---
+    //
+    // The network fetch + the optional `imported` create arm. The SSRF boundary
+    // is in-core (`normalize_url`); these assert the bridge surfaces it as a
+    // typed code and that the disallowed hosts/schemes never reach the network
+    // (normalize_url rejects synchronously, before any egress).
+
+    #[tokio::test]
+    async fn fetch_rejects_disallowed_urls_without_egress() {
+        // D6 SSRF tripwire: link-local, file://, internal, non-github, http://,
+        // and a gist all funnel to one code — and none of them egress (the
+        // rejection happens in normalize_url before the reqwest client is built).
+        for bad in [
+            "http://169.254.169.254/latest/meta-data/", // link-local SSRF classic
+            "file:///etc/passwd",                         // local file scheme
+            "https://internal.corp.host/secret",          // internal host
+            "https://gitlab.com/o/r/blob/main/SKILL.md",  // non-github host
+            "http://github.com/o/r/blob/main/SKILL.md",   // http (not https)
+            "https://gist.github.com/o/abc",              // gist (rejected)
+        ] {
+            let err = cmd_fetch_primitive_from_url(&json!({ "url": bad })).await.unwrap_err();
+            assert_eq!(err.code, "library_unsupported_source_url", "url={bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_empty_url_before_any_network() {
+        let err = cmd_fetch_primitive_from_url(&json!({})).await.unwrap_err();
+        assert_eq!(err.code, "library_unsupported_source_url");
+        let err = cmd_fetch_primitive_from_url(&json!({ "url": "" })).await.unwrap_err();
+        assert_eq!(err.code, "library_unsupported_source_url");
+    }
+
+    #[tokio::test]
+    async fn create_with_imported_seeds_content_and_provenance() {
+        let (_tmp, root) = fixture_library();
+        let imported = json!({
+            "content": "---\nauthor: Alice\n---\nseeded body\n",
+            "source_url": "https://raw.githubusercontent.com/o/r/main/skills/x/SKILL.md",
+            "author": "Alice",
+            "ref_files": [],
+        });
+        let args = json!({
+            "path": root.as_str(), "kind": "skill", "name": "seeded", "created_at": NOW,
+            "imported": imported,
+        });
+        cmd_create_primitive(&args).await.unwrap();
+
+        // primary file carries the fetched bytes (not the empty default)
+        let primary = std::fs::read_to_string(root.join("skills/seeded/working/base/SKILL.md")).unwrap();
+        assert!(primary.contains("seeded body"), "primary not seeded: {primary:?}");
+        // metadata.yaml records the provenance
+        let meta = std::fs::read_to_string(root.join("skills/seeded/metadata.yaml")).unwrap();
+        assert!(
+            meta.contains("raw.githubusercontent.com/o/r/main/skills/x/SKILL.md"),
+            "no source_url: {meta}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_with_imported_ref_files_writes_them() {
+        let (_tmp, root) = fixture_library();
+        // a ref-file's `content` is a Vec<u8> → a JSON number array ("hi" = 104,105)
+        let imported = json!({
+            "content": "---\n---\nbody\n",
+            "source_url": "https://raw.githubusercontent.com/o/r/main/skills/x/SKILL.md",
+            "author": null,
+            "ref_files": [{ "rel_path": "reference/notes.md", "content": [104, 105] }],
+        });
+        let args = json!({
+            "path": root.as_str(), "kind": "skill", "name": "withrefs", "created_at": NOW,
+            "imported": imported,
+        });
+        cmd_create_primitive(&args).await.unwrap();
+        let ref_file = std::fs::read(root.join("skills/withrefs/working/base/reference/notes.md")).unwrap();
+        assert_eq!(ref_file, b"hi");
+    }
+
+    #[tokio::test]
+    async fn create_without_imported_seeds_an_empty_primary() {
+        // Regression guard (D5): the empty-create path is byte-identical to today.
+        let (_tmp, root) = fixture_library();
+        cmd_create_primitive(&create_args(&root, "skill", "blank")).await.unwrap();
+        let primary = std::fs::read_to_string(root.join("skills/blank/working/base/SKILL.md")).unwrap();
+        assert!(!primary.contains("seeded"), "empty create must not carry imported content");
     }
 }
