@@ -11,7 +11,7 @@
 
 import type { Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import { loadLibraryConfig, type LibraryConfig } from "./library_config.ts";
+import { loadLibraryConfig, persistRemoteUrl, type LibraryConfig } from "./library_config.ts";
 import { runBridge, type LibraryError } from "./library_bridge.ts";
 import {
   parseKindInfoTable,
@@ -40,6 +40,15 @@ import {
   parseBootstrapScanResult,
   parseBootstrapSessionResult,
   parseBootstrapExecuteSummary,
+  parseRemoteStatus,
+  parseScanFindings,
+  parseUnpushedCount,
+  parsePullPaused,
+  parsePullResult,
+  parseContinueResult,
+  parseConflictList,
+  parseConflictBlob,
+  parseConfiguredRemote,
   type LibraryStatus,
 } from "./library_models.ts";
 import { importInstalls } from "./library_migration.ts";
@@ -56,6 +65,16 @@ type HttpStatus = 200 | 404 | 409 | 422 | 502;
  * rename), so even a killed write leaves the ledger + target files intact (D4).
  */
 const WRITE_TIMEOUT_MS = 30_000;
+
+/**
+ * Push/pull egress (Slice 8, D5) tolerate a slower-but-healthy network than a
+ * local fs write, so they get a longer watchdog. It MUST exceed the bridge's
+ * inner `PULL_TIMEOUT` (60s) so a hung pull surfaces as a clean `git_timed_out`
+ * from the bridge rather than a SIGKILL'd torn process. Bounded so a dead
+ * network can't wedge the write chain (the whole git-sync family serializes
+ * under `withWriteLock`) forever.
+ */
+const NETWORK_TIMEOUT_MS = 90_000;
 
 // D1 — serialize ALL ledger writers in this process. core's fd-lock guards only
 // the `save()` syscall, NOT the load→mutate→save cycle: two concurrent bridge
@@ -109,6 +128,11 @@ export function statusForCode(code: string): HttpStatus {
     // re-issuing with `discard_orphan_overlays: true`, so it's a 409 conflict
     // the user resolves by confirming, NOT a 422 bad-input dead-end.
     case "library_target_removed_with_overlays":
+    // Git-sync preconditions (Slice 8): well-formed request, but the git/PAT
+    // state isn't ready for the command.
+    case "no_pat_stored": // push/pull before a PAT is configured
+    case "remote_not_configured": // push/pull before a remote URL is set
+    case "askpass_unconfigured": // dashboard config (askpass_dir) not injected
       return 409;
     // Bad client input (the :kind / :name segment, or a non-UTF-8 path).
     case "library_invalid_name":
@@ -125,6 +149,12 @@ export function statusForCode(code: string): HttpStatus {
     // Working-file editor unprocessable inputs.
     case "library_invalid_working_path": // ../, absolute, NUL, primary-as-ref — the traversal tripwire
     case "working_file_too_many": // bundle is at the 200-file cap
+    // Git-sync bad inputs (Slice 8).
+    case "empty_pat": // set_pat with an empty token
+    case "invalid_remote_url": // configure_remote with a non-github/non-https/credentialed URL
+    case "invalid_conflict_side": // resolve/read with a side other than local|remote
+    case "conflict_path_missing": // resolve/read with no conflict path
+    case "conflict_blob_not_utf8": // a conflicted blob the text resolver can't render
       return 422;
     case "primitive_not_found":
     case "working_file_not_found": // save/rename a ref file that doesn't exist — use Create
@@ -1191,6 +1221,202 @@ export async function buildClearBootstrapSession(
 
 /** `loadConfig` is injectable so the HTTP-wiring test is deterministic — it must
  *  not depend on the machine's actual config/library.yaml contents. */
+// ---------------------------------------------------------------------------
+// Git remote sync (Slice 8). The ONLY routes that egress to a non-loopback host
+// (push/pull) and the ONLY ones whose bridge call handles a secret. The PAT is
+// NEVER in these args — the bridge reads it from the keychain itself; the route
+// only ever injects the library path + the dashboard-owned askpass dir. The whole
+// family serializes under withWriteLock (D5): the rebase state in .git is shared
+// mutable state a concurrent resolve/list would tear. `secret_store` is NEVER
+// injected here, so production always hits the real keychain (the cfg(test)-gated
+// arg can't reach the bridge from a route).
+// ---------------------------------------------------------------------------
+
+const REMOTE_NOT_CONFIGURED: LibraryError = {
+  code: "remote_not_configured",
+  message: "no git remote is configured",
+  detail: "remote_url is unset in config/library.yaml — configure a remote before push/pull",
+};
+
+interface GitBody {
+  url?: unknown;
+  pat?: unknown;
+  path?: unknown; // a conflict path (UI-facing key); injected as conflict_path
+  side?: unknown;
+}
+
+const gitStr = (v: unknown): string => (typeof v === "string" ? v : "");
+
+/** configure_remote: validate + normalize in-bridge, then persist the URL to
+ *  config/library.yaml (D1 — the ONE route that mutates the config file).
+ *  Validation + persistence both run inside the write lock; persist only on a
+ *  valid URL. Needs no library (URL-only). `persist` is injected for tests. */
+export async function buildConfigureRemote(
+  config: LibraryConfig,
+  body: GitBody,
+  run: Run = runBridge,
+  persist: (url: string, configDir?: string) => void = persistRemoteUrl,
+): Promise<LibraryRouteResult> {
+  const r = await withWriteLock(async () => {
+    const res = await run(
+      config.bridgePath,
+      "configure_remote",
+      { url: gitStr(body.url) },
+      { validate: parseConfiguredRemote, timeoutMs: WRITE_TIMEOUT_MS },
+    );
+    if (res.ok) persist(res.data.remote_url);
+    return res;
+  });
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** set_pat: store the PAT in the keychain. The raw PAT rides the bridge args
+ *  (stdin) ONLY — the route never logs it (errorResult logs error.detail, which
+ *  is bridge-supplied + PAT-free, never the request body). Write-locked. */
+export async function buildSetPat(config: LibraryConfig, body: GitBody, run: Run = runBridge): Promise<LibraryRouteResult> {
+  const r = await withWriteLock(() =>
+    run(config.bridgePath, "set_pat", { pat: gitStr(body.pat) }, { timeoutMs: WRITE_TIMEOUT_MS }),
+  );
+  return r.ok ? { status: 200, body: {} } : errorResult(r.error);
+}
+
+/** delete_pat: idempotent PAT removal. Write-locked. */
+export async function buildDeletePat(config: LibraryConfig, run: Run = runBridge): Promise<LibraryRouteResult> {
+  const r = await withWriteLock(() => run(config.bridgePath, "delete_pat", {}, { timeoutMs: WRITE_TIMEOUT_MS }));
+  return r.ok ? { status: 200, body: {} } : errorResult(r.error);
+}
+
+/** get_remote_status: remote URL (injected from config) + REDACTED PAT. No write
+ *  lock (pure status read). The only PAT form on the wire is `pat_redacted`. */
+export async function buildRemoteStatus(config: LibraryConfig, run: Run = runBridge): Promise<LibraryRouteResult> {
+  const r = await run(
+    config.bridgePath,
+    "get_remote_status",
+    { remote_url: config.remoteUrl },
+    { validate: parseRemoteStatus },
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** scan_before_push: the secret-scan gate (D4 — the UI runs this first and only
+ *  pushes after the user reviews). Write-locked (reads `.git` refs). */
+export async function buildScanBeforePush(config: LibraryConfig, run: Run = runBridge): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await withWriteLock(() =>
+    run(config.bridgePath, "scan_before_push", { path: config.libraryPath }, { validate: parseScanFindings, timeoutMs: WRITE_TIMEOUT_MS }),
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** count_unpushed_commits: the "Push N" badge. Write-locked (shares ref state). */
+export async function buildUnpushedCount(config: LibraryConfig, run: Run = runBridge): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await withWriteLock(() =>
+    run(config.bridgePath, "count_unpushed_commits", { path: config.libraryPath }, { validate: parseUnpushedCount, timeoutMs: WRITE_TIMEOUT_MS }),
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** push_now: the egress. Write-locked + NETWORK_TIMEOUT. Injects the library
+ *  path + the dashboard-owned askpass dir; the bridge reads the PAT from the
+ *  keychain. Refuses early when no library OR no remote is configured (a clean
+ *  precondition over a raw git "no origin" failure). NOTE: this does NOT wire the
+ *  git `origin` remote — like the reference, `origin` must already exist in the
+ *  repo; configure_remote only persists the URL for display + this precondition. */
+export async function buildPush(config: LibraryConfig, run: Run = runBridge): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  if (!config.remoteUrl) return errorResult(REMOTE_NOT_CONFIGURED);
+  const r = await withWriteLock(() =>
+    run(config.bridgePath, "push_now", { path: config.libraryPath, askpass_dir: config.askpassDir }, { timeoutMs: NETWORK_TIMEOUT_MS }),
+  );
+  return r.ok ? { status: 200, body: {} } : errorResult(r.error);
+}
+
+/** pull_now: `git pull --rebase`. Write-locked + NETWORK_TIMEOUT. A rebase
+ *  conflict rides 200 as `{outcome:"conflict", conflict_count}` data (D7); a
+ *  timeout/other failure is an error. */
+export async function buildPull(config: LibraryConfig, run: Run = runBridge): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  if (!config.remoteUrl) return errorResult(REMOTE_NOT_CONFIGURED);
+  const r = await withWriteLock(() =>
+    run(config.bridgePath, "pull_now", { path: config.libraryPath, askpass_dir: config.askpassDir }, { validate: parsePullResult, timeoutMs: NETWORK_TIMEOUT_MS }),
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** is_pull_paused: the conflict-banner gate. Write-locked (reads `.git`). */
+export async function buildIsPullPaused(config: LibraryConfig, run: Run = runBridge): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await withWriteLock(() =>
+    run(config.bridgePath, "is_pull_paused", { path: config.libraryPath }, { validate: parsePullPaused, timeoutMs: WRITE_TIMEOUT_MS }),
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** list_pull_conflicts: classified conflict paths for the resolver. Write-locked. */
+export async function buildListConflicts(config: LibraryConfig, run: Run = runBridge): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await withWriteLock(() =>
+    run(config.bridgePath, "list_pull_conflicts", { path: config.libraryPath }, { validate: parseConflictList, timeoutMs: WRITE_TIMEOUT_MS }),
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** read_conflict_blob: one side of a conflicted file as text (`content` null if
+ *  the side has no entry). `conflictPath`/`side` are query params (the path can
+ *  contain `/`). Write-locked. */
+export async function buildReadConflictBlob(
+  config: LibraryConfig,
+  conflictPath: string,
+  side: string,
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await withWriteLock(() =>
+    run(
+      config.bridgePath,
+      "read_conflict_blob",
+      { path: config.libraryPath, conflict_path: conflictPath, side },
+      { validate: parseConflictBlob, timeoutMs: WRITE_TIMEOUT_MS },
+    ),
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** resolve_conflict: stage the chosen side. Body `{path, side}` (UI-facing
+ *  `path` = the conflict path, injected as `conflict_path`). Write-locked. */
+export async function buildResolveConflict(config: LibraryConfig, body: GitBody, run: Run = runBridge): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await withWriteLock(() =>
+    run(
+      config.bridgePath,
+      "resolve_conflict",
+      { path: config.libraryPath, conflict_path: gitStr(body.path), side: gitStr(body.side) },
+      { timeoutMs: WRITE_TIMEOUT_MS },
+    ),
+  );
+  return r.ok ? { status: 200, body: {} } : errorResult(r.error);
+}
+
+/** continue_pull: `git rebase --continue`. `{outcome:"done"}` or
+ *  `{outcome:"still_conflicted", conflict_count}` (the resolver loops). Write-locked. */
+export async function buildContinuePull(config: LibraryConfig, run: Run = runBridge): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await withWriteLock(() =>
+    run(config.bridgePath, "continue_pull", { path: config.libraryPath }, { validate: parseContinueResult, timeoutMs: WRITE_TIMEOUT_MS }),
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** abort_pull: `git rebase --abort` — unwind to the pre-pull state. Write-locked. */
+export async function buildAbortPull(config: LibraryConfig, run: Run = runBridge): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const r = await withWriteLock(() =>
+    run(config.bridgePath, "abort_pull", { path: config.libraryPath }, { timeoutMs: WRITE_TIMEOUT_MS }),
+  );
+  return r.ok ? { status: 200, body: {} } : errorResult(r.error);
+}
+
 export function registerLibraryRoutes(
   app: Hono,
   loadConfig: () => LibraryConfig = loadLibraryConfig,
@@ -1417,4 +1643,32 @@ export function registerLibraryRoutes(
     json(c, await buildBootstrapExecute(loadConfig(), await readJson(c))),
   );
   app.delete("/api/library/bootstrap/session", async (c) => json(c, await buildClearBootstrapSession(loadConfig())));
+  // Git remote sync (Slice 8) — grouped under the distinct `/git` prefix (no
+  // `:kind/:name` collision). push/pull are the ONLY routes in the app that
+  // egress; the PAT enters ONLY via PUT /git/pat's body (then straight to the
+  // keychain, never logged) and leaves ONLY as `pat_redacted` from GET /git/status.
+  // Each inherits server.ts's loopback Host + Origin guard; the write lock +
+  // NETWORK_TIMEOUT live in the handlers (D5). Bodies/args are built field-by-
+  // field — `secret_store` is NEVER forwarded from a body, so a request can't
+  // downgrade the production bridge off the keychain (security review, D6).
+  app.post("/api/library/git/remote", async (c) => json(c, await buildConfigureRemote(loadConfig(), await readJson(c))));
+  app.put("/api/library/git/pat", async (c) => json(c, await buildSetPat(loadConfig(), await readJson(c))));
+  app.delete("/api/library/git/pat", async (c) => json(c, await buildDeletePat(loadConfig())));
+  app.get("/api/library/git/status", async (c) => json(c, await buildRemoteStatus(loadConfig())));
+  app.get("/api/library/git/scan-before-push", async (c) => json(c, await buildScanBeforePush(loadConfig())));
+  app.get("/api/library/git/unpushed-count", async (c) => json(c, await buildUnpushedCount(loadConfig())));
+  app.post("/api/library/git/push", async (c) => json(c, await buildPush(loadConfig())));
+  app.post("/api/library/git/pull", async (c) => json(c, await buildPull(loadConfig())));
+  app.get("/api/library/git/paused", async (c) => json(c, await buildIsPullPaused(loadConfig())));
+  app.get("/api/library/git/conflicts", async (c) => json(c, await buildListConflicts(loadConfig())));
+  // The conflict path can contain `/`, so it rides `?path=` (like working-files
+  // content), and the side rides `?side=local|remote`.
+  app.get("/api/library/git/conflicts/blob", async (c) =>
+    json(c, await buildReadConflictBlob(loadConfig(), c.req.query("path") ?? "", c.req.query("side") ?? "")),
+  );
+  app.post("/api/library/git/conflicts/resolve", async (c) =>
+    json(c, await buildResolveConflict(loadConfig(), await readJson(c))),
+  );
+  app.post("/api/library/git/pull/continue", async (c) => json(c, await buildContinuePull(loadConfig())));
+  app.post("/api/library/git/pull/abort", async (c) => json(c, await buildAbortPull(loadConfig())));
 }

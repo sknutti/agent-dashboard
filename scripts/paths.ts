@@ -70,6 +70,17 @@ export const DEFAULT_BOOTSTRAP_SESSION_PATH = join(DATA_DIR, "bootstrap-session.
  */
 export const DEFAULT_BACKUP_DIR = join(DATA_DIR, "backups");
 
+/**
+ * Default directory the bridge writes the git askpass helper (`git-askpass.sh`)
+ * into before each push/pull (Slice 8, D3 — `init_askpass_script` is idempotent,
+ * so per-invocation is correct and needs no launch hook). Dashboard-owned, under
+ * `DATA_DIR`; route-injected (D7, never from an HTTP body), with the
+ * `CC_LIBRARY_ASKPASS_DIR` env / `library.yaml` `askpass_dir` overrides layered
+ * by `loadLibraryConfig()`. Keep it off network/sync mounts like the rest of
+ * `DATA_DIR`.
+ */
+export const DEFAULT_ASKPASS_DIR = join(DATA_DIR, "askpass");
+
 /** IANA-ish timezone name for local-time bucketing and health display. */
 export function tzName(): string {
   return (

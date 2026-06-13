@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadLibraryConfig, checkLibraryBridge, type LibraryConfig } from "./library_config.ts";
 import {
+  DEFAULT_ASKPASS_DIR,
   DEFAULT_BACKUP_DIR,
   DEFAULT_BOOTSTRAP_SESSION_PATH,
   DEFAULT_BRIDGE_PATH,
@@ -36,6 +37,8 @@ describe("loadLibraryConfig", () => {
         home: DEFAULT_LIBRARY_HOME,
         sessionPath: DEFAULT_BOOTSTRAP_SESSION_PATH,
         backupDir: DEFAULT_BACKUP_DIR,
+        remoteUrl: null,
+        askpassDir: DEFAULT_ASKPASS_DIR,
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -62,6 +65,8 @@ describe("loadLibraryConfig", () => {
         home: DEFAULT_LIBRARY_HOME,
         sessionPath: DEFAULT_BOOTSTRAP_SESSION_PATH,
         backupDir: DEFAULT_BACKUP_DIR,
+        remoteUrl: null,
+        askpassDir: DEFAULT_ASKPASS_DIR,
       });
     });
   });
@@ -90,6 +95,8 @@ describe("loadLibraryConfig", () => {
         home: DEFAULT_LIBRARY_HOME,
         sessionPath: DEFAULT_BOOTSTRAP_SESSION_PATH,
         backupDir: DEFAULT_BACKUP_DIR,
+        remoteUrl: null,
+        askpassDir: DEFAULT_ASKPASS_DIR,
       });
     });
   });
@@ -223,6 +230,8 @@ describe("checkLibraryBridge (doctor)", () => {
     home: "/home/test",
     sessionPath: "/data/bootstrap-session.json",
     backupDir: "/data/backups",
+    remoteUrl: null,
+    askpassDir: "/data/askpass",
   });
 
   // Injectable mtime providers (ms). The defaults hit the real fs; tests pin
@@ -291,5 +300,74 @@ describe("checkLibraryBridge (doctor)", () => {
     const r = checkLibraryBridge(cfg(null, "/whatever"), absent);
     expect(r.status).toBe("ok");
     expect(r.detail).toMatch(/not configured/i);
+  });
+});
+
+// --- Slice 8: remoteUrl/askpassDir loading + persistRemoteUrl ---------------
+import { persistRemoteUrl } from "./library_config.ts";
+import { readFileSync as readFile } from "node:fs";
+
+describe("loadLibraryConfig — git-sync fields (remoteUrl, askpassDir)", () => {
+  test("reads remote_url from the file; askpass_dir defaults", () => {
+    withYaml(`library_path: /libs/x\nremote_url: https://github.com/o/r\n`, (dir) => {
+      const cfg = loadLibraryConfig(dir, NO_ENV);
+      expect(cfg.remoteUrl).toBe("https://github.com/o/r");
+      expect(cfg.askpassDir).toBe(DEFAULT_ASKPASS_DIR);
+    });
+  });
+  test("remoteUrl is null when unset; env overrides file", () => {
+    withYaml(`library_path: /libs/x\n`, (dir) => {
+      expect(loadLibraryConfig(dir, NO_ENV).remoteUrl).toBeNull();
+      expect(loadLibraryConfig(dir, { CC_LIBRARY_REMOTE_URL: "https://github.com/e/n" }).remoteUrl).toBe(
+        "https://github.com/e/n",
+      );
+    });
+  });
+  test("CC_LIBRARY_ASKPASS_DIR overrides the default", () => {
+    withYaml(`library_path: /libs/x\n`, (dir) => {
+      expect(loadLibraryConfig(dir, { CC_LIBRARY_ASKPASS_DIR: "/tmp/ak" }).askpassDir).toBe("/tmp/ak");
+    });
+  });
+});
+
+describe("persistRemoteUrl (Slice 8 — the one route that mutates the config file)", () => {
+  test("writes remote_url and the loader reads it back", () => {
+    withYaml(`library_path: /libs/x\n`, (dir) => {
+      persistRemoteUrl("https://github.com/o/r", dir);
+      expect(loadLibraryConfig(dir, NO_ENV).remoteUrl).toBe("https://github.com/o/r");
+    });
+  });
+  test("preserves other keys AND the file's human comments", () => {
+    const original = `# keep me\nlibrary_path: /libs/x\n# bridge note\nbridge_path: /opt/b\n`;
+    withYaml(original, (dir) => {
+      persistRemoteUrl("https://github.com/o/r", dir);
+      const raw = readFile(join(dir, "library.yaml"), "utf8");
+      // comments survive (Document API, not parse→stringify)
+      expect(raw).toContain("# keep me");
+      expect(raw).toContain("# bridge note");
+      // unrelated keys untouched; loader still resolves them
+      const cfg = loadLibraryConfig(dir, NO_ENV);
+      expect(cfg.libraryPath).toBe("/libs/x");
+      expect(cfg.bridgePath).toBe("/opt/b");
+      expect(cfg.remoteUrl).toBe("https://github.com/o/r");
+    });
+  });
+  test("re-persisting overwrites the prior remote_url, not duplicates it", () => {
+    withYaml(`library_path: /libs/x\n`, (dir) => {
+      persistRemoteUrl("https://github.com/o/first", dir);
+      persistRemoteUrl("https://github.com/o/second", dir);
+      const raw = readFile(join(dir, "library.yaml"), "utf8");
+      expect(raw.match(/remote_url:/g)?.length).toBe(1);
+      expect(loadLibraryConfig(dir, NO_ENV).remoteUrl).toBe("https://github.com/o/second");
+    });
+  });
+  test("a missing config file starts a fresh document", () => {
+    const dir = mkdtempSync(join(tmpdir(), "library-persist-"));
+    try {
+      persistRemoteUrl("https://github.com/o/r", dir);
+      expect(loadLibraryConfig(dir, NO_ENV).remoteUrl).toBe("https://github.com/o/r");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

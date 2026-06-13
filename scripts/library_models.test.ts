@@ -783,3 +783,86 @@ describe("parseBootstrapExecuteSummary", () => {
     );
   });
 });
+
+// --- Git remote sync parsers (Slice 8) -------------------------------------
+import {
+  parseRemoteStatus,
+  parseScanFindings,
+  parseUnpushedCount,
+  parsePullPaused,
+  parsePullResult,
+  parseContinueResult,
+  parseConflictList,
+  parseConflictBlob,
+  parseConfiguredRemote,
+} from "./library_models.ts";
+
+describe("git-sync parsers (Slice 8)", () => {
+  test("parseRemoteStatus reads url + redacted pat, both nullable", () => {
+    expect(parseRemoteStatus({ remote_url: "https://github.com/o/r", pat_redacted: "ghp_••••••••6789" })).toEqual({
+      remote_url: "https://github.com/o/r",
+      pat_redacted: "ghp_••••••••6789",
+    });
+    expect(parseRemoteStatus({ remote_url: null, pat_redacted: null })).toEqual({
+      remote_url: null,
+      pat_redacted: null,
+    });
+  });
+
+  test("parseConfiguredRemote reads the normalized url", () => {
+    expect(parseConfiguredRemote({ remote_url: "https://github.com/o/r" })).toEqual({
+      remote_url: "https://github.com/o/r",
+    });
+    expect(() => parseConfiguredRemote({})).toThrow(BridgeShapeError);
+  });
+
+  test("parseScanFindings reads the findings array with verbatim matched bytes", () => {
+    const out = parseScanFindings({
+      findings: [{ path: "CLAUDE.md", line: 1, kind: "github_classic_pat", matched: "ghp_xxx" }],
+    });
+    expect(out).toEqual([{ path: "CLAUDE.md", line: 1, kind: "github_classic_pat", matched: "ghp_xxx" }]);
+    expect(parseScanFindings({ findings: [] })).toEqual([]);
+  });
+
+  test("parseUnpushedCount + parsePullPaused read their scalars", () => {
+    expect(parseUnpushedCount({ count: 3 })).toEqual({ count: 3 });
+    expect(parsePullPaused({ paused: true })).toEqual({ paused: true });
+  });
+
+  test("parsePullResult routes ok vs conflict", () => {
+    expect(parsePullResult({ outcome: "ok" })).toEqual({ outcome: "ok" });
+    expect(parsePullResult({ outcome: "conflict", conflict_count: 2 })).toEqual({
+      outcome: "conflict",
+      conflict_count: 2,
+    });
+    expect(() => parsePullResult({ outcome: "weird" })).toThrow(BridgeShapeError);
+  });
+
+  test("parseContinueResult routes done vs still_conflicted", () => {
+    expect(parseContinueResult({ outcome: "done" })).toEqual({ outcome: "done" });
+    expect(parseContinueResult({ outcome: "still_conflicted", conflict_count: 1 })).toEqual({
+      outcome: "still_conflicted",
+      conflict_count: 1,
+    });
+  });
+
+  test("parseConflictList classifies and rejects an unknown kind", () => {
+    expect(
+      parseConflictList({
+        conflicts: [
+          { path: "skills/x/current.txt", kind: "current_txt" },
+          { path: "README.md", kind: "other" },
+        ],
+      }),
+    ).toEqual([
+      { path: "skills/x/current.txt", kind: "current_txt" },
+      { path: "README.md", kind: "other" },
+    ]);
+    expect(() => parseConflictList({ conflicts: [{ path: "x", kind: "bogus" }] })).toThrow(BridgeShapeError);
+  });
+
+  test("parseConflictBlob reads content or null", () => {
+    expect(parseConflictBlob({ content: "local-change\n" })).toEqual({ content: "local-change\n" });
+    expect(parseConflictBlob({ content: null })).toEqual({ content: null });
+  });
+});

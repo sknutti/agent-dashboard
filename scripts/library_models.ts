@@ -1115,3 +1115,149 @@ export function parseOverlayLists(v: unknown): OverlayList[] {
   if (!Array.isArray(v)) fail("OverlayList[]");
   return v.map(parseOverlayList);
 }
+
+// ---------------------------------------------------------------------------
+// Git remote sync (Slice 8). Parsers for the bridge's git-sync envelopes. The
+// PAT never appears in any of these — `RemoteStatus.pat_redacted` is the only
+// PAT-derived field and it is already the redacted form (`redact_pat`).
+// ---------------------------------------------------------------------------
+
+/** Remote URL + redacted PAT for the settings panel. Both nullable: null url =
+ *  no remote configured; null pat = no token stored. */
+export interface RemoteStatus {
+  remote_url: string | null;
+  pat_redacted: string | null;
+}
+
+export function parseRemoteStatus(v: unknown): RemoteStatus {
+  if (!isObject(v)) fail("RemoteStatus");
+  return {
+    remote_url: asNullableString(v.remote_url, "RemoteStatus.remote_url"),
+    pat_redacted: asNullableString(v.pat_redacted, "RemoteStatus.pat_redacted"),
+  };
+}
+
+/** One secret-scan hit the push gate found. `matched` is the verbatim offending
+ *  bytes — the UI surfaces it so the user sees exactly what tripped the gate. */
+export interface ScanFinding {
+  path: string;
+  line: number;
+  kind: string;
+  matched: string;
+}
+
+export function parseScanFindings(v: unknown): ScanFinding[] {
+  if (!isObject(v) || !Array.isArray(v.findings)) fail("ScanFinding[]");
+  return v.findings.map((f) => {
+    if (!isObject(f)) fail("ScanFinding");
+    return {
+      path: asString(f.path, "ScanFinding.path"),
+      line: asNumber(f.line, "ScanFinding.line"),
+      kind: asString(f.kind, "ScanFinding.kind"),
+      matched: asString(f.matched, "ScanFinding.matched"),
+    };
+  });
+}
+
+/** Count of commits ahead of the upstream — the "Push N" badge. */
+export interface UnpushedCount {
+  count: number;
+}
+
+export function parseUnpushedCount(v: unknown): UnpushedCount {
+  if (!isObject(v)) fail("UnpushedCount");
+  return { count: asNumber(v.count, "UnpushedCount.count") };
+}
+
+/** Whether a rebase is paused awaiting conflict resolution. */
+export interface PullPaused {
+  paused: boolean;
+}
+
+export function parsePullPaused(v: unknown): PullPaused {
+  if (!isObject(v)) fail("PullPaused");
+  return { paused: asBool(v.paused, "PullPaused.paused") };
+}
+
+/** Outcome of `pull_now`: a clean pull, or a paused rebase the UI must resolve.
+ *  A conflict is a routable RESULT (rides the OK envelope as data), not an
+ *  error — the UI swaps to the resolver banner. */
+export type PullResult =
+  | { outcome: "ok" }
+  | { outcome: "conflict"; conflict_count: number };
+
+export function parsePullResult(v: unknown): PullResult {
+  if (!isObject(v)) fail("PullResult");
+  switch (v.outcome) {
+    case "ok":
+      return { outcome: "ok" };
+    case "conflict":
+      return { outcome: "conflict", conflict_count: asNumber(v.conflict_count, "PullResult.conflict_count") };
+    default:
+      return fail("PullResult (unknown outcome)");
+  }
+}
+
+/** Outcome of `continue_pull`: the rebase finished, or the next replayed commit
+ *  collided afresh and the resolver loops. */
+export type ContinueResult =
+  | { outcome: "done" }
+  | { outcome: "still_conflicted"; conflict_count: number };
+
+export function parseContinueResult(v: unknown): ContinueResult {
+  if (!isObject(v)) fail("ContinueResult");
+  switch (v.outcome) {
+    case "done":
+      return { outcome: "done" };
+    case "still_conflicted":
+      return {
+        outcome: "still_conflicted",
+        conflict_count: asNumber(v.conflict_count, "ContinueResult.conflict_count"),
+      };
+    default:
+      return fail("ContinueResult (unknown outcome)");
+  }
+}
+
+/** A conflicted path classified for the resolver's renderer. `kind` mirrors the
+ *  bridge's `classify_conflict_path`: current_txt/metadata_yaml get value
+ *  pickers; version_file/other fall back to the copy-path escape hatch. */
+export type ConflictKind = "current_txt" | "metadata_yaml" | "version_file" | "other";
+
+export interface ConflictEntry {
+  path: string;
+  kind: ConflictKind;
+}
+
+const CONFLICT_KINDS: readonly ConflictKind[] = ["current_txt", "metadata_yaml", "version_file", "other"];
+
+export function parseConflictList(v: unknown): ConflictEntry[] {
+  if (!isObject(v) || !Array.isArray(v.conflicts)) fail("ConflictEntry[]");
+  return v.conflicts.map((c) => {
+    if (!isObject(c)) fail("ConflictEntry");
+    const kind = asString(c.kind, "ConflictEntry.kind");
+    if (!(CONFLICT_KINDS as readonly string[]).includes(kind)) fail("ConflictEntry.kind");
+    return { path: asString(c.path, "ConflictEntry.path"), kind: kind as ConflictKind };
+  });
+}
+
+/** One side of a conflicted blob, decoded as text. `content` is null when that
+ *  side has no entry (e.g. the other side deleted the file). */
+export interface ConflictBlob {
+  content: string | null;
+}
+
+export function parseConflictBlob(v: unknown): ConflictBlob {
+  if (!isObject(v)) fail("ConflictBlob");
+  return { content: asNullableString(v.content, "ConflictBlob.content") };
+}
+
+/** configure_remote's reply: the validated, normalized remote URL (no PAT). */
+export interface ConfiguredRemote {
+  remote_url: string;
+}
+
+export function parseConfiguredRemote(v: unknown): ConfiguredRemote {
+  if (!isObject(v)) fail("ConfiguredRemote");
+  return { remote_url: asString(v.remote_url, "ConfiguredRemote.remote_url") };
+}
