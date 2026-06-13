@@ -49,12 +49,13 @@ import {
   parseConflictList,
   parseConflictBlob,
   parseConfiguredRemote,
+  parseFetchedPrimitive,
   type LibraryStatus,
 } from "./library_models.ts";
 import { importInstalls } from "./library_migration.ts";
 
 type Run = typeof runBridge;
-type HttpStatus = 200 | 404 | 409 | 422 | 502;
+type HttpStatus = 200 | 404 | 409 | 422 | 429 | 502;
 
 /**
  * Write commands get a larger watchdog than the 10s read default. Killing a
@@ -155,7 +156,15 @@ export function statusForCode(code: string): HttpStatus {
     case "invalid_conflict_side": // resolve/read with a side other than local|remote
     case "conflict_path_missing": // resolve/read with no conflict path
     case "conflict_blob_not_utf8": // a conflicted blob the text resolver can't render
+    // URL-import bad inputs (Slice 10b) — user-fixable.
+    case "library_unsupported_source_url": // non-github/non-https/file/internal/gist URL (SSRF-blocked)
+    case "library_bundle_invalid": // the Skill folder violated a size/path cap
+    case "library_invalid_import_payload": // a malformed create-time seed
       return 422;
+    // URL-import: GitHub's anonymous Contents API rate limit (60/hr). A distinct,
+    // actionable status — "wait and retry", not a generic failure (Slice 10b, D4).
+    case "library_github_rate_limited":
+      return 429;
     case "primitive_not_found":
     case "working_file_not_found": // save/rename a ref file that doesn't exist — use Create
     case "library_version_not_found": // set-current/inspect/revert a label that isn't on disk
@@ -939,6 +948,9 @@ export async function buildUpdateMetadata(
 interface CreateBody {
   kind?: unknown;
   name?: unknown;
+  /** Optional URL-import seed (Slice 10b) — forwarded verbatim to the bridge,
+   *  which validates its shape. Absent → the empty scaffold. */
+  imported?: unknown;
 }
 
 interface NewNameBody {
@@ -968,8 +980,34 @@ export async function buildCreatePrimitive(
       kind: typeof body.kind === "string" ? body.kind : "",
       name: typeof body.name === "string" ? body.name : "",
       created_at: now,
+      // Slice 10b: forward the optional URL-import seed. `undefined` is dropped
+      // by JSON.stringify, so an absent payload reaches the bridge as no key →
+      // the empty scaffold (the bridge's parse_imported treats absent as None).
+      imported: body.imported,
     },
     { validate: parsePublishResult, timeoutMs: WRITE_TIMEOUT_MS },
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** fetch_primitive_from_url (Slice 10b) — the SECOND egress route. A network
+ *  READ: no write lock, NETWORK_TIMEOUT (a slow-but-healthy GitHub fetch isn't
+ *  SIGKILL'd; the in-core 10s reqwest timeout fires first). Needs NO library (a
+ *  fetch precedes any library write — the subsequent create needs it, not this).
+ *  The URL is body-borne (D3 — the one user-supplied "where to read from"); the
+ *  SSRF trust boundary is in-core (`normalize_url` + redirect-disabled client).
+ *  m4: a FetchFailed detail embeds the URL (could carry a token) — errorResult
+ *  forwards only {code, message}, never the detail. */
+export async function buildFetchPrimitiveFromUrl(
+  config: LibraryConfig,
+  body: { url?: unknown },
+  run: Run = runBridge,
+): Promise<LibraryRouteResult> {
+  const r = await run(
+    config.bridgePath,
+    "fetch_primitive_from_url",
+    { url: typeof body.url === "string" ? body.url : "" },
+    { validate: parseFetchedPrimitive, timeoutMs: NETWORK_TIMEOUT_MS },
   );
   return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
 }
@@ -1621,6 +1659,15 @@ export function registerLibraryRoutes(
   app.post("/api/library/primitives", async (c) => json(c, await buildCreatePrimitive(loadConfig(), await readJson(c))));
   app.post("/api/library/import-from-path", async (c) =>
     json(c, await buildImportFromPath(loadConfig(), await readJson(c))),
+  );
+  // URL import (Slice 10b) — the SECOND egress route, under the distinct
+  // `/import/fetch` prefix (off the `:kind/:name` namespace, mirroring `/search`).
+  // POST (not GET): it carries a URL body and egresses, so the write-shaped verb
+  // earns server.ts's Origin check for free, defending the egress trigger against
+  // a drive-by CSRF — even though it's read-semantics (no library write). The
+  // create above forwards the fetched preview as the `imported` seed.
+  app.post("/api/library/import/fetch", async (c) =>
+    json(c, await buildFetchPrimitiveFromUrl(loadConfig(), await readJson(c))),
   );
   app.delete("/api/library/primitives/:kind/:name", async (c) =>
     json(c, await buildDeletePrimitive(loadConfig(), c.req.param("kind"), c.req.param("name"))),

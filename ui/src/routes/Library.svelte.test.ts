@@ -905,3 +905,83 @@ describe("Library route — delete (the headline two-phase confirm)", () => {
     expect(screen.getByText("Install targets")).toBeTruthy(); // still on the detail
   });
 });
+
+describe("Library route — URL import (Slice 10b)", () => {
+  const FETCHED = {
+    content: "---\nauthor: Ada\n---\n# Diagnose\n\nReproduce, then fix.\n",
+    suggested_name: "diagnose-fetched",
+    author: "Ada",
+    source_url: "https://raw.githubusercontent.com/o/r/main/skills/x/SKILL.md",
+    ref_files: [{ rel_path: "reference/notes.md", content: [104, 105] }],
+  };
+
+  async function openCreate() {
+    render(Library);
+    await fireEvent.click(await screen.findByRole("button", { name: "New" }));
+  }
+  const urlInput = () => screen.getByTestId("create-url-input") as HTMLInputElement;
+  const nameInput = () => screen.getByPlaceholderText("my-primitive") as HTMLInputElement;
+
+  test("fetch pre-fills the name + shows the preview with the ref-file count", async () => {
+    mockValidLibrary();
+    vi.spyOn(api, "fetchPrimitiveFromUrl").mockResolvedValue(FETCHED);
+    await openCreate();
+    await fireEvent.input(urlInput(), { target: { value: "https://github.com/o/r/blob/main/SKILL.md" } });
+    await fireEvent.click(screen.getByTestId("create-fetch-btn"));
+    expect(await screen.findByTestId("fetch-preview")).toBeTruthy();
+    expect(screen.getByText(/\+ 1 file/)).toBeTruthy();
+    expect(nameInput().value).toBe("diagnose-fetched"); // pre-filled from suggested_name
+  });
+
+  test("an unsupported URL shows an inline notice, never a preview/toast", async () => {
+    mockValidLibrary();
+    vi.spyOn(api, "fetchPrimitiveFromUrl").mockRejectedValue(
+      new api.LibraryApiError("library_unsupported_source_url", "unsupported source URL"),
+    );
+    await openCreate();
+    await fireEvent.input(urlInput(), { target: { value: "https://gitlab.com/o/r" } });
+    await fireEvent.click(screen.getByTestId("create-fetch-btn"));
+    expect(await screen.findByText(/unsupported source URL/)).toBeTruthy();
+    expect(screen.queryByTestId("fetch-preview")).toBeNull();
+  });
+
+  test("a rate-limited fetch surfaces its distinct, actionable message", async () => {
+    mockValidLibrary();
+    vi.spyOn(api, "fetchPrimitiveFromUrl").mockRejectedValue(
+      new api.LibraryApiError("library_github_rate_limited", "GitHub rate limit reached — wait and retry"),
+    );
+    await openCreate();
+    await fireEvent.input(urlInput(), { target: { value: "https://github.com/o/r/blob/main/SKILL.md" } });
+    await fireEvent.click(screen.getByTestId("create-fetch-btn"));
+    expect(await screen.findByText(/rate limit reached/i)).toBeTruthy();
+  });
+
+  test("create forwards the fetched seed as `imported`", async () => {
+    mockValidLibrary();
+    vi.spyOn(api, "fetchPrimitiveFromUrl").mockResolvedValue(FETCHED);
+    const create = vi.spyOn(api, "createPrimitive").mockResolvedValue({ committed: true, commit_error: null });
+    await openCreate();
+    await fireEvent.input(urlInput(), { target: { value: "https://github.com/o/r/blob/main/SKILL.md" } });
+    await fireEvent.click(screen.getByTestId("create-fetch-btn"));
+    await screen.findByTestId("fetch-preview");
+    await fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(create).toHaveBeenCalledWith("skill", "diagnose-fetched", FETCHED);
+  });
+
+  test("editing the URL after a fetch invalidates the stash — no stale seed on create", async () => {
+    mockValidLibrary();
+    vi.spyOn(api, "fetchPrimitiveFromUrl").mockResolvedValue(FETCHED);
+    const create = vi.spyOn(api, "createPrimitive").mockResolvedValue({ committed: true, commit_error: null });
+    await openCreate();
+    await fireEvent.input(urlInput(), { target: { value: "https://github.com/o/r/blob/main/SKILL.md" } });
+    await fireEvent.click(screen.getByTestId("create-fetch-btn"));
+    await screen.findByTestId("fetch-preview");
+    // edit the URL → the preview (and its stash) is dropped
+    await fireEvent.input(urlInput(), { target: { value: "https://github.com/o/r/blob/main/OTHER.md" } });
+    expect(screen.queryByTestId("fetch-preview")).toBeNull();
+    // create now sends the empty-scaffold 2-arg form (no imported seed)
+    await fireEvent.input(nameInput(), { target: { value: "manual" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(create).toHaveBeenCalledWith("skill", "manual");
+  });
+});

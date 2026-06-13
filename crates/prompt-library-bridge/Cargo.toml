@@ -18,8 +18,12 @@ path = "src/main.rs"
 # constructed ONLY by the git-sync commands (configure/PAT/status/push/pull) via
 # `secret_store(args)`; every other command path constructs none, and the
 # redaction tripwire (D6) guarantees the raw PAT never reaches a log or response.
-# core links reqwest transitively, but only the git-sync push/pull egress (Phase 2)
-# makes a network call — every other path stays network-free (code-discipline).
+# core links reqwest transitively. TWO deliberate network-egress paths now exist:
+# git-sync push/pull (Slice 8, via the git child process) and url_import fetch
+# (Slice 10b, via core's reqwest client — the SSRF allowlist + redirect-disabled
+# client live in core::url_import). Every OTHER path stays network-free
+# (code-discipline). NEITHER url_import path is secrets-bearing — only git-sync
+# constructs a SecretStore.
 [dependencies]
 prompt-library-core = { path = "../core" }
 prompt-library-git = { path = "../git" }

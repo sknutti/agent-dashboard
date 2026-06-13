@@ -1261,3 +1261,38 @@ export function parseConfiguredRemote(v: unknown): ConfiguredRemote {
   if (!isObject(v)) fail("ConfiguredRemote");
   return { remote_url: asString(v.remote_url, "ConfiguredRemote.remote_url") };
 }
+
+// --- URL import (Slice 10b) -------------------------------------------------
+// The fetched-primitive preview returned by fetch_primitive_from_url, plus the
+// create-time seed. ref_files carry raw bytes as a JSON number array (the
+// Vec<u8> wire convention), round-tripped verbatim into the create payload.
+
+export interface RefFileWire {
+  rel_path: string;
+  content: number[];
+}
+
+export interface FetchedPrimitive {
+  content: string;
+  suggested_name: string;
+  author: string | null;
+  source_url: string;
+  ref_files: RefFileWire[];
+}
+
+export function parseFetchedPrimitive(v: unknown): FetchedPrimitive {
+  if (!isObject(v) || !Array.isArray(v.ref_files)) fail("FetchedPrimitive");
+  return {
+    content: asString(v.content, "FetchedPrimitive.content"),
+    suggested_name: asString(v.suggested_name, "FetchedPrimitive.suggested_name"),
+    author: asNullableString(v.author, "FetchedPrimitive.author"),
+    source_url: asString(v.source_url, "FetchedPrimitive.source_url"),
+    ref_files: v.ref_files.map((rf) => {
+      if (!isObject(rf)) fail("RefFile");
+      return {
+        rel_path: asString(rf.rel_path, "RefFile.rel_path"),
+        content: asByteArray(rf.content, "RefFile.content"),
+      };
+    }),
+  };
+}
