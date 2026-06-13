@@ -2139,3 +2139,105 @@ describe("route-local failure — a git route failing leaves the rest of the app
     expect((await app.request("/healthz")).status).toBe(200);
   });
 });
+
+// ---------------------------------------------------------------------------
+// URL import routes (Slice 10b) — fetch mapping, the m4 URL-leak tripwire, 429
+// ---------------------------------------------------------------------------
+import { buildFetchPrimitiveFromUrl } from "./library_routes.ts";
+// (buildCreatePrimitive is already imported at the top of this file.)
+
+const FETCHED = {
+  content: "---\n---\nbody\n",
+  suggested_name: "diagnose",
+  author: "Alice",
+  source_url: "https://raw.githubusercontent.com/o/r/main/skills/x/SKILL.md",
+  ref_files: [],
+};
+
+describe("statusForCode — url-import codes (Slice 10b)", () => {
+  test("bad inputs are 422", () => {
+    for (const c of ["library_unsupported_source_url", "library_bundle_invalid", "library_invalid_import_payload"])
+      expect(statusForCode(c)).toBe(422);
+  });
+  test("rate limit is 429; a fetch failure is 502", () => {
+    expect(statusForCode("library_github_rate_limited")).toBe(429);
+    expect(statusForCode("library_fetch_failed")).toBe(502);
+  });
+});
+
+describe("buildFetchPrimitiveFromUrl", () => {
+  test("forwards the body URL to the bridge and returns the preview", async () => {
+    const { run, calls } = captureRun({ ok: true, data: FETCHED });
+    const r = await buildFetchPrimitiveFromUrl(CONFIGURED, { url: "https://github.com/o/r/blob/main/SKILL.md" }, run);
+    expect(calls[0]!.command).toBe("fetch_primitive_from_url");
+    expect(calls[0]!.args).toEqual({ url: "https://github.com/o/r/blob/main/SKILL.md" });
+    expect(r.status).toBe(200);
+    expect((r.body as any).suggested_name).toBe("diagnose");
+  });
+
+  test("an unsupported URL maps to 422 (the in-core allowlist does the work)", async () => {
+    const r = await buildFetchPrimitiveFromUrl(
+      CONFIGURED,
+      { url: "http://169.254.169.254/" },
+      errRun({ code: "library_unsupported_source_url", message: "unsupported source URL", detail: "host not allowed" }),
+    );
+    expect(r.status).toBe(422);
+    expect((r.body as any).code).toBe("library_unsupported_source_url");
+  });
+
+  test("a rate-limited fetch maps to 429", async () => {
+    const r = await buildFetchPrimitiveFromUrl(
+      CONFIGURED,
+      { url: "https://github.com/o/r/blob/main/SKILL.md" },
+      errRun({ code: "library_github_rate_limited", message: "GitHub rate limit reached", detail: "x-ratelimit-remaining: 0" }),
+    );
+    expect(r.status).toBe(429);
+    expect((r.body as any).code).toBe("library_github_rate_limited");
+  });
+
+  test("m4 tripwire: a FetchFailed detail embeds the URL (maybe a token) — NEVER forwarded", async () => {
+    const leakyUrl = "https://raw.githubusercontent.com/o/r/main/SKILL.md?token=SUPERSECRET";
+    const r = await buildFetchPrimitiveFromUrl(
+      CONFIGURED,
+      { url: leakyUrl },
+      errRun({ code: "library_fetch_failed", message: "could not fetch from the URL", detail: `failed to fetch \`${leakyUrl}\`: HTTP 404` }),
+    );
+    expect(r.status).toBe(502);
+    expect(r.body).toEqual({ code: "library_fetch_failed", message: "could not fetch from the URL" });
+    const serialized = JSON.stringify(r.body);
+    expect(serialized).not.toContain("SUPERSECRET");
+    expect(serialized).not.toContain("token=");
+  });
+});
+
+describe("buildCreatePrimitive — the optional imported seed (Slice 10b)", () => {
+  test("forwards `imported` to the bridge when present", async () => {
+    const { run, calls } = captureRun({ ok: true, data: { committed: false, commit_error: null } });
+    await buildCreatePrimitive(CONFIGURED, { kind: "skill", name: "seeded", imported: FETCHED }, run);
+    expect(calls[0]!.args.kind).toBe("skill");
+    expect(calls[0]!.args.imported).toEqual(FETCHED);
+  });
+
+  test("omits `imported` when absent (empty-scaffold path, no regression)", async () => {
+    const { run, calls } = captureRun({ ok: true, data: { committed: false, commit_error: null } });
+    await buildCreatePrimitive(CONFIGURED, { kind: "skill", name: "blank" }, run);
+    expect(calls[0]!.args.imported).toBeUndefined();
+  });
+});
+
+describe("route-local failure — a failed fetch leaves the app at 200", () => {
+  test("a bridge fetch failure keeps /api/summary + /healthz at 200", async () => {
+    const app = new Hono();
+    app.get("/api/summary", (c) => c.json({ ok: true }));
+    app.get("/healthz", (c) => c.text("ok"));
+    registerLibraryRoutes(app, () => ({ ...CONFIGURED, bridgePath: "/no/such/bridge" }));
+    const fetchRes = await app.request("/api/library/import/fetch", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1" },
+      body: JSON.stringify({ url: "https://github.com/o/r/blob/main/SKILL.md" }),
+    });
+    expect([422, 429, 502]).toContain(fetchRes.status);
+    expect((await app.request("/api/summary")).status).toBe(200);
+    expect((await app.request("/healthz")).status).toBe(200);
+  });
+});

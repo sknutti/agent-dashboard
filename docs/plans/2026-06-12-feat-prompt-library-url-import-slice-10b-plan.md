@@ -87,7 +87,10 @@ Test-first within each phase. Each phase is independently gate-able. The network
   - `cmd_create_primitive` with `imported` present → primary file seeded + `metadata.yaml` has `source_url`/`author`; with a Skill `ref_files` payload → ref-files written under `working/base/`; with `imported` absent → byte-identical to today's empty scaffold (regression guard).
   - **Secrets-free assertion:** the fetch + create paths construct no `SecretStore` (the existing "non-git-sync constructs none" assertion extends to cover the new arm).
 
-### Phase 2: TS routes + models — the fetch route + the seeded create body
+### Phase 2: TS routes + models — the fetch route + the seeded create body — ✅ DONE (2026-06-12)
+> **Status:** Shipped. `parseFetchedPrimitive` (`{content, suggested_name, author?, source_url, ref_files: [{rel_path, content: number[]}]}` — `ref_files` content via the `asByteArray` Vec<u8> convention). `buildFetchPrimitiveFromUrl` (no write lock, `NETWORK_TIMEOUT_MS`, no library gate — a fetch precedes any write, Open Q4); `buildCreatePrimitive` forwards the optional `imported` (undefined → dropped → empty scaffold). `POST /api/library/import/fetch` (own prefix off `:kind/:name`, mirroring `/search`; POST so the egress earns server.ts's Origin guard). **Decision 2 (settled):** `HttpStatus` union extended with 429; `statusForCode` maps `library_unsupported_source_url`/`library_bundle_invalid`/`library_invalid_import_payload`→422, `library_github_rate_limited`→429, `library_fetch_failed`→502. Tests: the new code→HTTP mappings, fetch-arg forwarding, the **m4 URL-leak tripwire** (a FetchFailed detail embedding `?token=SUPERSECRET` → the response body is `{code, message}` only, no URL/token), create-forwards-imported (+ omits-when-absent), and route-local failure. Gate: tsc 0, `bun test scripts` **438 pass** (9 new).
+
+### Phase 2 (original plan): TS routes + models — the fetch route + the seeded create body
 
 - **Objective:** Expose `fetch_primitive_from_url` as a route; extend `buildCreatePrimitive` to forward an optional `imported` payload; add the model parsers + error-code HTTP mapping.
 - **Changes:**
