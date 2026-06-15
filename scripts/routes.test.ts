@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initSchema } from "./db.ts";
-import { rangePred, buildSessionErrors, buildSessionMessages, buildSearch } from "./routes.ts";
+import { rangePred, buildSessionErrors, buildSessionMessages, buildSearch, buildBurnOutput } from "./routes.ts";
 import { indexSession } from "./session_search.ts";
 
 // The rollup tables store `date` as an already-local YYYY-MM-DD. The old predicate
@@ -363,6 +363,29 @@ describe("buildSearch (#content-search)", () => {
     // the two pages partition the set — no overlap, no gap
     const ids = [...page1.results, ...page2.results].map((r) => r.session_id);
     expect(new Set(ids).size).toBe(3);
+    db.close();
+  });
+});
+
+// GET /api/burn/output core (buildBurnOutput) — reads the persisted, deduped
+// git_output_daily rollup over a range. Cost arithmetic (mergeBurnByDate) untouched.
+describe("buildBurnOutput (#burn-output)", () => {
+  function freshDb(): Database {
+    const db = new Database(":memory:");
+    initSchema(db);
+    return db;
+  }
+  test("returns persisted daily output within the range, deduped figures intact", () => {
+    const db = freshDb();
+    const inRange = (db.query("SELECT date('now','localtime','-1 days') d").get() as { d: string }).d;
+    const outRange = (db.query("SELECT date('now','localtime','-40 days') d").get() as { d: string }).d;
+    db.run("INSERT INTO git_output_daily (date, sessions, commits, insertions, deletions, files_changed) VALUES (?,?,?,?,?,?)", [inRange, 2, 3, 25, 6, 4]);
+    db.run("INSERT INTO git_output_daily (date, sessions, commits, insertions, deletions, files_changed) VALUES (?,?,?,?,?,?)", [outRange, 1, 9, 99, 9, 9]);
+    const res = buildBurnOutput(db, "7d");
+    expect(res.days.map((d) => d.date)).toEqual([inRange]); // out-of-range excluded
+    expect(res.days[0]!.commits).toBe(3);
+    expect(res.days[0]!.filesChanged).toBe(4);
+    expect(res.days[0]!.fidelity).toBe("estimated");
     db.close();
   });
 });

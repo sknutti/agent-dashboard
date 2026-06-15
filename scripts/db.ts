@@ -238,6 +238,31 @@ CREATE TABLE IF NOT EXISTS skills (
   last_modified  TEXT
 );
 
+-- Persisted per-DAY git-derived output (commits/LOC/files), the cheap-read rollup
+-- behind Burn's cost↔output pairing. Stores computeDayOutcome's VERBATIM deduped
+-- result so the Q2 per-hash dedupe is provably preserved.
+--   • Keyed by date ONLY, agent-agnostic BY DESIGN: hash dedupe is repo-wide and a
+--     single commit can sit in several agents' session windows, so a per-agent split
+--     of deduped commits is ill-defined. This intentionally does NOT match
+--     burn_daily's (date, agent) key — output answers "what did this day produce",
+--     burn_daily answers "what did this (day, agent) cost".
+--   • NEVER derive these by SUMming per-session scalars — that re-introduces the
+--     cross-session over-count the dedupe removed. A per-(session,hash) sidecar is the
+--     documented path IF per-repo/per-agent attribution is ever needed.
+-- Every figure is ESTIMATED (heuristic agent-vs-human authorship); distinct from the
+-- OTEL ProductivityPanel's exact counters.
+CREATE TABLE IF NOT EXISTS git_output_daily (
+  date          TEXT PRIMARY KEY,                       -- local day, DATE(started_at,'localtime')
+  sessions      INTEGER NOT NULL DEFAULT 0,             -- ended sessions that contributed
+  commits       INTEGER NOT NULL DEFAULT 0,             -- COUNT(DISTINCT hash), not a per-session sum
+  insertions    INTEGER NOT NULL DEFAULT 0,
+  deletions     INTEGER NOT NULL DEFAULT 0,
+  files_changed INTEGER NOT NULL DEFAULT 0,
+  fidelity      TEXT NOT NULL DEFAULT 'estimated',
+  deduped       INTEGER NOT NULL DEFAULT 1,
+  computed_at   TEXT
+);
+
 -- Full-text index over readable session content (user/assistant/thinking text).
 -- A standalone (non-external-content) FTS5 table: simplest correct option for the
 -- search tracer. One row per session, keyed by session_id; rebuilt idempotently on

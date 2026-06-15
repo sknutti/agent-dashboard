@@ -27,7 +27,8 @@ import {
   DISPLAY_PARSER_AGENTS,
   UnsupportedAgentError,
 } from "./error_context.ts";
-import { computeSessionOutcome, computeDayOutcome, runGitLog } from "./session_outcomes.ts";
+import { computeSessionOutcome, runGitLog } from "./session_outcomes.ts";
+import { getDayOutcome } from "./git_output_store.ts";
 import type {
   AgentCardData,
   AgentsResponse,
@@ -342,6 +343,31 @@ export function buildSearch(db: Database, q: string, opts: SearchOpts = {}): Sea
     // Defensive: toMatchQuery should neutralize all operator soup, but never 500.
     return { q: trimmed, total: 0, limit, offset, results: [], error: "bad query" };
   }
+}
+
+/** One day's persisted git-output row (date-only, all-agents, ESTIMATED). */
+export interface DayOutputRow {
+  date: string;
+  sessions: number;
+  commits: number;
+  insertions: number;
+  deletions: number;
+  filesChanged: number;
+  fidelity: string;
+}
+
+/** Core of GET /api/burn/output — reads the persisted, hash-deduped git_output_daily
+ *  rollup across a range in ONE query (no per-day git fan-out). Date-only by design
+ *  (no agent param): hash dedupe is repo-wide. Cost arithmetic (mergeBurnByDate) is
+ *  untouched — output is a separate axis the client joins by date. */
+export function buildBurnOutput(db: Database, range: string): { range: string; days: DayOutputRow[] } {
+  const days = db.query<DayOutputRow, []>(/* sql */ `
+    SELECT date, sessions, commits, insertions, deletions,
+           files_changed AS filesChanged, fidelity
+    FROM git_output_daily
+    WHERE ${rangePred(range, "date")}
+    ORDER BY date`).all();
+  return { range, days };
 }
 
 export function registerApiRoutes(app: Hono): void {
@@ -836,7 +862,17 @@ export function registerApiRoutes(app: Hono): void {
   app.get("/api/burn/day/:date/output", async (c) => {
     const date = c.req.param("date");
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return c.json({ error: "bad date" }, 400);
-    return c.json(await computeDayOutcome(db, date, runGitLog));
+    // Persisted-first; falls back to a live compute for a day the worker hasn't
+    // rolled up yet, so the DayOutputStrip keeps working on a cache miss.
+    return c.json(await getDayOutcome(db, date, runGitLog));
+  });
+
+  // ── Whole-grid git output (cheap read from the persisted rollup) ───────────
+  // Date-only, all-agents, ESTIMATED. One query over git_output_daily — no per-day
+  // git fan-out (that's the on-demand :date/output fallback's job). Cost stays in
+  // /api/burn; this is the separate output axis the BurnPanel joins by date.
+  app.get("/api/burn/output", (c) => {
+    return c.json(buildBurnOutput(db, c.req.query("range") ?? "30d"));
   });
 
   // ── Project breakdown (sessions rolled up by cwd) ─────────────────────────

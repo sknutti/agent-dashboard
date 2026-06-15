@@ -1,36 +1,32 @@
 <script lang="ts">
-  // One day's git-derived OUTPUT, shown inline in Burn when a day is expanded — the
-  // pairing partner to that day's estimated cost ("did the spend produce anything?").
-  // ESTIMATED and hash-deduped (a commit shared by overlapping sessions counts once),
-  // so it's badged `≈ est` and never shows a fabricated 0. Fetched lazily via
-  // resource() for the one selected day (no raw $effect; bounds git fan-out).
-  // Distinct from the OTEL ProductivityPanel — do not conflate.
-  import { getBurnDayOutput } from "../../api";
-  import { resource } from "../../resource.svelte";
+  // One day's git-derived OUTPUT, shown inline in Burn — the pairing partner to that
+  // day's estimated cost ("did the spend produce anything?"). PROP-driven: BurnPanel
+  // fetches the whole grid's output ONCE (getBurnOutput) and passes each day's row in,
+  // so there's no per-row network and no per-click git fan-out. ESTIMATED and
+  // hash-deduped (a commit shared by overlapping sessions counts once) → badged
+  // `≈ est`, never a fabricated 0. Distinct from the OTEL ProductivityPanel.
   import { compact } from "../../format";
+  import type { DayOutputRow } from "../../api";
 
-  let { date }: { date: string } = $props();
-
-  const res = resource(() => `dayout:${date}`, () => getBurnDayOutput(date));
-  const o = $derived(res.data);
+  let { outcome }: { outcome: DayOutputRow | undefined } = $props();
 </script>
 
-{#if res.loading && !res.data}
-  <span class="dayout muted">computing…</span>
-{:else if o && o.sessions === 0}
+{#if !outcome}
+  <!-- no rollup for this day (not computed / out of range): render nothing -->
+{:else if outcome.sessions === 0}
   <span class="dayout muted">no ended sessions</span>
-{:else if o}
+{:else}
   <span
     class="dayout"
-    title={`Estimated git output for ${o.date}, deduped by commit hash across the day's ${o.sessions} sessions. Heuristic — agent vs. human authorship isn't distinguished.`}
+    title={`Estimated git output for ${outcome.date}, deduped by commit hash across the day's ${outcome.sessions} sessions. Heuristic — agent vs. human authorship isn't distinguished.`}
   >
     <span class="est">≈ est</span>
-    <span class="fig">{o.commits} commits</span>
+    <span class="fig">{outcome.commits} commits</span>
     <span class="sep">·</span>
-    <span class="ins">+{compact(o.insertions)}</span>
-    <span class="del">−{compact(o.deletions)}</span>
+    <span class="ins">+{compact(outcome.insertions)}</span>
+    <span class="del">−{compact(outcome.deletions)}</span>
     <span class="sep">·</span>
-    <span class="fig">{o.filesChanged} files</span>
+    <span class="fig">{outcome.filesChanged} files</span>
   </span>
 {/if}
 

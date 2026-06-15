@@ -28,10 +28,18 @@ import { estimateCostUsd } from "./cost.ts";
 import { getDb } from "./db.ts";
 import { loadAgentsConfig } from "./agents_config.ts";
 import { indexSessionFromLog } from "./session_search.ts";
+import { runGitLog } from "./session_outcomes.ts";
+import { refreshGitOutput } from "./git_output_store.ts";
 
 const SYNC_INTERVAL_MS = Number(process.env.CC_SYNC_INTERVAL_MS ?? 120_000);
 /** A file touched within this window is treated as a live (still-active) session. */
 const LIVE_WINDOW_MS = 5 * 60 * 1000;
+/** Max missing-history days the git-output rollup backfills per tick (bounds the
+ *  first-boot git fan-out so a long history fills over several ticks, not one storm). */
+const GIT_OUTPUT_BACKFILL = (() => {
+  const n = Number(process.env.CC_GIT_OUTPUT_BACKFILL ?? 5);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 5;
+})();
 
 const db = getDb();
 
@@ -106,6 +114,10 @@ const insertToolCall = db.prepare(/* sql */ `
 const selectSyncState = db.prepare(
   `SELECT synced_at, ended_at FROM sessions WHERE source_path = ?`,
 );
+
+// Bucket a session's start instant to its LOCAL day the SAME way burn_daily/token_usage
+// do (DATE(...,'localtime')), so the git-output rollup's day key aligns with cost.
+const selectLocalDate = db.prepare(`SELECT DATE(?, 'localtime') d`);
 
 // token_usage is a pure derivation of sessions → full rebuild per agent.
 const clearTokenUsage = db.prepare(`DELETE FROM token_usage WHERE agent = ?`);
@@ -255,7 +267,12 @@ const writeSession = db.transaction(
   }
 });
 
-async function parseAndWrite(adapter: AgentAdapter, path: string, liveActive: boolean): Promise<void> {
+async function parseAndWrite(
+  adapter: AgentAdapter,
+  path: string,
+  liveActive: boolean,
+  touched: Set<string>,
+): Promise<void> {
   const agg = emptyAgg();
   for await (const ev of adapter.parseSession(path)) {
     if (ev.kind === "tokens") {
@@ -285,6 +302,14 @@ async function parseAndWrite(adapter: AgentAdapter, path: string, liveActive: bo
   const endedAt = liveActive ? null : (agg.meta.endedAt ?? null);
   writeSession(agg, endedAt, adapter.agentId, adapter.fidelity, path);
 
+  // Record this ENDED session's local start-day so the tick can recompute that day's
+  // git-output rollup. Ended + has-cwd only — a live or cwd-less session can't
+  // contribute git output. Bucketed with the same DATE(...,'localtime') rule as cost.
+  if (endedAt && agg.meta.cwd && agg.meta.startedAt) {
+    const r = selectLocalDate.get(agg.meta.startedAt) as { d: string | null } | null;
+    if (r?.d) touched.add(r.d);
+  }
+
   // Secondary, best-effort: (re)index the session's readable content for the
   // content-search FTS5 table. A second parse of the same file (the top post-tracer
   // fusion candidate). Isolated in its own try/catch so a display-parse failure can
@@ -313,7 +338,7 @@ function reparseDecision(path: string): { reparse: boolean; liveActive: boolean 
   return { reparse: mtimeMs > syncedMs, liveActive };
 }
 
-async function syncAdapter(adapter: AgentAdapter): Promise<number> {
+async function syncAdapter(adapter: AgentAdapter, touched: Set<string>): Promise<number> {
   const files = await adapter.sessionGlob();
   const prev = lastFileCount.get(adapter.agentId);
   if (files.length === 0 && prev !== undefined && prev > 0) {
@@ -325,7 +350,7 @@ async function syncAdapter(adapter: AgentAdapter): Promise<number> {
     const { reparse, liveActive } = reparseDecision(path);
     if (!reparse) continue;
     try {
-      await parseAndWrite(adapter, path, liveActive);
+      await parseAndWrite(adapter, path, liveActive, touched);
       synced += 1;
     } catch (err) {
       console.error(`[sync] ${adapter.agentId} file ${path} failed:`, err);
@@ -375,14 +400,30 @@ async function tick(): Promise<void> {
   tickCount += 1;
   let synced = 0;
   let sessions = 0;
+  let gitDays = 0;
+  const touched = new Set<string>(); // local days whose sessions changed this tick
   try {
     for (const adapter of registry) {
       if (!adapter.enabled) continue;
       try {
-        sessions += await syncAdapter(adapter);
+        sessions += await syncAdapter(adapter, touched);
         synced += 1;
       } catch (err) {
         console.error(`[sync] adapter ${adapter.agentId} failed:`, err);
+      }
+    }
+    // Agent-agnostic git-output rollup — ONCE per tick (the table is date-only), and
+    // only when something actually synced, so a quiet DB spawns zero git. Bounded:
+    // changed days + a capped backfill, each day isolated in refreshGitOutput's own
+    // try/catch, each git spawn capped by runGitLog's 5s watchdog. Runs INSIDE the
+    // reentrancy guard so its git work can't overlap the next tick.
+    if (sessions > 0) {
+      try {
+        ({ days: gitDays } = await refreshGitOutput(db, touched, runGitLog, {
+          backfillCap: GIT_OUTPUT_BACKFILL,
+        }));
+      } catch (err) {
+        console.error("[sync] git output rollup failed:", err);
       }
     }
   } finally {
@@ -402,8 +443,8 @@ async function tick(): Promise<void> {
   const elapsedMs = Date.now() - startedMs;
   const now = new Date().toISOString();
   insertHeartbeat.run(
-    `tick ${tickCount}: ${synced}/${registry.length} adapters, ${sessions} sessions parsed in ${elapsedMs}ms`,
-    JSON.stringify({ tick: tickCount, adapters: registry.length, synced, sessions, elapsedMs }),
+    `tick ${tickCount}: ${synced}/${registry.length} adapters, ${sessions} sessions parsed, ${gitDays} git-output days in ${elapsedMs}ms`,
+    JSON.stringify({ tick: tickCount, adapters: registry.length, synced, sessions, gitDays, elapsedMs }),
     now,
   );
   parentPort?.postMessage({ type: "tick", tick: tickCount, at: now });

@@ -418,6 +418,20 @@ export interface DayOutcome {
 export const getBurnDayOutput = (date: string) =>
   getJson<DayOutcome>(`/api/burn/day/${encodeURIComponent(date)}/output`);
 
+// GET /api/burn/output?range= — the WHOLE grid's git output from the persisted
+// rollup in ONE query (no per-day git fan-out). Date-only, all-agents, ESTIMATED.
+export interface DayOutputRow {
+  date: string;
+  sessions: number;
+  commits: number;
+  insertions: number;
+  deletions: number;
+  filesChanged: number;
+  fidelity: string;
+}
+export const getBurnOutput = (range: "30d" | "90d") =>
+  getJson<{ range: string; days: DayOutputRow[] }>(`/api/burn/output?range=${range}`);
+
 // Phase 5 long-tail fetchers.
 export const getProjectBreakdown = (range: Range, agent?: string) =>
   getJson<ProjectBreakdown>(`/api/sessions/by-project?range=${range}${agent ? `&agent=${agent}` : ""}`);
