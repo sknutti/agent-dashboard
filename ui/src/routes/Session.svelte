@@ -2,6 +2,7 @@
   import Icon from "../lib/components/ui/Icon.svelte";
   import SessionMessages from "../lib/components/panels/SessionMessages.svelte";
   import SessionErrors from "../lib/components/panels/SessionErrors.svelte";
+  import GitOutcomeStrip from "../lib/components/panels/GitOutcomeStrip.svelte";
   import { getSessionDetail } from "../lib/api";
   import { resource } from "../lib/resource.svelte";
   import { compact, homeDir, relTime} from "../lib/format";
@@ -41,6 +42,7 @@
           <span class="proj">{homeDir(session.cwd)}</span>
           <span class="started">{relTime(session.started_at)}</span>
         </div>
+        <GitOutcomeStrip {id} />
       </div>
     {:else if res.error}
       <h1 class="title">Session not found</h1>

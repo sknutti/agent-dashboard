@@ -367,6 +367,22 @@ export const searchContent = (p: {
   return getJson<SearchResponse>(`/api/search?${sp}`);
 };
 export const getSessionDetail = (id: string) => getJson<SessionDetail>(`/api/sessions/${id}/details`);
+
+// GET /api/sessions/:id/git-outcome — heuristic, per-session git output (commits /
+// LOC / files), always ESTIMATED. applicable:false carries a reason (no_cwd / live /
+// not_a_repo / git_failed). Distinct from the OTEL Productivity signal.
+export interface GitOutcome {
+  applicable: boolean;
+  reason?: string;
+  fidelity?: "estimated";
+  method?: "branch_window" | "window";
+  commits?: number;
+  insertions?: number;
+  deletions?: number;
+  filesChanged?: number;
+}
+export const getSessionGitOutcome = (id: string) =>
+  getJson<GitOutcome>(`/api/sessions/${encodeURIComponent(id)}/git-outcome`);
 export const getSessionErrors = (id: string) =>
   getJson<SessionErrors>(`/api/sessions/${encodeURIComponent(id)}/errors`);
 export const getSessionMessages = (id: string) =>
