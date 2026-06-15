@@ -27,6 +27,7 @@ import {
   DISPLAY_PARSER_AGENTS,
   UnsupportedAgentError,
 } from "./error_context.ts";
+import { computeSessionOutcome, runGitLog } from "./session_outcomes.ts";
 import type {
   AgentCardData,
   AgentsResponse,
@@ -523,6 +524,17 @@ export function registerApiRoutes(app: Hono): void {
   // See buildSessionMessages for the response branches.
   app.get("/api/sessions/:id/messages", async (c) => {
     const { status, body } = await buildSessionMessages(db, c.req.param("id"));
+    return c.json(body, status);
+  });
+
+  // ── Git-derived session outcome (commits/LOC/files, ESTIMATED) ─────────────
+  // Correlates local git history to the session's [started_at, ended_at] window
+  // (scoped to git_branch when present). Heuristic → badged ESTIMATED; an
+  // inapplicable session (no cwd / live / non-repo) returns applicable:false, never
+  // a 500. Distinct from the OTEL-sourced /api/activity/productivity. ZERO-network:
+  // the argv can only ever be a local `git log`. See computeSessionOutcome.
+  app.get("/api/sessions/:id/git-outcome", async (c) => {
+    const { status, body } = await computeSessionOutcome(db, c.req.param("id"), runGitLog);
     return c.json(body, status);
   });
 
