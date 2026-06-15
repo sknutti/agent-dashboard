@@ -1,6 +1,7 @@
 <script lang="ts">
   import Card from "../ui/Card.svelte";
   import EmptyState from "../ui/EmptyState.svelte";
+  import DayOutputStrip from "./DayOutputStrip.svelte";
   import { getBurn, getAgents, type AgentId } from "../../api";
   import { resource } from "../../resource.svelte";
   import { compact, usd, shortDate} from "../../format";
@@ -65,6 +66,10 @@
   }
 
   const recent = $derived((d?.daily ?? []).slice(-10).reverse());
+
+  // Which recent day is expanded to show its (estimated) git output. Lazy: only the
+  // clicked day fetches, bounding the per-session git fan-out to one explicit day.
+  let openDay = $state<string | null>(null);
 </script>
 
 <Card title="Burn" icon="gauge" kicker="fluent, or just expensive?">
@@ -135,15 +140,26 @@
       <span class="nat">native</span> = exact provider charge when known (Claude OTEL, Pi metered) ·
       <span class="dash">—</span> = no native figure that day
     </p>
+    <p class="outhint">Click a day to pair its <span class="est">est</span> cost with the git output it produced (estimated).</p>
     <div class="ma">
       <div class="ma-row head"><span>day</span><span>tokens</span><span>est $</span><span>native $</span></div>
       {#each recent as r (r.date)}
-        <div class="ma-row">
+        <button
+          class="ma-row rowbtn" type="button" aria-expanded={openDay === r.date}
+          onclick={() => (openDay = openDay === r.date ? null : r.date)}
+          title="Pair this day's cost with its git output (estimated)"
+        >
           <span>{shortDate(r.date)}</span>
           <span class="mono">{compact(r.tokens)}</span>
           <span class="mono est">{usd(r.estUsd)}</span>
           <span class="mono nat">{r.nativeUsd != null ? usd(r.nativeUsd) : "—"}</span>
-        </div>
+        </button>
+        {#if openDay === r.date}
+          <div class="ma-out">
+            <span class="out-lbl">output</span>
+            <DayOutputStrip date={r.date} />
+          </div>
+        {/if}
       {/each}
     </div>
   {/if}
@@ -205,6 +221,20 @@
   }
   .ma-row.head { color: var(--text-subtle); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
   .ma-row span:not(:first-child) { text-align: right; }
+  /* Recent rows are buttons that expand to pair the day's cost with its git output. */
+  .rowbtn { width: 100%; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+  .rowbtn:hover { background: var(--surface-2); }
+  .ma-out {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 2px 8px 10px;
+    border-bottom: 1px solid var(--border);
+    border-left: 2px solid color-mix(in srgb, var(--amber) 45%, var(--border));
+  }
+  .out-lbl { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-subtle); }
+  .outhint { margin: 12px 0 4px; font-size: 10.5px; color: var(--text-subtle); }
+  .outhint .est { color: var(--amber); font-weight: 600; }
   .est { color: var(--amber); display: inline-flex; gap: 4px; align-items: center; justify-content: flex-end; }
   .nat { color: var(--cyan); }
 </style>

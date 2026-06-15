@@ -402,6 +402,22 @@ export const getMcpTools = (server: string, range: Range) =>
 export const getBurn = (range: "30d" | "90d", agent?: string) =>
   getJson<Burn>(`/api/burn?range=${range}${agent ? `&agent=${agent}` : ""}`);
 
+// GET /api/burn/day/:date/output — one day's git-derived OUTPUT (commits/LOC/files),
+// summed over that day's ended sessions with per-hash dedupe. ESTIMATED; pairs with
+// the day's estimated rack-rate cost. Distinct from the OTEL Productivity signal.
+export interface DayOutcome {
+  date: string;
+  sessions: number;
+  commits: number;
+  insertions: number;
+  deletions: number;
+  filesChanged: number;
+  fidelity: "estimated";
+  deduped: true;
+}
+export const getBurnDayOutput = (date: string) =>
+  getJson<DayOutcome>(`/api/burn/day/${encodeURIComponent(date)}/output`);
+
 // Phase 5 long-tail fetchers.
 export const getProjectBreakdown = (range: Range, agent?: string) =>
   getJson<ProjectBreakdown>(`/api/sessions/by-project?range=${range}${agent ? `&agent=${agent}` : ""}`);
