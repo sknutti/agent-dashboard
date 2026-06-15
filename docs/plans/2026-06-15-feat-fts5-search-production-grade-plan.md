@@ -2,8 +2,17 @@
 
 - date: 2026-06-15
 - type: feat
+- status: completed
 - branch base: `feat/fts5-session-search` (PR #16, tracer bullet `74377df`)
+- branch: `feat/fts5-search-production`
 - depth: standard
+
+> **Done.** All four phases shipped test-first on `feat/fts5-search-production`
+> (commits `c8bfb36` filters+pagination, `c5326bf` highlighting, `e12c413` filter
+> UI+pager, plus ranking tie-break). Gate green: 456 backend + UI tests,
+> svelte-check 0/0. One deviation from the plan: Phase 3 uses the sanctioned
+> `resource()` wrapper (not hand-rolled event-driven) so the panel tracks the
+> shared `ui.range` — honors the no-raw-`$effect` rule via the approved hook.
 
 ## Overview
 

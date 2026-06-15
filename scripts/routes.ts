@@ -330,7 +330,11 @@ export function buildSearch(db: Database, q: string, opts: SearchOpts = {}): Sea
       FROM session_search
       JOIN sessions s USING (session_id)
       WHERE ${whereSql}
-      ORDER BY rank
+      -- rank is FTS5's bm25 (primary). bm25 *column weighting* is N/A here: the
+      -- session_search vtable has a single searchable column (body), so there are
+      -- no columns to weight against. The s.started_at/session_id tie-break makes
+      -- equal-rank ordering deterministic so OFFSET paging can't drop or repeat rows.
+      ORDER BY rank, s.started_at DESC, s.session_id
       LIMIT ? OFFSET ?`).all(...params, limit, offset);
     return { q: trimmed, total, limit, offset, results };
   } catch {

@@ -290,6 +290,24 @@ describe("buildSearch (#content-search)", () => {
     db.close();
   });
 
+  test("equal-rank hits order deterministically (started_at DESC) and partition across pages", () => {
+    const db = freshDb();
+    // Identical bodies → identical bm25 rank, so the tie-break decides order.
+    // Insert in an order (a,b,c) that differs from the expected tie-break order
+    // (b,a,c by started_at DESC) so a missing tie-break would surface as flakiness.
+    seed(db, "a", "shared zebrafish token", { started_at: "2026-06-02T00:00:00Z" });
+    seed(db, "b", "shared zebrafish token", { started_at: "2026-06-03T00:00:00Z" });
+    seed(db, "c", "shared zebrafish token", { started_at: "2026-06-01T00:00:00Z" });
+    const all = buildSearch(db, "zebrafish");
+    expect(all.results.map((r) => r.session_id)).toEqual(["b", "a", "c"]);
+    // and the order is stable across an OFFSET boundary (no drop, no repeat)
+    const p1 = buildSearch(db, "zebrafish", { limit: 2, offset: 0 }).results.map((r) => r.session_id);
+    const p2 = buildSearch(db, "zebrafish", { limit: 2, offset: 2 }).results.map((r) => r.session_id);
+    expect(p1).toEqual(["b", "a"]);
+    expect(p2).toEqual(["c"]);
+    db.close();
+  });
+
   test("an orphan index row (session deleted) is dropped by the JOIN", () => {
     const db = freshDb();
     indexSession(db, "ghost", "claude_code", "zebrafish with no session row");
