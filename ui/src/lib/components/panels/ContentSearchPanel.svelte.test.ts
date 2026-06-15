@@ -22,18 +22,22 @@ async function type(term: string): Promise<HTMLInputElement> {
 }
 
 describe("ContentSearchPanel", () => {
-  test("typing a query renders matching sessions with their snippet", async () => {
+  test("typing a query renders matching sessions and highlights matches as <mark>", async () => {
     vi.spyOn(api, "searchContent").mockResolvedValue({
-      q: "zebrafish", results: [hit("alpha", "the [zebrafish] algorithm")],
+      q: "zebrafish", total: 1, limit: 50, offset: 0,
+      results: [hit("alpha", "the [zebrafish] algorithm")],
     });
     render(ContentSearchPanel);
     await type("zebrafish");
     expect(await screen.findByText("Title alpha")).toBeTruthy();
-    expect(await screen.findByText(/zebrafish\] algorithm/)).toBeTruthy();
+    // the matched term is a <mark>, and the delimiters never leak as literal text
+    const mark = await screen.findByText("zebrafish");
+    expect(mark.tagName).toBe("MARK");
+    expect(document.body.textContent).not.toMatch(/[[\]]/);
   });
 
   test("a query with no matches shows the empty state", async () => {
-    vi.spyOn(api, "searchContent").mockResolvedValue({ q: "nope", results: [] });
+    vi.spyOn(api, "searchContent").mockResolvedValue({ q: "nope", total: 0, limit: 50, offset: 0, results: [] });
     render(ContentSearchPanel);
     await type("nope");
     expect(await screen.findByText(/no matches/i)).toBeTruthy();
@@ -41,7 +45,7 @@ describe("ContentSearchPanel", () => {
 
   test("clicking a result navigates to that session's detail page", async () => {
     vi.spyOn(api, "searchContent").mockResolvedValue({
-      q: "zebrafish", results: [hit("alpha", "[zebrafish]")],
+      q: "zebrafish", total: 1, limit: 50, offset: 0, results: [hit("alpha", "[zebrafish]")],
     });
     render(ContentSearchPanel);
     await type("zebrafish");
@@ -51,7 +55,7 @@ describe("ContentSearchPanel", () => {
   });
 
   test("a blank query does not call the API", async () => {
-    const spy = vi.spyOn(api, "searchContent").mockResolvedValue({ q: "", results: [] });
+    const spy = vi.spyOn(api, "searchContent").mockResolvedValue({ q: "", total: 0, limit: 50, offset: 0, results: [] });
     render(ContentSearchPanel);
     await type("   ");
     // give the debounce window time to (not) fire

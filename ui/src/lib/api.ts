@@ -323,6 +323,9 @@ export interface SearchResult {
 }
 export interface SearchResponse {
   q: string;
+  total: number;
+  limit: number;
+  offset: number;
   results: SearchResult[];
   error?: string;
 }

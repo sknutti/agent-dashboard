@@ -10,6 +10,7 @@
   import { searchContent, type SearchResult } from "../../api";
   import { navigate } from "../../router.svelte";
   import { AGENT_NAMES } from "../../registry.svelte";
+  import { splitSnippet } from "../../format";
 
   let query = $state("");
   let results = $state<SearchResult[]>([]);
@@ -103,7 +104,7 @@
               <Badge>{agentName(r.agent)}</Badge>
               <span class="title">{r.title ?? r.cwd ?? r.session_id}</span>
             </div>
-            <p class="snippet">{r.snippet}</p>
+            <p class="snippet">{#each splitSnippet(r.snippet) as seg}{#if seg.hit}<mark>{seg.text}</mark>{:else}{seg.text}{/if}{/each}</p>
           </button>
         </li>
       {/each}
@@ -171,6 +172,15 @@
     font-size: 11.5px;
     color: var(--text-dim);
     line-height: 1.5;
+  }
+  /* Match highlight: cyan accent (not a red/green pairing) plus bold weight as a
+     redundant non-color cue, per the colourblind rule. */
+  .snippet :global(mark) {
+    background: color-mix(in srgb, var(--cyan) 22%, transparent);
+    color: var(--text);
+    font-weight: 600;
+    border-radius: 2px;
+    padding: 0 1px;
   }
   .status {
     font-size: 12px;

@@ -1,5 +1,33 @@
 // Display formatters. Numbers are dense by design (Linear/Vercel bar, master §22).
 
+/** Parse an FTS5 `snippet()` string — matched terms wrapped in the server's `[ ]`
+ *  delimiters — into ordered { text, hit } segments. The panel renders `hit`
+ *  segments as `<mark>` and the rest as plain text, so highlighting needs no
+ *  `{@html}` and no client-side tokenizer (XSS-safe; Svelte escapes the text).
+ *  An unbalanced `[` degrades to plain text rather than throwing. (A literal `[`/`]`
+ *  in the body could mis-split — acceptable for a snippet view; follow-up if it bites.) */
+export function splitSnippet(s: string): { text: string; hit: boolean }[] {
+  const out: { text: string; hit: boolean }[] = [];
+  let i = 0;
+  while (i < s.length) {
+    const open = s.indexOf("[", i);
+    if (open === -1) {
+      out.push({ text: s.slice(i), hit: false });
+      break;
+    }
+    const close = s.indexOf("]", open + 1);
+    if (close === -1) {
+      // Unbalanced — treat the remainder as plain text, never throw.
+      out.push({ text: s.slice(i), hit: false });
+      break;
+    }
+    if (open > i) out.push({ text: s.slice(i, open), hit: false });
+    out.push({ text: s.slice(open + 1, close), hit: true });
+    i = close + 1;
+  }
+  return out;
+}
+
 export function compact(n: number | null | undefined): string {
   if (n == null) return "—";
   const a = Math.abs(n);
