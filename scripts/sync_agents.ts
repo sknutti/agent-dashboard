@@ -27,6 +27,7 @@ import { AntigravityAdapter } from "./adapters/antigravity.ts";
 import { estimateCostUsd } from "./cost.ts";
 import { getDb } from "./db.ts";
 import { loadAgentsConfig } from "./agents_config.ts";
+import { indexSessionFromLog } from "./session_search.ts";
 
 const SYNC_INTERVAL_MS = Number(process.env.CC_SYNC_INTERVAL_MS ?? 120_000);
 /** A file touched within this window is treated as a live (still-active) session. */
@@ -283,6 +284,17 @@ async function parseAndWrite(adapter: AgentAdapter, path: string, liveActive: bo
   // active → ended_at NULL (keeps it in the re-parse set next tick).
   const endedAt = liveActive ? null : (agg.meta.endedAt ?? null);
   writeSession(agg, endedAt, adapter.agentId, adapter.fidelity, path);
+
+  // Secondary, best-effort: (re)index the session's readable content for the
+  // content-search FTS5 table. A second parse of the same file (the top post-tracer
+  // fusion candidate). Isolated in its own try/catch so a display-parse failure can
+  // never undo the committed session write or block rollup re-derivation — a missing
+  // index row self-heals on the next reparse.
+  try {
+    await indexSessionFromLog(db, adapter.agentId, agg.meta.sessionId, path);
+  } catch (err) {
+    console.error(`[sync] content index for ${agg.meta.sessionId} failed:`, err);
+  }
 }
 
 /** Decide whether a file needs (re)parsing, and whether it's currently live. */

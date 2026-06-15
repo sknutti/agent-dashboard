@@ -35,6 +35,8 @@ import type {
   SessionsResponse,
   SessionErrorsResponse,
   SessionMessagesResponse,
+  SearchResponse,
+  SearchResult,
 } from "./wire.ts";
 
 // Agent identity is data-driven from config/agents.yaml (review #17) — no hardcoded
@@ -267,6 +269,46 @@ export async function buildSessionMessages(
   }
 }
 
+/** Turn free-text user input into a safe FTS5 MATCH expression. Each whitespace
+ *  token is wrapped as a quoted FTS5 string (embedded quotes doubled), then ANDed
+ *  by juxtaposition — so stray `"`, `*`, `:`, `-`, `(` can't be read as FTS5
+ *  operators and throw. Returns "" for empty input. */
+function toMatchQuery(q: string): string {
+  return q
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((t) => `"${t.replace(/"/g, '""')}"`)
+    .join(" ");
+}
+
+/** Core of GET /api/search, factored out for direct unit testing against an
+ *  in-memory DB (mirrors buildSessionMessages). Runs an FTS5 MATCH over session
+ *  content, joins back to `sessions` for display fields (which also drops orphan
+ *  index rows whose session was deleted), and returns bm25-ranked hits with a
+ *  server-rendered snippet. Always returns a 200-shaped body: empty `q` → no
+ *  results; a query that still fails FTS5 parsing → `[]` + `error`, never a throw. */
+export function buildSearch(db: Database, q: string, limit = 50): SearchResponse {
+  const trimmed = (q ?? "").trim();
+  const match = toMatchQuery(trimmed);
+  if (!match) return { q: trimmed, results: [] };
+  const lim = Math.min(500, Math.max(1, Math.floor(limit) || 50));
+  try {
+    const results = db.query<SearchResult, [string, number]>(/* sql */ `
+      SELECT s.session_id, s.agent, s.title, s.cwd, s.started_at,
+             snippet(session_search, 2, '[', ']', '…', 12) AS snippet
+      FROM session_search
+      JOIN sessions s USING (session_id)
+      WHERE session_search MATCH ?
+      ORDER BY rank
+      LIMIT ?`).all(match, lim);
+    return { q: trimmed, results };
+  } catch {
+    // Defensive: toMatchQuery should neutralize all operator soup, but never 500.
+    return { q: trimmed, results: [], error: "bad query" };
+  }
+}
+
 export function registerApiRoutes(app: Hono): void {
   const db = getDb();
 
@@ -393,6 +435,16 @@ export function registerApiRoutes(app: Hono): void {
       FROM sessions WHERE ${whereSql}
       ORDER BY started_at DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
     return c.json({ total, limit, offset, sessions: rows } satisfies SessionsResponse);
+  });
+
+  // ── Content search (FTS5 over session transcript text) ────────────────────
+  // Distinct from the metadata `q` on /api/sessions (title/cwd LIKE): this MATCHes
+  // the readable conversation body indexed by scripts/session_search.ts. Degrades to
+  // an empty result set on blank/malformed queries — never 500 (see buildSearch).
+  app.get("/api/search", (c) => {
+    const q = c.req.query("q") ?? "";
+    const limit = Number(c.req.query("limit") ?? 50);
+    return c.json(buildSearch(db, q, limit) satisfies SearchResponse);
   });
 
   // ── Session detail (timeline + token breakdown) ───────────────────────────

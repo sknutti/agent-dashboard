@@ -311,6 +311,22 @@ export interface McpMeasure {
   note: string;
 }
 
+// GET /api/search — content search (mirrors scripts/wire.ts SearchResponse).
+// Distinct from getSessions' metadata `q`: this MATCHes transcript text.
+export interface SearchResult {
+  session_id: string;
+  agent: string;
+  title: string | null;
+  cwd: string | null;
+  started_at: string | null;
+  snippet: string;
+}
+export interface SearchResponse {
+  q: string;
+  results: SearchResult[];
+  error?: string;
+}
+
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: { accept: "application/json" } });
   if (!res.ok) throw new Error(`${path} -> ${res.status}`);
@@ -335,6 +351,8 @@ export const getSessions = (q: {
   if (q.offset) p.set("offset", String(q.offset));
   return getJson<{ total: number; limit: number; offset: number; sessions: SessionRow[] }>(`/api/sessions?${p}`);
 };
+export const searchContent = (q: string) =>
+  getJson<SearchResponse>(`/api/search?q=${encodeURIComponent(q)}`);
 export const getSessionDetail = (id: string) => getJson<SessionDetail>(`/api/sessions/${id}/details`);
 export const getSessionErrors = (id: string) =>
   getJson<SessionErrors>(`/api/sessions/${encodeURIComponent(id)}/errors`);

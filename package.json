@@ -12,6 +12,7 @@
     "dev": "bun run --watch scripts/server.ts",
     "doctor": "bun run scripts/doctor.ts",
     "sync": "bun run scripts/sync_agents.ts --once",
+    "reindex": "bun run scripts/reindex_search.ts",
     "setup:otel": "bun run scripts/setup_otel.ts",
     "setup": "bun install && bun run build",
     "build": "bun run build:bridge && bun run build:ui",
