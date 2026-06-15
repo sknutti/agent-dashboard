@@ -266,10 +266,10 @@ describe("buildSearch (#content-search)", () => {
     db.close();
   });
 
-  test("empty query returns no results, no error", () => {
+  test("empty query returns the zero-shaped body, no error", () => {
     const db = freshDb();
     seed(db, "alpha", "zebrafish");
-    expect(buildSearch(db, "   ")).toEqual({ q: "", results: [] });
+    expect(buildSearch(db, "   ")).toEqual({ q: "", total: 0, limit: 50, offset: 0, results: [] });
     db.close();
   });
 
@@ -285,7 +285,7 @@ describe("buildSearch (#content-search)", () => {
   test("limit clamps the number of hits", () => {
     const db = freshDb();
     for (const id of ["a", "b", "c"]) seed(db, id, "shared zebrafish token");
-    const res = buildSearch(db, "zebrafish", 2);
+    const res = buildSearch(db, "zebrafish", { limit: 2 });
     expect(res.results.length).toBe(2);
     db.close();
   });
@@ -294,6 +294,57 @@ describe("buildSearch (#content-search)", () => {
     const db = freshDb();
     indexSession(db, "ghost", "claude_code", "zebrafish with no session row");
     expect(buildSearch(db, "zebrafish").results).toEqual([]);
+    db.close();
+  });
+
+  test("filters by agent (qualified s.agent — the JOIN exposes agent on both tables)", () => {
+    const db = freshDb();
+    seed(db, "cc", "shared zebrafish token", { agent: "claude_code" });
+    seed(db, "cx", "shared zebrafish token", { agent: "codex" });
+    const res = buildSearch(db, "zebrafish", { agent: "codex" });
+    expect(res.results.map((r) => r.session_id)).toEqual(["cx"]);
+    expect(res.total).toBe(1);
+    // "all"/invalid agent is a no-op filter
+    expect(buildSearch(db, "zebrafish", { agent: "all" }).total).toBe(2);
+    db.close();
+  });
+
+  test("filters by outcome (OUTCOME_CASE over the joined sessions row)", () => {
+    const db = freshDb();
+    seed(db, "ok1", "shared zebrafish token", { ended_at: "2026-06-01T01:00:00Z" });
+    seed(db, "err1", "shared zebrafish token", { error_count: 2, ended_at: "2026-06-01T01:00:00Z" });
+    const res = buildSearch(db, "zebrafish", { outcome: "errored" });
+    expect(res.results.map((r) => r.session_id)).toEqual(["err1"]);
+    expect(res.total).toBe(1);
+    db.close();
+  });
+
+  test("filters by range (a session outside the window is excluded)", () => {
+    const db = freshDb();
+    seed(db, "recent", "shared zebrafish token",
+      { started_at: new Date().toISOString() });
+    seed(db, "old", "shared zebrafish token",
+      { started_at: "2020-01-01T00:00:00Z" });
+    const res = buildSearch(db, "zebrafish", { range: "7d" });
+    expect(res.results.map((r) => r.session_id)).toEqual(["recent"]);
+    expect(res.total).toBe(1);
+    db.close();
+  });
+
+  test("paginates: total is the full match count, stable across pages", () => {
+    const db = freshDb();
+    for (const id of ["a", "b", "c"]) seed(db, id, "shared zebrafish token");
+    const page1 = buildSearch(db, "zebrafish", { limit: 2, offset: 0 });
+    expect(page1.total).toBe(3);
+    expect(page1.limit).toBe(2);
+    expect(page1.offset).toBe(0);
+    expect(page1.results.length).toBe(2);
+    const page2 = buildSearch(db, "zebrafish", { limit: 2, offset: 2 });
+    expect(page2.total).toBe(3); // total unaffected by paging
+    expect(page2.results.length).toBe(1);
+    // the two pages partition the set — no overlap, no gap
+    const ids = [...page1.results, ...page2.results].map((r) => r.session_id);
+    expect(new Set(ids).size).toBe(3);
     db.close();
   });
 });

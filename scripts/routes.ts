@@ -282,30 +282,60 @@ function toMatchQuery(q: string): string {
     .join(" ");
 }
 
+/** Filters + paging for buildSearch, mirroring the /api/sessions query params. */
+export interface SearchOpts {
+  agent?: string;
+  outcome?: string;
+  range?: string;
+  limit?: number;
+  offset?: number;
+}
+
 /** Core of GET /api/search, factored out for direct unit testing against an
  *  in-memory DB (mirrors buildSessionMessages). Runs an FTS5 MATCH over session
  *  content, joins back to `sessions` for display fields (which also drops orphan
- *  index rows whose session was deleted), and returns bm25-ranked hits with a
- *  server-rendered snippet. Always returns a 200-shaped body: empty `q` → no
- *  results; a query that still fails FTS5 parsing → `[]` + `error`, never a throw. */
-export function buildSearch(db: Database, q: string, limit = 50): SearchResponse {
+ *  index rows whose session was deleted), applies the SAME agent/outcome/range
+ *  filters as /api/sessions, and returns bm25-ranked hits with a server-rendered
+ *  snippet plus a filtered `total` for pagination. Always returns a 200-shaped
+ *  body: empty `q` → zero results (filters without a query term are out of scope —
+ *  this is content search, not a sessions browser); a query that still fails FTS5
+ *  parsing → `[]` + `error`, never a throw. NOTE on column qualification: the JOIN
+ *  exposes `agent` on BOTH tables, so the agent filter must be `s.agent`; the
+ *  OUTCOME_CASE / range columns live only on `sessions`, so they resolve unqualified
+ *  but `range` is passed `s.started_at` for clarity. */
+export function buildSearch(db: Database, q: string, opts: SearchOpts = {}): SearchResponse {
+  const limit = Math.min(500, Math.max(1, Math.floor(opts.limit ?? 50) || 50));
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0) || 0);
   const trimmed = (q ?? "").trim();
   const match = toMatchQuery(trimmed);
-  if (!match) return { q: trimmed, results: [] };
-  const lim = Math.min(500, Math.max(1, Math.floor(limit) || 50));
+  if (!match) return { q: trimmed, total: 0, limit, offset, results: [] };
+
+  const where = ["session_search MATCH ?"];
+  const params: any[] = [match];
+  pushAgent(where, params, agentFilter(opts.agent), "s.agent");
+  if (opts.range) where.push(rangePred(opts.range, "s.started_at"));
+  if (opts.outcome) {
+    where.push(`(${OUTCOME_CASE}) = ?`);
+    params.push(opts.outcome);
+  }
+  const whereSql = where.join(" AND ");
+
   try {
-    const results = db.query<SearchResult, [string, number]>(/* sql */ `
+    const total = db.query<CountRow, any[]>(/* sql */ `
+      SELECT COUNT(*) n FROM session_search JOIN sessions s USING (session_id)
+      WHERE ${whereSql}`).get(...params)!.n;
+    const results = db.query<SearchResult, any[]>(/* sql */ `
       SELECT s.session_id, s.agent, s.title, s.cwd, s.started_at,
              snippet(session_search, 2, '[', ']', '…', 12) AS snippet
       FROM session_search
       JOIN sessions s USING (session_id)
-      WHERE session_search MATCH ?
+      WHERE ${whereSql}
       ORDER BY rank
-      LIMIT ?`).all(match, lim);
-    return { q: trimmed, results };
+      LIMIT ? OFFSET ?`).all(...params, limit, offset);
+    return { q: trimmed, total, limit, offset, results };
   } catch {
     // Defensive: toMatchQuery should neutralize all operator soup, but never 500.
-    return { q: trimmed, results: [], error: "bad query" };
+    return { q: trimmed, total: 0, limit, offset, results: [], error: "bad query" };
   }
 }
 
@@ -443,8 +473,15 @@ export function registerApiRoutes(app: Hono): void {
   // an empty result set on blank/malformed queries — never 500 (see buildSearch).
   app.get("/api/search", (c) => {
     const q = c.req.query("q") ?? "";
-    const limit = Number(c.req.query("limit") ?? 50);
-    return c.json(buildSearch(db, q, limit) satisfies SearchResponse);
+    return c.json(
+      buildSearch(db, q, {
+        agent: c.req.query("agent"),
+        outcome: c.req.query("outcome"),
+        range: c.req.query("range"),
+        limit: Number(c.req.query("limit") ?? 50),
+        offset: Number(c.req.query("offset") ?? 0),
+      }) satisfies SearchResponse,
+    );
   });
 
   // ── Session detail (timeline + token breakdown) ───────────────────────────
