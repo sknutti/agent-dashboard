@@ -2,7 +2,7 @@
   import Card from "../ui/Card.svelte";
   import EmptyState from "../ui/EmptyState.svelte";
   import DayOutputStrip from "./DayOutputStrip.svelte";
-  import { getBurn, getAgents, type AgentId } from "../../api";
+  import { getBurn, getAgents, getBurnOutput, type AgentId } from "../../api";
   import { resource } from "../../resource.svelte";
   import { compact, usd, shortDate} from "../../format";
   import { AGENT_NAMES } from "../../registry.svelte";
@@ -67,9 +67,12 @@
 
   const recent = $derived((d?.daily ?? []).slice(-10).reverse());
 
-  // Which recent day is expanded to show its (estimated) git output. Lazy: only the
-  // clicked day fetches, bounding the per-session git fan-out to one explicit day.
-  let openDay = $state<string | null>(null);
+  // Git-derived OUTPUT for the whole window in ONE read (persisted rollup — no
+  // per-day git fan-out). Joined to the recent rows by date so every day pairs its
+  // est cost with what it produced. Estimated, hash-deduped, date-only/all-agents.
+  const outRange = $derived(range); // getBurnOutput accepts 30d|90d like getBurn
+  const out = resource(() => `burnout:${outRange}`, () => getBurnOutput(outRange));
+  const outByDate = $derived(new Map((out.data?.days ?? []).map((r) => [r.date, r])));
 </script>
 
 <Card title="Burn" icon="gauge" kicker="fluent, or just expensive?">
@@ -140,24 +143,20 @@
       <span class="nat">native</span> = exact provider charge when known (Claude OTEL, Pi metered) ·
       <span class="dash">—</span> = no native figure that day
     </p>
-    <p class="outhint">Click a day to pair its <span class="est">est</span> cost with the git output it produced (estimated).</p>
+    <p class="outhint">Each day pairs its <span class="est">est</span> cost with the git output it produced (estimated, hash-deduped).</p>
     <div class="ma">
       <div class="ma-row head"><span>day</span><span>tokens</span><span>est $</span><span>native $</span></div>
       {#each recent as r (r.date)}
-        <button
-          class="ma-row rowbtn" type="button" aria-expanded={openDay === r.date}
-          onclick={() => (openDay = openDay === r.date ? null : r.date)}
-          title="Pair this day's cost with its git output (estimated)"
-        >
+        <div class="ma-row">
           <span>{shortDate(r.date)}</span>
           <span class="mono">{compact(r.tokens)}</span>
           <span class="mono est">{usd(r.estUsd)}</span>
           <span class="mono nat">{r.nativeUsd != null ? usd(r.nativeUsd) : "—"}</span>
-        </button>
-        {#if openDay === r.date}
+        </div>
+        {#if outByDate.get(r.date)}
           <div class="ma-out">
             <span class="out-lbl">output</span>
-            <DayOutputStrip date={r.date} />
+            <DayOutputStrip outcome={outByDate.get(r.date)} />
           </div>
         {/if}
       {/each}
@@ -221,9 +220,6 @@
   }
   .ma-row.head { color: var(--text-subtle); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
   .ma-row span:not(:first-child) { text-align: right; }
-  /* Recent rows are buttons that expand to pair the day's cost with its git output. */
-  .rowbtn { width: 100%; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
-  .rowbtn:hover { background: var(--surface-2); }
   .ma-out {
     display: flex;
     align-items: center;
