@@ -118,6 +118,9 @@ export interface SearchResult {
 
 export interface SearchResponse {
   q: string;
+  total: number; // full filtered match count, independent of the current page
+  limit: number;
+  offset: number;
   results: SearchResult[];
   error?: string;
 }
