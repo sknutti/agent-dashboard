@@ -354,8 +354,18 @@ export const getSessions = (q: {
   if (q.offset) p.set("offset", String(q.offset));
   return getJson<{ total: number; limit: number; offset: number; sessions: SessionRow[] }>(`/api/sessions?${p}`);
 };
-export const searchContent = (q: string) =>
-  getJson<SearchResponse>(`/api/search?q=${encodeURIComponent(q)}`);
+export const searchContent = (p: {
+  q: string; agent?: string; outcome?: string; range?: Range; limit?: number; offset?: number;
+}) => {
+  const sp = new URLSearchParams();
+  sp.set("q", p.q);
+  if (p.agent) sp.set("agent", p.agent);
+  if (p.outcome) sp.set("outcome", p.outcome);
+  if (p.range) sp.set("range", p.range);
+  if (p.limit != null) sp.set("limit", String(p.limit));
+  if (p.offset) sp.set("offset", String(p.offset));
+  return getJson<SearchResponse>(`/api/search?${sp}`);
+};
 export const getSessionDetail = (id: string) => getJson<SessionDetail>(`/api/sessions/${id}/details`);
 export const getSessionErrors = (id: string) =>
   getJson<SessionErrors>(`/api/sessions/${encodeURIComponent(id)}/errors`);

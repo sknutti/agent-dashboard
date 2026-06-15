@@ -1,101 +1,119 @@
 <script lang="ts">
-  // Full-text search over session TRANSCRIPT CONTENT (FTS5 tracer) — distinct from
-  // the metadata `q` box on the Sessions table (title/cwd only). Event-driven, not
-  // resource()-driven: the query comes from user input, so we debounce the fetch in
-  // the input handler and write results to $state — deliberately NO $effect.
+  // Full-text search over session TRANSCRIPT CONTENT (FTS5) — distinct from the
+  // metadata `q` box on the Sessions table (title/cwd only). Filters (agent /
+  // outcome / shared range) and pagination mirror SessionsTablePanel. Fetching uses
+  // resource() — the repo's sanctioned external-sync wrapper (no raw $effect) — so
+  // the panel tracks the Activity RangeToggle (ui.range) reactively. The query is
+  // debounced (qInput → qApplied) so we don't refetch on every keystroke; a blank
+  // query short-circuits to an empty result WITHOUT hitting the API.
   import Card from "../ui/Card.svelte";
   import EmptyState from "../ui/EmptyState.svelte";
   import Badge from "../ui/Badge.svelte";
   import Icon from "../ui/Icon.svelte";
-  import { searchContent, type SearchResult } from "../../api";
+  import { searchContent, type SearchResponse } from "../../api";
   import { navigate } from "../../router.svelte";
-  import { AGENT_NAMES } from "../../registry.svelte";
-  import { splitSnippet } from "../../format";
+  import { AGENT_NAMES, agentFilterOptions } from "../../registry.svelte";
+  import { resource } from "../../resource.svelte";
+  import { ui } from "../../stores.svelte";
+  import { splitSnippet, compact } from "../../format";
 
-  let query = $state("");
-  let results = $state<SearchResult[]>([]);
-  let loading = $state(false);
-  let searched = $state(false);
-  let failed = $state(false);
+  const LIMIT = 25;
+  let qInput = $state("");
+  let qApplied = $state("");
+  let agent = $state("all");
+  let outcome = $state("all");
+  let offset = $state(0);
+
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  function onSearch(v: string) {
+    qInput = v;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      qApplied = v.trim();
+      offset = 0; // a new query restarts paging
+    }, 200);
+  }
+
+  const EMPTY: SearchResponse = { q: "", total: 0, limit: LIMIT, offset: 0, results: [] };
+  const res = resource(
+    () => `search:${ui.range}:${agent}:${outcome}:${qApplied}:${offset}`,
+    () =>
+      qApplied
+        ? searchContent({
+            q: qApplied,
+            agent: agent === "all" ? undefined : agent,
+            outcome: outcome === "all" ? undefined : outcome,
+            range: ui.range,
+            limit: LIMIT,
+            offset,
+          })
+        : Promise.resolve(EMPTY), // blank query: don't touch the API
+  );
+
+  const results = $derived(res.data?.results ?? []);
+  const total = $derived(res.data?.total ?? 0);
+  const failed = $derived(Boolean(res.data?.error) || res.error);
+  const hasQuery = $derived(qApplied.length > 0);
+  const showingFrom = $derived(total === 0 ? 0 : offset + 1);
+  const showingTo = $derived(Math.min(offset + LIMIT, total));
+
+  const AGENTS = $derived(agentFilterOptions()); // ["all", …ids] from the registry
+  const OUTCOMES = ["all", "ok", "errored", "rate_limited", "truncated", "unfinished"];
+  const OUT_LABEL: Record<string, string> = { rate_limited: "rate-limited", all: "all" };
 
   const agentName = (id: string): string => AGENT_NAMES[id] ?? id;
-
-  // Debounce + nonce: a slow earlier response must never overwrite a newer one.
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let nonce = 0;
-
-  async function run(term: string): Promise<void> {
-    const q = term.trim();
-    if (!q) {
-      results = [];
-      searched = false;
-      failed = false;
-      loading = false;
-      return;
-    }
-    const my = ++nonce;
-    loading = true;
-    try {
-      const res = await searchContent(q);
-      if (my !== nonce) return; // superseded
-      results = res.results;
-      failed = Boolean(res.error);
-    } catch {
-      if (my !== nonce) return;
-      results = [];
-      failed = true;
-    } finally {
-      if (my === nonce) {
-        loading = false;
-        searched = true;
-      }
-    }
-  }
-
-  function onInput(): void {
-    clearTimeout(timer);
-    timer = setTimeout(() => void run(query), 180);
-  }
-
-  function onKeydown(e: KeyboardEvent): void {
-    if (e.key === "Enter") {
-      clearTimeout(timer);
-      void run(query);
-    }
-  }
-
   function open(id: string): void {
     navigate("/session/" + id);
   }
 </script>
 
 <Card title="Content search" kicker="full-text · all sessions" icon="search">
-  <div class="search-box">
-    <Icon name="search" size={15} />
-    <input
-      type="search"
-      bind:value={query}
-      oninput={onInput}
-      onkeydown={onKeydown}
-      placeholder="search transcript content…"
-      aria-label="search transcript content"
-      autocomplete="off"
-      spellcheck="false"
-    />
+  {#snippet actions()}
+    <label class="search">
+      <Icon name="search" size={13} />
+      <input
+        type="search"
+        placeholder="search transcript content…"
+        aria-label="search transcript content"
+        value={qInput}
+        oninput={(e) => onSearch(e.currentTarget.value)}
+        autocomplete="off"
+        spellcheck="false"
+      />
+    </label>
+  {/snippet}
+
+  <div class="filters">
+    <div class="chips">
+      {#each AGENTS as a (a)}
+        <button class="chip" class:on={agent === a} onclick={() => { agent = a; offset = 0; }}>
+          {a === "all" ? "all agents" : agentName(a)}
+        </button>
+      {/each}
+    </div>
+    <div class="chips">
+      {#each OUTCOMES as o (o)}
+        <button class="chip" class:on={outcome === o} onclick={() => { outcome = o; offset = 0; }}>
+          {OUT_LABEL[o] ?? o}
+        </button>
+      {/each}
+    </div>
   </div>
 
-  {#if loading}
+  {#if res.loading && !res.data}
     <p class="status">Searching…</p>
-  {:else if searched && results.length === 0}
+  {:else if !hasQuery}
+    <p class="status">Type to search across every session's transcript.</p>
+  {:else if results.length === 0}
     <EmptyState
       icon="search"
       title="No matches"
       message={failed
         ? "That query couldn't be parsed — try simpler terms."
-        : `No session content matches “${query.trim()}”.`}
+        : `No session content matches “${qApplied}”.`}
       error={failed}
     />
-  {:else if results.length > 0}
+  {:else}
     <ul class="results">
       {#each results as r (r.session_id)}
         <li>
@@ -109,28 +127,53 @@
         </li>
       {/each}
     </ul>
+    <div class="pager">
+      <span class="pinfo">{showingFrom}–{showingTo} of {compact(total)}</span>
+      <div class="pbtns">
+        <button class="pbtn" disabled={offset === 0} onclick={() => (offset = Math.max(0, offset - LIMIT))}>Prev</button>
+        <button class="pbtn" disabled={offset + LIMIT >= total} onclick={() => (offset += LIMIT)}>Next</button>
+      </div>
+    </div>
   {/if}
 </Card>
 
 <style>
-  .search-box {
+  .search {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 8px 10px;
+    gap: 6px;
+    padding: 4px 8px;
     border: 1px solid var(--border);
     border-radius: 8px;
     background: var(--surface-2);
-    color: var(--text-dim);
-    margin-bottom: 12px;
+    color: var(--text-subtle);
   }
-  .search-box input {
-    flex: 1;
-    border: 0;
+  .search input {
+    border: none;
     background: transparent;
     color: var(--text);
-    font-size: 13px;
+    font-size: 12px;
     outline: none;
+    width: 170px;
+  }
+  .filters { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .chip {
+    padding: 2px 9px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s var(--ease);
+  }
+  .chip:hover { border-color: var(--border-glow); color: var(--text); }
+  .chip.on { background: var(--surface-2); border-color: var(--cyan); color: var(--cyan); }
+  .status {
+    font-size: 12px;
+    color: var(--text-subtle);
+    padding: 4px 2px;
   }
   .results {
     list-style: none;
@@ -182,9 +225,18 @@
     border-radius: 2px;
     padding: 0 1px;
   }
-  .status {
+  .pager { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; }
+  .pinfo { font-size: 11.5px; color: var(--text-subtle); }
+  .pbtns { display: flex; gap: 6px; }
+  .pbtn {
+    padding: 3px 12px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface-2);
+    color: var(--text-dim);
     font-size: 12px;
-    color: var(--text-subtle);
-    padding: 4px 2px;
+    cursor: pointer;
   }
+  .pbtn:disabled { opacity: 0.4; cursor: default; }
+  .pbtn:not(:disabled):hover { border-color: var(--cyan); color: var(--cyan); }
 </style>

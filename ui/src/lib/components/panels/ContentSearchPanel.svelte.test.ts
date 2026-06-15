@@ -3,7 +3,7 @@
 // (jsdom). Named *.svelte.test.ts so runes compile (see vitest.config.ts).
 
 import { describe, test, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/svelte";
+import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/svelte";
 import ContentSearchPanel from "./ContentSearchPanel.svelte";
 import * as api from "../../api";
 import type { SearchResult } from "../../api";
@@ -52,6 +52,46 @@ describe("ContentSearchPanel", () => {
     const result = await screen.findByText("Title alpha");
     await fireEvent.click(result);
     expect(window.location.pathname).toBe("/session/alpha");
+  });
+
+  test("selecting an outcome chip re-issues the search with that outcome filter", async () => {
+    const spy = vi.spyOn(api, "searchContent").mockResolvedValue({
+      q: "zebrafish", total: 1, limit: 25, offset: 0, results: [hit("alpha", "[zebrafish]")],
+    });
+    render(ContentSearchPanel);
+    await type("zebrafish");
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+    await fireEvent.click(screen.getByRole("button", { name: "errored" }));
+    await waitFor(() =>
+      expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ q: "zebrafish", outcome: "errored" })));
+  });
+
+  test("pager advances offset and shows from–to of total", async () => {
+    const spy = vi.spyOn(api, "searchContent").mockResolvedValue({
+      q: "zebrafish", total: 60, limit: 25, offset: 0,
+      results: [hit("alpha", "[zebrafish]")],
+    });
+    render(ContentSearchPanel);
+    await type("zebrafish");
+    expect(await screen.findByText(/1–25 of 60/)).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() =>
+      expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 25 })));
+    expect(await screen.findByText(/26–50 of 60/)).toBeTruthy();
+  });
+
+  test("changing the query resets offset to 0", async () => {
+    const spy = vi.spyOn(api, "searchContent").mockResolvedValue({
+      q: "x", total: 60, limit: 25, offset: 0, results: [hit("alpha", "[x]")],
+    });
+    render(ContentSearchPanel);
+    await type("zebrafish");
+    expect(await screen.findByText(/of 60/)).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() => expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 25 })));
+    await type("quokka");
+    await waitFor(() =>
+      expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ q: "quokka", offset: 0 })));
   });
 
   test("a blank query does not call the API", async () => {
