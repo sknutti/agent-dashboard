@@ -237,6 +237,20 @@ CREATE TABLE IF NOT EXISTS skills (
   script_count   INTEGER,
   last_modified  TEXT
 );
+
+-- Full-text index over readable session content (user/assistant/thinking text).
+-- A standalone (non-external-content) FTS5 table: simplest correct option for the
+-- search tracer. One row per session, keyed by session_id; rebuilt idempotently on
+-- each reparse via DELETE+INSERT (FTS5 has no UPSERT). session_id/agent are
+-- UNINDEXED (stored, not searched); only the body column is tokenized. Populated by
+-- scripts/session_search.ts from the on-demand display parse — message content is
+-- otherwise never persisted (ADR-0005/0006). bun:sqlite ships FTS5 built in.
+CREATE VIRTUAL TABLE IF NOT EXISTS session_search USING fts5(
+  session_id UNINDEXED,
+  agent UNINDEXED,
+  body,
+  tokenize = 'unicode61'
+);
 `;
 
 /**

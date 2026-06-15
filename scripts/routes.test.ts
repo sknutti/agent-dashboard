@@ -4,7 +4,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initSchema } from "./db.ts";
-import { rangePred, buildSessionErrors, buildSessionMessages } from "./routes.ts";
+import { rangePred, buildSessionErrors, buildSessionMessages, buildSearch } from "./routes.ts";
+import { indexSession } from "./session_search.ts";
 
 // The rollup tables store `date` as an already-local YYYY-MM-DD. The old predicate
 // wrapped it in DATE(date,'localtime') a SECOND time, which shifts each date back a
@@ -222,6 +223,77 @@ describe("buildSessionMessages (#messages-endpoint)", () => {
     const db = freshDb();
     const { status } = await buildSessionMessages(db, "nope");
     expect(status).toBe(404);
+    db.close();
+  });
+});
+
+// GET /api/search core logic (buildSearch) — FTS5 MATCH joined back to sessions for
+// display rows. Always 200: degrade-don't-500 on empty/malformed queries.
+describe("buildSearch (#content-search)", () => {
+  function freshDb(): Database {
+    const db = new Database(":memory:");
+    initSchema(db);
+    return db;
+  }
+
+  /** Insert a session row + its searchable body so JOIN sessions yields display fields. */
+  function seed(db: Database, id: string, body: string, extra: Record<string, unknown> = {}): void {
+    const row = { session_id: id, agent: "claude_code", title: `title ${id}`,
+      cwd: `/repo/${id}`, started_at: "2026-06-01T00:00:00Z", ...extra };
+    const cols = Object.keys(row);
+    db.run(`INSERT INTO sessions (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`,
+      cols.map((k) => (row as any)[k]));
+    indexSession(db, id, row.agent as string, body);
+  }
+
+  test("returns only the session whose content matches, with a snippet of the term", () => {
+    const db = freshDb();
+    seed(db, "alpha", "the zebrafish algorithm is subtle");
+    seed(db, "beta", "a completely unrelated quokka discussion");
+    const res = buildSearch(db, "zebrafish");
+    expect(res.results.map((r) => r.session_id)).toEqual(["alpha"]);
+    expect(res.results[0]!.snippet).toContain("zebrafish");
+    expect(res.results[0]!.title).toBe("title alpha"); // joined from sessions
+    db.close();
+  });
+
+  test("multiple terms AND together (both must appear)", () => {
+    const db = freshDb();
+    seed(db, "both", "zebrafish and quokka together");
+    seed(db, "one", "only the zebrafish here");
+    const res = buildSearch(db, "zebrafish quokka");
+    expect(res.results.map((r) => r.session_id)).toEqual(["both"]);
+    db.close();
+  });
+
+  test("empty query returns no results, no error", () => {
+    const db = freshDb();
+    seed(db, "alpha", "zebrafish");
+    expect(buildSearch(db, "   ")).toEqual({ q: "", results: [] });
+    db.close();
+  });
+
+  test("malformed FTS5 query degrades to [] without throwing", () => {
+    const db = freshDb();
+    seed(db, "alpha", "zebrafish");
+    // A bare double-quote / operator soup would throw raw against FTS5.
+    const res = buildSearch(db, 'foo" AND (');
+    expect(res.results).toEqual([]);
+    db.close();
+  });
+
+  test("limit clamps the number of hits", () => {
+    const db = freshDb();
+    for (const id of ["a", "b", "c"]) seed(db, id, "shared zebrafish token");
+    const res = buildSearch(db, "zebrafish", 2);
+    expect(res.results.length).toBe(2);
+    db.close();
+  });
+
+  test("an orphan index row (session deleted) is dropped by the JOIN", () => {
+    const db = freshDb();
+    indexSession(db, "ghost", "claude_code", "zebrafish with no session row");
+    expect(buildSearch(db, "zebrafish").results).toEqual([]);
     db.close();
   });
 });

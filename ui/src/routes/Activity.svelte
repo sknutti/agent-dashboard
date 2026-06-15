@@ -6,6 +6,7 @@
   import TopSkillsPanel from "../lib/components/panels/TopSkillsPanel.svelte";
   import FailuresPanel from "../lib/components/panels/FailuresPanel.svelte";
   import SessionsTablePanel from "../lib/components/panels/SessionsTablePanel.svelte";
+  import ContentSearchPanel from "../lib/components/panels/ContentSearchPanel.svelte";
   import { ui, setRange } from "../lib/stores.svelte";
 </script>
 
@@ -28,6 +29,10 @@
       <TopSkillsPanel />
       <FailuresPanel />
     </div>
+  </CollapsibleSection>
+
+  <CollapsibleSection id="content-search" title="Content search" subtitle="full-text across every session transcript — not just titles">
+    <ContentSearchPanel />
   </CollapsibleSection>
 
   <CollapsibleSection id="all-sessions" title="All sessions" subtitle="searchable, filterable, across all four agents">

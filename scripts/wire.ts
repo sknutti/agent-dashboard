@@ -102,6 +102,26 @@ export interface SessionMessagesResponse {
   note?: string;
 }
 
+// GET /api/search?q= — full-text search over session CONTENT (distinct from the
+// metadata `q` filter on /api/sessions, which only LIKEs title/cwd). One hit per
+// matching session, ranked by FTS5 bm25, each with a server-rendered snippet of the
+// matched body. Always 200: empty/malformed `q` degrades to `{ results: [] }` (with
+// `error` set on a malformed query), never a 500.
+export interface SearchResult {
+  session_id: string;
+  agent: string;
+  title: string | null;
+  cwd: string | null;
+  started_at: string | null;
+  snippet: string;
+}
+
+export interface SearchResponse {
+  q: string;
+  results: SearchResult[];
+  error?: string;
+}
+
 export interface BurnResponse {
   range: string;
   rows: (BurnRow & { fidelity: string; driver: string | null; evidence: string | null })[];
