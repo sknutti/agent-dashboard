@@ -1542,6 +1542,23 @@
                         <button type="button" class="act danger" disabled={busy} onclick={() => doUninstall(detail.kind, detail.name, row.target)}>Uninstall</button>
                       {/if}
                     </div>
+                    {#if row.state === "modified"}
+                      <!-- The drift actions are directional and easy to confuse, so spell the
+                           choice out in-place (the tooltips alone aren't discoverable). Text-only,
+                           no color reliance — Scott is red/green CVD. -->
+                      <p class="drift-help" role="note">
+                        <Icon name="alert" size={12} />
+                        <span>
+                          <strong class="mono">{row.target}</strong> was edited outside the app, so its files no longer
+                          match the library. Pick a direction:
+                          <strong>Reimport</strong> pulls these on-disk edits <em>into the library</em> as a new version
+                          (keeps your changes — this is how you preserve edits made directly in the install location);
+                          <strong>Reinstall</strong> overwrites the on-disk copy with the library version (discards your
+                          changes); <strong>Acknowledge</strong> stops flagging it but leaves the edits on disk only —
+                          they won’t reach the library.
+                        </span>
+                      </p>
+                    {/if}
                     {#if overlayStale}
                       <!-- Decision 3: an overlay edit doesn't re-install; explain the
                            resulting drift + point at the existing Update/reinstall action. -->
@@ -2637,6 +2654,23 @@
     color: var(--text);
     font-size: 11.5px;
     line-height: 1.4;
+  }
+  .drift-help {
+    grid-column: 1 / -1;
+    margin: 2px 0 0;
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--amber, #d08b1d) 10%, transparent);
+    color: var(--text);
+    font-size: 11.5px;
+    line-height: 1.45;
+  }
+  .drift-help :global(svg) {
+    flex: none;
+    margin-top: 1px;
   }
   .act {
     padding: 4px 11px;
