@@ -55,9 +55,35 @@ fn scan_high_entropy_runs(input: &[u8]) -> Vec<Finding> {
     static CANDIDATE: OnceLock<Regex> = OnceLock::new();
     let re = CANDIDATE.get_or_init(|| Regex::new(r"[A-Za-z0-9+/=_-]{40,}").unwrap());
     re.find_iter(input)
+        .filter(|m| !is_in_url(input, m.start()))
         .filter(|m| shannon_entropy(m.as_bytes()) > ENTROPY_THRESHOLD)
         .map(|m| finding(FindingKind::HighEntropyString, m))
         .collect()
+}
+
+/// True if the entropy candidate starting at `offset` is part of a URL.
+///
+/// The candidate alphabet includes `/`, so a long URL path (pinned commit
+/// SHAs, content-addressed CDN paths, sourcemap links) reads as one
+/// high-diversity run and trips the entropy heuristic even though it holds
+/// no secret. A real key embedded in a URL (`?token=...`) is still caught by
+/// the named regex rules, which run independently of this detector.
+///
+/// We treat the candidate as URL-borne when a `scheme://` marker appears on
+/// the same unbroken run of URL-ish bytes ending at `offset` — i.e. walking
+/// left from the match start over `[A-Za-z0-9+/=_:.@%~?&#-]` reaches a `://`
+/// without first hitting whitespace, a quote, or any other delimiter.
+fn is_in_url(input: &[u8], offset: usize) -> bool {
+    const URL_BYTES: &[u8] = b"://.@%~?&#";
+    let is_url_byte = |b: u8| b.is_ascii_alphanumeric() || b"+/=_-".contains(&b) || URL_BYTES.contains(&b);
+
+    let prefix = &input[..offset];
+    let run_start = prefix
+        .iter()
+        .rposition(|&b| !is_url_byte(b))
+        .map_or(0, |i| i + 1);
+    // `windows(3)` is empty for runs shorter than 3 bytes — those can't hold `://`.
+    prefix[run_start..].windows(3).any(|w| w == b"://")
 }
 
 fn shannon_entropy(bytes: &[u8]) -> f64 {
@@ -323,6 +349,48 @@ mod tests {
                 .any(|f| f.kind == FindingKind::HighEntropyString && f.matched == token),
             "expected HighEntropyString matching {token}, got {findings:?}",
         );
+    }
+
+    #[test]
+    fn ignores_high_entropy_run_inside_a_url() {
+        // Regression: a commit-pinned githubusercontent URL. The `/`-spanning
+        // path is one ~80-char run with entropy 4.90 (> 4.5), but it's a URL,
+        // not a secret. This is the exact false positive from skill metadata.
+        let input = "source_url: https://raw.githubusercontent.com/cursor/plugins/3347cbab5b54136f6fba0994c3a01a56f7fb7fca/cursor-team-kit/skills/x/SKILL.md";
+        assert_eq!(scan(input.as_bytes()), vec![]);
+    }
+
+    #[test]
+    fn still_flags_high_entropy_query_token_via_named_rule() {
+        // A real key in a URL query is the named rules' job, not the entropy
+        // detector's — the URL guard must not suppress it.
+        let token = format!("sk-{}", "A1b2C3d4E5f6G7h8".repeat(2));
+        let input = format!("https://api.example.com/v1?key={token}");
+        let findings = scan(input.as_bytes());
+        assert!(findings.iter().any(|f| f.kind == FindingKind::OpenAiKey));
+    }
+
+    #[test]
+    fn still_flags_high_entropy_run_outside_any_url() {
+        // The guard is URL-scoped; a bare high-entropy assignment still trips.
+        let token = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN";
+        let input = format!("password = {token}");
+        let findings = scan(input.as_bytes());
+        assert!(findings
+            .iter()
+            .any(|f| f.kind == FindingKind::HighEntropyString && f.matched == token));
+    }
+
+    #[test]
+    fn high_entropy_run_after_url_on_same_line_still_flagged() {
+        // The guard keys off the contiguous URL run, not the whole line: a
+        // secret sitting after a URL (separated by a space) is not shielded.
+        let token = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN";
+        let input = format!("see https://example.com/docs and set key {token}");
+        let findings = scan(input.as_bytes());
+        assert!(findings
+            .iter()
+            .any(|f| f.kind == FindingKind::HighEntropyString && f.matched == token));
     }
 
     #[test]
