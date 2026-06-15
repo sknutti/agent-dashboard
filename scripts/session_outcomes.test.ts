@@ -6,7 +6,13 @@
 import { test, expect, describe } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initSchema } from "./db.ts";
-import { parseGitNumstat, buildGitOutcomeArgs, computeSessionOutcome } from "./session_outcomes.ts";
+import {
+  parseGitNumstat,
+  parseGitCommits,
+  buildGitOutcomeArgs,
+  computeSessionOutcome,
+  computeDayOutcome,
+} from "./session_outcomes.ts";
 
 // `git log --numstat --format=%H` output: a 40-hex hash line per commit, a blank
 // line, then `<added>\t<deleted>\t<path>` rows (binary files show `-\t-\tpath`).
@@ -33,6 +39,19 @@ describe("parseGitNumstat", () => {
 
   test("empty output is an all-zero outcome", () => {
     expect(parseGitNumstat("")).toEqual({ commits: 0, insertions: 0, deletions: 0, filesChanged: 0 });
+  });
+});
+
+describe("parseGitCommits (per-commit rows, for day-level hash dedupe)", () => {
+  test("splits output into per-commit figures keyed by hash", () => {
+    expect(parseGitCommits(NUMSTAT_FIXTURE)).toEqual([
+      { hash: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0", insertions: 15, deletions: 2, files: ["src/foo.ts", "src/bar.ts"] },
+      { hash: "b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1", insertions: 3, deletions: 3, files: ["src/foo.ts", "assets/logo.png"] },
+    ]);
+  });
+
+  test("empty output yields no commits", () => {
+    expect(parseGitCommits("")).toEqual([]);
   });
 });
 
@@ -138,6 +157,76 @@ describe("computeSessionOutcome", () => {
     const exit1 = async () => ({ exitCode: 1, stdout: "", stderr: "fatal: bad revision" });
     const { body } = await computeSessionOutcome(db, "s5", exit1);
     expect(body).toEqual({ applicable: false, reason: "git_failed" });
+    db.close();
+  });
+});
+
+describe("computeDayOutcome (per-hash dedupe across a day's sessions)", () => {
+  function freshDb(): Database {
+    const db = new Database(":memory:");
+    initSchema(db);
+    return db;
+  }
+  function seed(db: Database, row: Record<string, unknown>): void {
+    const cols = Object.keys(row);
+    db.run(`INSERT INTO sessions (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`,
+      cols.map((k) => row[k] as any));
+  }
+  // The day key the same way the rollup buckets it, so the test is TZ-independent.
+  const dayKey = (db: Database, iso: string): string =>
+    (db.query<{ d: string }, [string]>("SELECT DATE(?, 'localtime') d").get(iso)!).d;
+
+  const H1 = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
+  const H2 = "b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1";
+  const H3 = "c1c2c3c4c5c6c7c8c9c0c1c2c3c4c5c6c7c8c9c0";
+  // Session 1's window sees commits H1 + H2; session 2's window sees H2 + H3.
+  // H2 is shared — the day rollup must count it exactly once.
+  const FIX_A = [H1, "", "10\t2\tsrc/foo.ts", "5\t0\tsrc/bar.ts", H2, "", "3\t3\tsrc/foo.ts", "-\t-\tassets/logo.png"].join("\n");
+  const FIX_B = [H2, "", "3\t3\tsrc/foo.ts", "-\t-\tassets/logo.png", H3, "", "7\t1\tsrc/baz.ts"].join("\n");
+  // Keyed on the window's --since so each session gets its own git output.
+  const dayRunner = async (args: string[]) => {
+    const since = args[args.indexOf("--since") + 1];
+    if (since === "2026-06-10T12:00:00Z") return { exitCode: 0, stdout: FIX_A, stderr: "" };
+    if (since === "2026-06-10T14:00:00Z") return { exitCode: 0, stdout: FIX_B, stderr: "" };
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+
+  test("unions commits by hash — a shared commit is counted ONCE, not summed twice", async () => {
+    const db = freshDb();
+    const date = dayKey(db, "2026-06-10T12:00:00Z");
+    seed(db, { session_id: "s1", cwd: "/repo", git_branch: null, started_at: "2026-06-10T12:00:00Z", ended_at: "2026-06-10T13:00:00Z" });
+    seed(db, { session_id: "s2", cwd: "/repo", git_branch: null, started_at: "2026-06-10T14:00:00Z", ended_at: "2026-06-10T15:00:00Z" });
+    const body = await computeDayOutcome(db, date, dayRunner);
+    expect(body).toEqual({
+      date, sessions: 2,
+      commits: 3, // H1, H2, H3 — H2 deduped (raw sum would be 4)
+      insertions: 25, // 15 + 3 + 7  (H2's 3 counted once, not twice → not 28)
+      deletions: 6, //   2 + 3 + 1
+      filesChanged: 4, // foo, bar, logo, baz (distinct across deduped commits)
+      fidelity: "estimated", deduped: true,
+    });
+    db.close();
+  });
+
+  test("excludes live (no ended_at) sessions from the day", async () => {
+    const db = freshDb();
+    const date = dayKey(db, "2026-06-10T12:00:00Z");
+    seed(db, { session_id: "s1", cwd: "/repo", git_branch: null, started_at: "2026-06-10T12:00:00Z", ended_at: "2026-06-10T13:00:00Z" });
+    seed(db, { session_id: "live", cwd: "/repo", git_branch: null, started_at: "2026-06-10T14:00:00Z", ended_at: null });
+    const body = await computeDayOutcome(db, date, dayRunner);
+    expect(body.sessions).toBe(1); // only the ended session
+    expect(body.commits).toBe(2); // H1, H2 from FIX_A only
+    db.close();
+  });
+
+  test("a day with no ended sessions returns zeros, never throws", async () => {
+    const db = freshDb();
+    const never = async () => { throw new Error("git should not run"); };
+    const body = await computeDayOutcome(db, "2020-01-01", never);
+    expect(body).toEqual({
+      date: "2020-01-01", sessions: 0, commits: 0, insertions: 0, deletions: 0,
+      filesChanged: 0, fidelity: "estimated", deduped: true,
+    });
     db.close();
   });
 });

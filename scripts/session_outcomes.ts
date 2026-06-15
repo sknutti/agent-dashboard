@@ -111,6 +111,76 @@ export async function computeSessionOutcome(
   return { status: 200, body: { applicable: true, fidelity: "estimated", method, ...figures } };
 }
 
+/** A day's git output, summed over that day's ended sessions with per-hash dedupe
+ *  (a commit landing in several overlapping sessions' windows counts once). Still
+ *  ESTIMATED — dedupe removes the cross-session over-count, but agent-vs-human
+ *  authorship of a commit remains a heuristic. Pairs with burn_daily's estimated
+ *  rack-rate axis. `deduped:true` records that the over-count was removed. */
+export interface DayOutcome {
+  date: string;
+  sessions: number;
+  commits: number;
+  insertions: number;
+  deletions: number;
+  filesChanged: number;
+  fidelity: "estimated";
+  deduped: true;
+}
+
+/** Roll a single day's git output up across its ENDED sessions, unioning commits by
+ *  hash so an overlapping commit is counted once (Q2 dedupe). Buckets by
+ *  DATE(started_at,'localtime') — the same key burn_daily uses — and reuses the
+ *  per-session zero-network argv builder + per-commit parser. Injected runGit so the
+ *  rollup is unit-tested with no subprocess. Always returns a body (empty day →
+ *  zeros); a non-repo/failed session contributes nothing rather than aborting. */
+export async function computeDayOutcome(
+  db: Database,
+  date: string,
+  runGit: GitRunner,
+): Promise<DayOutcome> {
+  const rows = db
+    .query<SessionGitRow & { cwd: string; started_at: string; ended_at: string }, [string]>(
+      `SELECT cwd, git_branch, started_at, ended_at FROM sessions
+       WHERE DATE(started_at,'localtime') = ? AND ended_at IS NOT NULL AND cwd IS NOT NULL`,
+    )
+    .all(date);
+
+  const byHash = new Map<string, GitCommit>();
+  for (const row of rows) {
+    const { args } = buildGitOutcomeArgs({
+      cwd: row.cwd,
+      git_branch: row.git_branch,
+      started_at: row.started_at,
+      ended_at: row.ended_at,
+    });
+    const proc = await runGit(args);
+    if (proc.exitCode !== 0) continue; // not_a_repo / git_failed contributes nothing
+    for (const c of parseGitCommits(proc.stdout)) {
+      if (!byHash.has(c.hash)) byHash.set(c.hash, c); // first wins; identical across windows
+    }
+  }
+
+  let insertions = 0;
+  let deletions = 0;
+  const files = new Set<string>();
+  for (const c of byHash.values()) {
+    insertions += c.insertions;
+    deletions += c.deletions;
+    for (const f of c.files) files.add(f);
+  }
+
+  return {
+    date,
+    sessions: rows.length,
+    commits: byHash.size,
+    insertions,
+    deletions,
+    filesChanged: files.size,
+    fidelity: "estimated",
+    deduped: true,
+  };
+}
+
 /** The real git runner: spawn `git` with an argv array (never a shell string),
  *  drain stdout+stderr concurrently (no pipe deadlock), and SIGKILL on a short
  *  watchdog — the same shape as library_bridge.runBridge. stdin is closed; the
@@ -165,4 +235,34 @@ export function parseGitNumstat(stdout: string): GitOutcomeFigures {
   }
 
   return { commits, insertions, deletions, filesChanged: files.size };
+}
+
+/** One commit's figures, keyed by hash — the granularity a DAY rollup needs to
+ *  dedupe a commit that lands inside several overlapping sessions' windows. */
+export interface GitCommit {
+  hash: string;
+  insertions: number;
+  deletions: number;
+  files: string[];
+}
+
+/** Parse `git log --numstat --format=%H` into per-commit rows (vs parseGitNumstat's
+ *  pre-summed scalars). A 40-hex line opens a commit; subsequent numstat rows attach
+ *  to it. Used by computeDayOutcome to union commits by hash across a day's sessions. */
+export function parseGitCommits(stdout: string): GitCommit[] {
+  const commits: GitCommit[] = [];
+  let cur: GitCommit | null = null;
+  for (const line of stdout.split("\n")) {
+    if (/^[0-9a-f]{40}$/.test(line)) {
+      cur = { hash: line, insertions: 0, deletions: 0, files: [] };
+      commits.push(cur);
+      continue;
+    }
+    const m = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line);
+    if (!m || !cur) continue;
+    if (m[1] !== "-") cur.insertions += Number(m[1]);
+    if (m[2] !== "-") cur.deletions += Number(m[2]);
+    cur.files.push(m[3]!);
+  }
+  return commits;
 }

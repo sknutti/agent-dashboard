@@ -27,7 +27,7 @@ import {
   DISPLAY_PARSER_AGENTS,
   UnsupportedAgentError,
 } from "./error_context.ts";
-import { computeSessionOutcome, runGitLog } from "./session_outcomes.ts";
+import { computeSessionOutcome, computeDayOutcome, runGitLog } from "./session_outcomes.ts";
 import type {
   AgentCardData,
   AgentsResponse,
@@ -825,6 +825,18 @@ export function registerApiRoutes(app: Hono): void {
         evidence = COALESCE(excluded.evidence, evidence)`)
       .run(date, agent, body.driver ?? null, body.evidence ?? null);
     return c.json({ ok: true, date, agent });
+  });
+
+  // ── Burn-pairing: one day's git-derived OUTPUT, paired with its cost ────────
+  // Sums commits/LOC/files across that day's ENDED sessions, deduping commits by
+  // hash (overlapping same-repo sessions count a commit once). ESTIMATED — pairs
+  // with burn_daily's estimated rack-rate axis only (never native). On-demand,
+  // single-day (the persisted whole-grid rollup is a deferred follow-up). Zero
+  // network: reuses the local-`log`-only argv builder. See computeDayOutcome.
+  app.get("/api/burn/day/:date/output", async (c) => {
+    const date = c.req.param("date");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return c.json({ error: "bad date" }, 400);
+    return c.json(await computeDayOutcome(db, date, runGitLog));
   });
 
   // ── Project breakdown (sessions rolled up by cwd) ─────────────────────────
