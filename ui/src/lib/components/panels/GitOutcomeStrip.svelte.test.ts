@@ -39,4 +39,16 @@ describe("GitOutcomeStrip", () => {
     render(GitOutcomeStrip, { id: "s3" });
     expect(await screen.findByText(/in progress|live/i)).toBeTruthy();
   });
+
+  // 5a: a genuine zero-commit window is applicable:true but must not render the numeric
+  // strip ("0 commits · +0 · −0 · 0 files") — that's exactly the misleading 0 to avoid.
+  test("a zero-commit window shows a worded empty state, not a 0 strip", async () => {
+    vi.spyOn(api, "getSessionGitOutcome").mockResolvedValue({
+      applicable: true, fidelity: "estimated", method: "window",
+      commits: 0, insertions: 0, deletions: 0, filesChanged: 0,
+    });
+    render(GitOutcomeStrip, { id: "s4" });
+    expect(await screen.findByText(/no commits in this window/i)).toBeTruthy();
+    expect(screen.queryByText(/0 commits/)).toBeNull();
+  });
 });

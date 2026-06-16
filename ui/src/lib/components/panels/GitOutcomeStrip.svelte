@@ -18,6 +18,8 @@
     no_cwd: "no working directory",
     not_a_repo: "not a git repo",
     git_failed: "git unavailable",
+    git_not_found: "git not found",
+    timeout: "git timed out",
     no_window: "no time window",
     live: "in progress",
   };
@@ -27,10 +29,10 @@
 
 {#if res.loading && !res.data}
   <!-- quiet while the estimate loads -->
-{:else if o?.applicable}
+{:else if o?.applicable && (o.commits ?? 0) > 0}
   <div
     class="gitout"
-    title={`Estimated from local git history (${methodLabel(o.method)}). Heuristic — overlapping sessions on one repo may over- or under-count.`}
+    title={`Estimated from local git history (${methodLabel(o.method)}), excluding merge commits. Heuristic — overlapping sessions on one repo may over- or under-count.`}
   >
     <span class="est">≈ est</span>
     <span class="fig">{o.commits} commits</span>
@@ -40,6 +42,9 @@
     <span class="sep">·</span>
     <span class="fig">{o.filesChanged} files</span>
   </div>
+{:else if o?.applicable}
+  <!-- a real, empty window: the session committed nothing. Worded state, not a 0 strip. -->
+  <div class="gitout muted">git output: no commits in this window</div>
 {:else if o}
   <div class="gitout muted">git output: {REASON_LABEL[o.reason ?? ""] ?? "—"}</div>
 {/if}

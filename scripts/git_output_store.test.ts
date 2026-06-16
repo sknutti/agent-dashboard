@@ -6,7 +6,7 @@
 import { test, expect, describe } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initSchema } from "./db.ts";
-import { upsertDayOutcome, refreshGitOutput, getDayOutcome } from "./git_output_store.ts";
+import { upsertDayOutcome, refreshGitOutput, getDayOutcome, backfillExistingDayOutputs } from "./git_output_store.ts";
 
 function freshDb(): Database {
   const db = new Database(":memory:");
@@ -142,6 +142,54 @@ describe("refreshGitOutput (Phase 2 — bounded worker driver)", () => {
     expect(days).toBe(1); // only dB succeeded
     const have = (db.query<{ date: string }, []>("SELECT date FROM git_output_daily").all()).map((r) => r.date);
     expect(have).toEqual([dB]); // dA's failure didn't poison dB or throw
+    db.close();
+  });
+});
+
+describe("backfillExistingDayOutputs (Phase 4 — recompute stale persisted rows after a logic fix)", () => {
+  function seed(db: Database, row: Record<string, unknown>): void {
+    const cols = Object.keys(row);
+    db.run(`INSERT INTO sessions (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`,
+      cols.map((k) => row[k] as any));
+  }
+  const dayKey = (db: Database, iso: string): string =>
+    (db.query<{ d: string }, [string]>("SELECT DATE(?, 'localtime') d").get(iso)!).d;
+  const stale = (db: Database, date: string): void => {
+    db.run(`INSERT INTO git_output_daily (date, sessions, commits, insertions, deletions, files_changed, fidelity, deduped, computed_at)
+            VALUES (?, 1, 99, 9999, 9999, 99, 'estimated', 1, '2026-01-01T00:00:00Z')`, [date]);
+  };
+
+  // The merge/timestamp fixes change computed figures. missingRecentDays SKIPS dates
+  // already in git_output_daily, so existing rows would stay stale — this recompute fixes them.
+  test("recomputes an existing stale row to the current logic", async () => {
+    const db = freshDb();
+    const date = dayKey(db, "2026-06-10T12:00:00Z");
+    seed(db, { session_id: "s1", cwd: "/repo", git_branch: null, started_at: "2026-06-10T12:00:00Z", ended_at: "2026-06-10T13:00:00Z" });
+    stale(db, date); // pre-fix inflated figures
+    const H = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
+    const runner = async () => ({ exitCode: 0, stdout: [H, "", "4\t1\tsrc/x.ts"].join("\n"), stderr: "" });
+    const { days } = await backfillExistingDayOutputs(db, runner, {});
+    expect(days).toBe(1);
+    const row = db.query<{ commits: number; insertions: number }, [string]>(
+      "SELECT commits, insertions FROM git_output_daily WHERE date = ?").get(date)!;
+    expect(row.commits).toBe(1); // recomputed — not the stale 99
+    expect(row.insertions).toBe(4); // not the stale 9999
+    db.close();
+  });
+
+  // Bounded so a long history can't git-storm: only the cap most-recent existing rows.
+  test("is bounded by cap — only the most-recent existing rows are recomputed", async () => {
+    const db = freshDb();
+    for (const d of ["2026-06-08", "2026-06-09", "2026-06-10"]) stale(db, d);
+    // no sessions seeded → computeDayOutcome returns zeros without calling git, so a
+    // throwing runner proves git isn't spawned for these empty days.
+    const never = async () => { throw new Error("git should not run for empty days"); };
+    const { days } = await backfillExistingDayOutputs(db, never, { cap: 2 });
+    expect(days).toBe(2); // capped
+    // the OLDEST date kept its stale computed_at (was not recomputed)
+    const oldest = db.query<{ computed_at: string }, [string]>(
+      "SELECT computed_at FROM git_output_daily WHERE date = ?").get("2026-06-08")!;
+    expect(oldest.computed_at).toBe("2026-01-01T00:00:00Z");
     db.close();
   });
 });

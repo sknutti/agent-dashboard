@@ -64,7 +64,7 @@ describe("buildGitOutcomeArgs (Q1: branch-scoped + window fallback)", () => {
     expect(args).toEqual([
       "-C", "/repo", "log", "feat/x",
       "--since", "2026-06-01T00:00:00Z", "--until", "2026-06-01T02:00:00Z",
-      "--numstat", "--format=%H",
+      "--no-merges", "--numstat", "--format=%H",
     ]);
   });
 
@@ -82,6 +82,33 @@ describe("buildGitOutcomeArgs (Q1: branch-scoped + window fallback)", () => {
     for (const bad of forbidden) expect(args).not.toContain(bad);
     // the subcommand slot (after `-C <cwd>`) is exactly `log`
     expect(args[2]).toBe("log");
+  });
+
+  // Finding 1: merge commits emit NO numstat rows, so counting their %H line inflates
+  // the commit count with zero LOC/files. --no-merges excludes them in git, keeping the
+  // estimate an honest "lines produced" figure (decided: Q1 = --no-merges).
+  test("excludes merge commits via --no-merges (both branch and no-branch variants)", () => {
+    expect(buildGitOutcomeArgs({ ...base, git_branch: "feat/x" }).args).toContain("--no-merges");
+    expect(buildGitOutcomeArgs({ ...base, git_branch: null }).args).toContain("--no-merges");
+  });
+
+  // Finding 3: an already-offset timestamp (incl. Z, which works today) is passed
+  // through verbatim — no reparse, no skew.
+  test("passes an already-offset timestamp through unchanged", () => {
+    const { args } = buildGitOutcomeArgs({ ...base, git_branch: null });
+    expect(args[args.indexOf("--since") + 1]).toBe("2026-06-01T00:00:00Z");
+    expect(args[args.indexOf("--until") + 1]).toBe("2026-06-01T02:00:00Z");
+  });
+
+  // Finding 3: a no-offset timestamp would be read by git as machine-LOCAL time,
+  // skewing the window. Normalize it to the same explicit-UTC form as its Z-equivalent.
+  test("normalizes a no-offset timestamp to explicit UTC (same window as its Z form)", () => {
+    const { args } = buildGitOutcomeArgs({
+      cwd: "/repo", git_branch: null,
+      started_at: "2026-06-01 00:00:00", ended_at: "2026-06-01T02:00:00",
+    });
+    expect(args[args.indexOf("--since") + 1]).toBe("2026-06-01T00:00:00Z");
+    expect(args[args.indexOf("--until") + 1]).toBe("2026-06-01T02:00:00Z");
   });
 });
 
@@ -157,6 +184,56 @@ describe("computeSessionOutcome", () => {
     const exit1 = async () => ({ exitCode: 1, stdout: "", stderr: "fatal: bad revision" });
     const { body } = await computeSessionOutcome(db, "s5", exit1);
     expect(body).toEqual({ applicable: false, reason: "git_failed" });
+    db.close();
+  });
+
+  // Finding 2: a recorded git_branch that was deleted makes `git log <branch>` exit 128
+  // with "unknown revision" — a VALID repo. Fall back to time-window-only instead of
+  // mislabeling it not_a_repo.
+  test("deleted branch (exit 128, 'unknown revision') → falls back to window, applicable", async () => {
+    const db = freshDb();
+    seed(db, { ...ended, session_id: "s6" }); // git_branch: "feat/x"
+    const deletedBranch = async (args: string[]) =>
+      args.includes("feat/x")
+        ? { exitCode: 128, stdout: "", stderr: "fatal: bad revision 'feat/x'\nunknown revision or path not in the working tree" }
+        : { exitCode: 0, stdout: NUMSTAT_FIXTURE, stderr: "" };
+    const { status, body } = await computeSessionOutcome(db, "s6", deletedBranch);
+    expect(status).toBe(200);
+    expect(body).toEqual({
+      applicable: true, fidelity: "estimated", method: "window",
+      commits: 2, insertions: 18, deletions: 5, filesChanged: 3,
+    });
+    db.close();
+  });
+
+  // Finding 2 (reinforced): a TRUE non-repo (exit 128, "not a git repository") must still
+  // map to not_a_repo, never trigger the deleted-branch window fallback.
+  test("true not-a-repo (exit 128, 'not a git repository') still → not_a_repo (no fallback)", async () => {
+    const db = freshDb();
+    seed(db, { ...ended, session_id: "s7" });
+    const notRepo = async () => ({ exitCode: 128, stdout: "", stderr: "fatal: not a git repository (or any of the parent directories)" });
+    const { body } = await computeSessionOutcome(db, "s7", notRepo);
+    expect(body).toEqual({ applicable: false, reason: "not_a_repo" });
+    db.close();
+  });
+
+  // 5b: distinct operability reasons so a broken environment is diagnosable, not a
+  // permanent silent "git_failed".
+  test("spawn failure (exit 127) → reason git_not_found", async () => {
+    const db = freshDb();
+    seed(db, { ...ended, session_id: "s8" });
+    const notFound = async () => ({ exitCode: 127, stdout: "", stderr: "git could not be launched: ENOENT" });
+    const { body } = await computeSessionOutcome(db, "s8", notFound);
+    expect(body).toEqual({ applicable: false, reason: "git_not_found" });
+    db.close();
+  });
+
+  test("timeout (exit null) → reason timeout", async () => {
+    const db = freshDb();
+    seed(db, { ...ended, session_id: "s9" });
+    const timedOut = async () => ({ exitCode: null, stdout: "", stderr: "git log timed out" });
+    const { body } = await computeSessionOutcome(db, "s9", timedOut);
+    expect(body).toEqual({ applicable: false, reason: "timeout" });
     db.close();
   });
 });
