@@ -1,10 +1,14 @@
 //! P5.3: Source-dir tarball backup before bootstrap.
 //!
-//! Snapshots the user's `~/.claude/`, `~/.pi/`, `~/.codex/` trees into a
-//! gzipped tarball outside the library, mode `0600`. Returns `None` if
-//! none of those roots exist (silent skip — many users only have one
-//! tool installed). Skips symlinks and hidden files (`.DS_Store` etc.)
-//! the same way the scanner does.
+//! Snapshots ONLY the primitive source directories bootstrap reads/writes —
+//! `~/.claude/{skills,agents,commands}`, `~/.pi/agent/{skills,agents,prompts}`,
+//! `~/.codex/{skills,prompts,agents}` (from [`InstallPaths::all_source_dirs`]) —
+//! into a gzipped tarball outside the library, mode `0600`. It deliberately
+//! does NOT pack the whole `~/.claude` etc. trees: those also hold transcripts
+//! (`projects/`), `file-history/`, and caches that are large (>1 GB observed),
+//! irrelevant to bootstrap, and privacy-sensitive — packing them timed the
+//! bridge out. Returns `None` if none of the source dirs exist. Skips symlinks
+//! and hidden files (`.DS_Store` etc.) the same way the scanner does.
 //!
 //! Pure FS — caller injects the timestamp string and resolves
 //! `backup_dir` (typically `<app_data_dir>/backups/`).
@@ -16,25 +20,23 @@ use camino::{Utf8Path, Utf8PathBuf};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
-use crate::{is_ignored, Error};
+use crate::{is_ignored, Error, InstallPaths};
 
-/// Source roots scanned, in stable order.
-const SOURCE_ROOTS: &[&str] = &[".claude", ".pi", ".codex"];
-
-/// Snapshot the user's source dirs into `<backup_dir>/<timestamp>.tar.gz`.
+/// Snapshot the user's primitive source dirs into `<backup_dir>/<timestamp>.tar.gz`.
 ///
 /// Returns the absolute archive path on success, or `Ok(None)` if none of
 /// `~/.claude/`, `~/.pi/`, `~/.codex/` exist (no archive written). The
 /// caller chooses `timestamp` so tests stay deterministic; production code
 /// passes a filesystem-safe RFC3339-ish string.
 pub fn create_source_backup(
-    home: &Utf8Path,
+    install_paths: &InstallPaths,
     backup_dir: &Utf8Path,
     timestamp: &str,
 ) -> Result<Option<Utf8PathBuf>, Error> {
-    let present: Vec<Utf8PathBuf> = SOURCE_ROOTS
-        .iter()
-        .map(|leaf| home.join(leaf))
+    let home = install_paths.home();
+    let present: Vec<Utf8PathBuf> = install_paths
+        .all_source_dirs()
+        .into_iter()
         .filter(|p| p.exists())
         .collect();
     if present.is_empty() {
@@ -164,7 +166,7 @@ mod tests {
     fn single_root_writes_archive_with_relative_paths() {
         let (_tmp, home, backup) = fixture();
         write_file(&home, ".claude/skills/diagnose/SKILL.md", b"---\n---\nbody\n");
-        let path = create_source_backup(&home, &backup, "2026-05-05T12-00-00")
+        let path = create_source_backup(&InstallPaths::new(home.as_str()), &backup, "2026-05-05T12-00-00")
             .unwrap()
             .expect("archive path returned");
         assert_eq!(path, backup.join("2026-05-05T12-00-00.tar.gz"));
@@ -181,7 +183,7 @@ mod tests {
         write_file(&home, ".claude/skills/a/SKILL.md", b"a");
         write_file(&home, ".pi/agent/skills/b/SKILL.md", b"b");
         write_file(&home, ".codex/agents/c.toml", b"c");
-        let path = create_source_backup(&home, &backup, "ts")
+        let path = create_source_backup(&InstallPaths::new(home.as_str()), &backup, "ts")
             .unwrap()
             .expect("archive returned");
         let entries = read_archive(&path);
@@ -197,12 +199,29 @@ mod tests {
     }
 
     #[test]
+    fn backup_excludes_non_primitive_sibling_dirs() {
+        // Regression: snapshot ONLY the primitive source dirs
+        // (skills/agents/commands), never sibling trees like
+        // `~/.claude/projects` (transcripts) or `file-history` — packing those
+        // ballooned the pre-bootstrap tar past 1 GB and timed the bridge out.
+        let (_tmp, home, backup) = fixture();
+        write_file(&home, ".claude/skills/a/SKILL.md", b"keep");
+        write_file(&home, ".claude/projects/huge.jsonl", b"transcripts");
+        write_file(&home, ".claude/file-history/x.bin", b"history");
+        let path = create_source_backup(&InstallPaths::new(home.as_str()), &backup, "ts")
+            .unwrap()
+            .expect("archive returned");
+        let names: Vec<String> = read_archive(&path).into_iter().map(|e| e.0).collect();
+        assert_eq!(names, vec![".claude/skills/a/SKILL.md".to_string()]);
+    }
+
+    #[test]
     fn hidden_files_filtered_via_is_ignored() {
         let (_tmp, home, backup) = fixture();
         write_file(&home, ".claude/skills/a/SKILL.md", b"keep");
         write_file(&home, ".claude/skills/a/.DS_Store", b"junk");
         write_file(&home, ".claude/skills/a/._sidecar", b"junk");
-        let path = create_source_backup(&home, &backup, "ts")
+        let path = create_source_backup(&InstallPaths::new(home.as_str()), &backup, "ts")
             .unwrap()
             .unwrap();
         let names: Vec<String> = read_archive(&path).into_iter().map(|e| e.0).collect();
@@ -222,7 +241,7 @@ mod tests {
         unix_fs::symlink(real.as_std_path(), link.as_std_path()).unwrap();
         // And a real sibling to confirm we still pack normal files.
         write_file(&home, ".claude/skills/a/SKILL.md", b"keep");
-        let path = create_source_backup(&home, &backup, "ts")
+        let path = create_source_backup(&InstallPaths::new(home.as_str()), &backup, "ts")
             .unwrap()
             .unwrap();
         let names: Vec<String> = read_archive(&path).into_iter().map(|e| e.0).collect();
@@ -234,7 +253,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let (_tmp, home, backup) = fixture();
         write_file(&home, ".claude/skills/a/SKILL.md", b"x");
-        let path = create_source_backup(&home, &backup, "ts").unwrap().unwrap();
+        let path = create_source_backup(&InstallPaths::new(home.as_str()), &backup, "ts").unwrap().unwrap();
         let mode = std::fs::metadata(path.as_std_path())
             .unwrap()
             .permissions()
@@ -247,8 +266,8 @@ mod tests {
     fn distinct_timestamps_yield_distinct_archives() {
         let (_tmp, home, backup) = fixture();
         write_file(&home, ".claude/skills/a/SKILL.md", b"x");
-        let p1 = create_source_backup(&home, &backup, "ts-1").unwrap().unwrap();
-        let p2 = create_source_backup(&home, &backup, "ts-2").unwrap().unwrap();
+        let p1 = create_source_backup(&InstallPaths::new(home.as_str()), &backup, "ts-1").unwrap().unwrap();
+        let p2 = create_source_backup(&InstallPaths::new(home.as_str()), &backup, "ts-2").unwrap().unwrap();
         assert_ne!(p1, p2);
         assert!(p1.exists());
         assert!(p2.exists());
@@ -257,7 +276,7 @@ mod tests {
     #[test]
     fn empty_home_returns_none_and_writes_no_file() {
         let (_tmp, home, backup) = fixture();
-        let out = create_source_backup(&home, &backup, "2026-05-05T12-00-00").unwrap();
+        let out = create_source_backup(&InstallPaths::new(home.as_str()), &backup, "2026-05-05T12-00-00").unwrap();
         assert!(out.is_none());
         // backup_dir was not created either — pure no-op.
         assert!(!backup.exists(), "backup dir should not exist: {backup}");

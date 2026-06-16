@@ -164,7 +164,7 @@ pub fn bootstrap_execute(
     let backup_path = if session.backup_taken {
         None
     } else {
-        let path = create_source_backup(req.home, req.backup_dir, req.timestamp)?;
+        let path = create_source_backup(req.install_paths, req.backup_dir, req.timestamp)?;
         session.backup_taken = true;
         session.save(req.session_path)?;
         path
