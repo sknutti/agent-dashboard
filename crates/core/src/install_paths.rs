@@ -23,6 +23,19 @@ impl InstallPaths {
         &self.home
     }
 
+    /// Every primitive source directory across all targets, in target order.
+    /// These are the only dirs bootstrap reads/writes — the safe, minimal set
+    /// to snapshot before a bootstrap run (NOT the whole `~/.claude` etc.,
+    /// which also hold transcripts, history, and caches). Non-existent dirs are
+    /// included verbatim; callers filter to those that exist.
+    pub fn all_source_dirs(&self) -> Vec<Utf8PathBuf> {
+        let mut dirs = Vec::new();
+        for target in [Target::Claude, Target::Pi, Target::Codex] {
+            dirs.extend(self.roots_for(target));
+        }
+        dirs
+    }
+
     /// All install roots (parent directories) the Phase-5 scanner enumerates
     /// for `target`. Order matches the install matrix for that target.
     pub fn roots_for(&self, target: Target) -> Vec<Utf8PathBuf> {
@@ -82,6 +95,25 @@ mod tests {
                 Utf8PathBuf::from("/home/test/.pi/agent/skills"),
                 Utf8PathBuf::from("/home/test/.pi/agent/agents"),
                 Utf8PathBuf::from("/home/test/.pi/agent/prompts"),
+            ],
+        );
+    }
+
+    #[test]
+    fn all_source_dirs_spans_every_target_in_order() {
+        let p = paths();
+        assert_eq!(
+            p.all_source_dirs(),
+            vec![
+                Utf8PathBuf::from("/home/test/.claude/skills"),
+                Utf8PathBuf::from("/home/test/.claude/agents"),
+                Utf8PathBuf::from("/home/test/.claude/commands"),
+                Utf8PathBuf::from("/home/test/.pi/agent/skills"),
+                Utf8PathBuf::from("/home/test/.pi/agent/agents"),
+                Utf8PathBuf::from("/home/test/.pi/agent/prompts"),
+                Utf8PathBuf::from("/home/test/.codex/skills"),
+                Utf8PathBuf::from("/home/test/.codex/prompts"),
+                Utf8PathBuf::from("/home/test/.codex/agents"),
             ],
         );
     }
