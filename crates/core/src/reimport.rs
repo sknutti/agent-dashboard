@@ -30,7 +30,7 @@ use crate::detail::revert_primitive_to_version;
 use crate::fs_helpers::walk_into;
 use crate::install_paths::InstallPaths;
 use crate::install_state::{InstallRecord, InstallsFile};
-use crate::kind_target::InstallLayout;
+use crate::kind_target::{InstallLayout, KindTarget};
 use crate::version_store::{VersionMetadata, VersionStore};
 use crate::working_copy::WorkingCopy;
 use crate::{
@@ -149,8 +149,32 @@ pub fn reimport_install_as_version(
         source,
     })?;
     let metadata = PrimitiveMetadata::from_yaml(&metadata_raw)?;
-    let single_target_primitive = metadata.allowed_targets.len() == 1
-        && metadata.allowed_targets[0] == req.source_target;
+    // Route base-vs-overlay by CURRENT reality, not the metadata's target
+    // COUNT. `working/base` is shared content; a diverging target gets an
+    // overlay ONLY while other targets still rely on that shared base. Count
+    // allowed targets (other than this one) that still have a live install
+    // copy on disk — if none remain, the source is effectively the sole target
+    // and its content owns the base. Trusting the stale metadata count is the
+    // bootstrap overlay bug: a deleted/synced target leaves phantom
+    // multi-target metadata that wrongly routes NEW base bytes into a
+    // `targets/<source>/` overlay, freezing `base` at the old content.
+    let other_live_targets = metadata
+        .allowed_targets
+        .iter()
+        .filter(|t| **t != req.source_target)
+        .filter(|t| {
+            KindTarget::new(req.kind, **t)
+                .map(|kt| {
+                    kt.path_for(req.install_paths, req.name, InstallLayout::Directory)
+                        .exists()
+                        || kt
+                            .path_for(req.install_paths, req.name, InstallLayout::SingleFile)
+                            .exists()
+                })
+                .unwrap_or(false)
+        })
+        .count();
+    let single_target_primitive = other_live_targets == 0;
 
     // 6. If discarding, reset working/ to current version first. This keeps
     //    other-target overlays (which are part of the published version)
