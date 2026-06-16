@@ -124,3 +124,31 @@ disk state at execute time, never scan time." A core-only fix (e.g. collapsing
 identical overlays into base inside `execute_one_create`) would patch symptom 1
 but not symptom 3 (a single live source with a phantom overlay path) — so the
 flow must re-derive, not just post-process.
+
+## Resolution (implemented — option 2, core re-validation)
+
+Fixed at the core/execute seam so the result reflects current disk even from a
+stale plan:
+
+1. **`execute_one_create` collapses now-identical overlays** (`bootstrap.rs`):
+   after reading each bundle at execute time,
+   `overlay_files.retain(|(_,_,f)| f != &base_files)` drops any overlay whose
+   canonical content equals the base. This flows through to `allowed_targets`,
+   the `targets/<t>/` writes, and the install records — fixing symptoms 1 & 3
+   (no phantom/redundant overlay; collapsed targets don't leak into
+   `allowed_targets`, which also stops the phantom multi-target metadata behind
+   symptom 2).
+2. **Reimport routes base-vs-overlay by current reality** (`reimport.rs`):
+   replaced the metadata-count check with "does any *other* allowed target
+   still have a live install copy on disk?" — if none, the source is
+   effectively the sole target and writes to `base`; if a sibling is still
+   present, it's a genuine divergence → that target's overlay. Fixes symptom 2
+   without breaking `reimport_for_multi_target_writes_to_overlay_not_base`.
+
+All three regression tests pass; full core suite green (480).
+
+**Residual / recommended follow-up:** the *create* path still errors if an
+overlay's source is fully **deleted** (not synced) between scan and execute
+(`read_canonicalized_bundle` can't read a gone path). Option 1's
+defense-in-depth — re-scan on the wizard's review→execute path — remains
+worthwhile but isn't required to close the three observed symptoms.

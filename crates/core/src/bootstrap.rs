@@ -444,6 +444,15 @@ fn execute_one_create(
         overlay_files.push((o.target, o.source_path.clone(), files));
     }
 
+    // Re-validate the plan's base/overlay split against execute-time disk.
+    // The plan is a scan-time snapshot; between scan and execute the user may
+    // have synced a divergent copy so it now matches the base. An overlay
+    // whose canonical content equals the base is redundant — writing it would
+    // conjure a phantom/stale `targets/<t>/` and leak that target into
+    // allowed_targets (the bootstrap overlay bug). Drop those so the outcome
+    // reflects current reality, not the stale plan.
+    overlay_files.retain(|(_, _, files)| files != &base_files);
+
     // metadata.yaml — allowed_targets in scan order: base first, then
     // overlays in their existing slice order (deduper preserves scan order).
     let mut allowed_targets = vec![base.target];
