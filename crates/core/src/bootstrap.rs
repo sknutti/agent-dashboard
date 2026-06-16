@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 
 use crate::fs_helpers::{atomic_write, walk_into};
+use crate::install_reconcile::{apply_case_relinks, plan_case_relinks};
+use crate::listing::list_primitives;
 use crate::{
     create_source_backup, is_ignored, reimport_install_as_version, BaseAssignment,
     BootstrapSession, Classification, ClassifiedGroup, CrossReferenced, DedupeContent, Error,
@@ -125,6 +127,11 @@ pub struct BootstrapExecuteSummary {
     pub reimported: u32,
     pub skipped: u32,
     pub skipped_items: Vec<BootstrapSkippedItem>,
+    /// Install records re-linked by case-only reconciliation this run (a
+    /// manual disk rename like `Teach`→`teach` left the record at the old
+    /// case). Reported for UI feedback; does NOT count toward the library
+    /// commit gate — reconciliation touches only `installs.json`.
+    pub reconciled: u32,
 }
 
 /// One executable bootstrap action that could not be completed and must be
@@ -171,7 +178,30 @@ pub fn bootstrap_execute(
         reimported: 0,
         skipped: 0,
         skipped_items: Vec::new(),
+        reconciled: 0,
     };
+
+    // Reconcile case-only orphaned install records BEFORE any create/reimport
+    // reads `installs.json`. A manual disk rename that only changes case
+    // (e.g. `Teach`→`teach` on a case-insensitive FS) leaves the record at the
+    // old case; case-sensitive `(kind, name, target)` matching then orphans
+    // it, silently breaking drift/reimport. This re-links such records to the
+    // library's canonical case. Idempotent, install-side only — it must NOT
+    // feed the commit gate (no library content changes), so `reconciled` is
+    // deliberately excluded from the `created + reimported > 0` check below.
+    {
+        let mut installs = InstallsFile::load(req.installs_file)?;
+        let library: Vec<(PrimitiveKind, PrimitiveName)> = list_primitives(req.layout)?
+            .into_iter()
+            .map(|s| (s.kind, s.name))
+            .collect();
+        let relinks = plan_case_relinks(&library, &installs);
+        if !relinks.is_empty() {
+            apply_case_relinks(&mut installs, &relinks);
+            installs.save(req.installs_file)?;
+            summary.reconciled = relinks.iter().map(|r| r.targets.len() as u32).sum();
+        }
+    }
 
     if !remaining.creates.is_empty() {
         let mut installs = InstallsFile::load(req.installs_file)?;
@@ -1245,6 +1275,83 @@ mod tests {
                 .trim(),
             "v2"
         );
+    }
+
+    #[test]
+    fn bootstrap_reconciles_case_only_orphan_and_reports_count() {
+        // Reproduces the live bug: a case-only manual disk rename
+        // (`Teach`→`teach`) left the install record at the old case while the
+        // library dir is lowercase. bootstrap_execute must re-link the record
+        // (no create/reimport) and report the count — and be idempotent.
+        let tmp = TempDir::new().unwrap();
+        let lib = Utf8PathBuf::from_path_buf(tmp.path().join("lib")).unwrap();
+        let home = Utf8PathBuf::from_path_buf(tmp.path().join("home")).unwrap();
+        let backup_dir = Utf8PathBuf::from_path_buf(tmp.path().join("backups")).unwrap();
+        std::fs::create_dir_all(lib.as_std_path()).unwrap();
+        let claude_dir = home.join(".claude/skills/teach");
+        std::fs::create_dir_all(claude_dir.as_std_path()).unwrap();
+        std::fs::write(claude_dir.join("SKILL.md").as_std_path(), b"---\n---\nA\n").unwrap();
+        let layout = LibraryLayout::new(&lib);
+        let installs = lib.join("installs.json");
+        let session = lib.join("bootstrap-session.json");
+
+        // v1 `teach` in the library + an install record named `teach`.
+        execute_creates(
+            &[CreateAction {
+                kind: PrimitiveKind::Skill,
+                name: name("teach"),
+                base: parsed_base(Target::Claude, claude_dir.as_str()),
+                overlays: vec![],
+            }],
+            layout,
+            &installs,
+            "ts1",
+        )
+        .unwrap();
+
+        // Simulate the case-only rename: record stuck at uppercase `Teach`
+        // while the library dir stays `teach`.
+        let mut f = InstallsFile::load(&installs).unwrap();
+        f.records[0].name = name("Teach");
+        f.save(&installs).unwrap();
+
+        let paths = InstallPaths::new(home.as_str());
+        let plan = BootstrapPlan {
+            creates: vec![],
+            reimports: vec![],
+        };
+        let exec = |ts: &str| {
+            bootstrap_execute(BootstrapExecuteRequest {
+                plan: &plan,
+                layout,
+                install_paths: &paths,
+                installs_file: &installs,
+                session_path: &session,
+                backup_dir: &backup_dir,
+                home: &home,
+                timestamp: ts,
+                resume: None,
+                excluded_ids: vec![],
+            })
+            .unwrap()
+        };
+
+        let s1 = exec("ts2");
+        assert_eq!(s1.reconciled, 1, "one record re-linked");
+        assert_eq!(s1.created, 0);
+        assert_eq!(s1.reimported, 0);
+
+        let after = InstallsFile::load(&installs).unwrap();
+        assert_eq!(after.records.len(), 1);
+        assert_eq!(
+            after.records[0].name.as_str(),
+            "teach",
+            "record re-linked to the library's canonical case"
+        );
+
+        // Idempotent: a second bootstrap reconciles nothing (AC8).
+        let s2 = exec("ts3");
+        assert_eq!(s2.reconciled, 0, "already canonical; nothing to reconcile");
     }
 
     #[test]

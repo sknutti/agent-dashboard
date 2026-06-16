@@ -1089,6 +1089,9 @@ export interface LibraryBootstrapExecuteSummary {
   reimported: number;
   skipped: number;
   skipped_items: LibraryBootstrapSkippedItem[];
+  /** Install records re-linked by case-only reconciliation (e.g. a manual
+   *  `Teach`→`teach` disk rename left the record at the old case). */
+  reconciled: number;
   committed: boolean | null;
   commit_error: string | null;
 }

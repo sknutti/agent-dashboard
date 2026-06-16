@@ -51,7 +51,19 @@ const CLEAN_RESULT: LibraryBootstrapExecuteSummary = {
   reimported: 0,
   skipped: 0,
   skipped_items: [],
+  reconciled: 0,
   committed: true,
+  commit_error: null,
+};
+
+const RECONCILED_RESULT: LibraryBootstrapExecuteSummary = {
+  backup_path: "/data/backups/ts.tar.gz",
+  created: 0,
+  reimported: 0,
+  skipped: 0,
+  skipped_items: [],
+  reconciled: 2,
+  committed: null,
   commit_error: null,
 };
 
@@ -61,6 +73,7 @@ const SKIPPED_RESULT: LibraryBootstrapExecuteSummary = {
   reimported: 0,
   skipped: 1,
   skipped_items: [{ kind: "skill", name: "diag", source_target: "claude", reason: "WorkingCopyDirty" }],
+  reconciled: 0,
   committed: true,
   commit_error: null,
 };
@@ -153,6 +166,22 @@ describe("BootstrapWizard — result + skips", () => {
     // the remedy copy names the working-copy fix (distinguishable by label, not color)
     expect(screen.getByText(/working copy has unpublished edits/i)).toBeTruthy();
     expect(screen.getByRole("button", { name: /resume the skipped items/i })).toBeTruthy();
+  });
+
+  test("a reconciled run surfaces the case-only re-link count with a CVD-safe cyan cue", async () => {
+    vi.spyOn(api, "bootstrapScan").mockResolvedValue(SCAN);
+    vi.spyOn(api, "bootstrapExecute").mockResolvedValue(RECONCILED_RESULT);
+    mount({ session: null });
+    await fireEvent.click(await screen.findByRole("button", { name: /scan my machine/i }));
+    await screen.findByRole("button", { name: /import 3 items/i });
+    await fireEvent.click(screen.getByRole("button", { name: /import 3 items/i }));
+
+    // The re-link message renders (count is split into a <strong>, so assert
+    // on the surrounding static copy).
+    await waitFor(() => expect(screen.getByText(/to renamed primitives/i)).toBeTruthy());
+    // CVD-safe: the cue carries the cyan class + a label, never a red/green signal.
+    const cue = screen.getByText(/case-only fix/i);
+    expect(cue.className).toContain("cyan");
   });
 });
 

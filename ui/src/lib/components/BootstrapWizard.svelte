@@ -362,6 +362,17 @@
             {/if}
           </p>
 
+          {#if result.reconciled > 0}
+            <!-- Case-only reconciliation re-linked install records orphaned by a
+                 manual disk rename (e.g. Teach→teach). CVD-safe: text + cyan cue,
+                 never red/green. -->
+            <p class="banner">
+              Re-linked <strong>{result.reconciled}</strong>
+              install record{result.reconciled === 1 ? "" : "s"} to renamed primitives.
+              <small class="cue cyan">↳ case-only fix</small>
+            </p>
+          {/if}
+
           {#if backupPath}
             <div class="backup">
               A backup of your source dirs was written to

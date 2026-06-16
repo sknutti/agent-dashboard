@@ -743,9 +743,31 @@ describe("parseBootstrapExecuteSummary", () => {
       reimported: 1,
       skipped: 0,
       skipped_items: [],
+      reconciled: 0,
       committed: true,
       commit_error: null,
     });
+  });
+
+  test("reconciled rides the summary; absent on an older bridge defaults to 0", () => {
+    const present = parseBootstrapExecuteSummary({
+      backup_path: null,
+      created: 0,
+      reimported: 0,
+      skipped: 0,
+      skipped_items: [],
+      reconciled: 2,
+    });
+    expect(present.reconciled).toBe(2);
+
+    const absent = parseBootstrapExecuteSummary({
+      backup_path: null,
+      created: 0,
+      reimported: 0,
+      skipped: 0,
+      skipped_items: [],
+    });
+    expect(absent.reconciled).toBe(0);
   });
 
   test("a skipped item rides the summary with its verbatim Rust skip-reason (no serde rename)", () => {
