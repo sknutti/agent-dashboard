@@ -12,6 +12,7 @@ mod fs_helpers;
 pub mod icloud_check;
 pub mod ignored;
 pub mod install_paths;
+pub mod install_reconcile;
 pub mod install_state;
 pub mod installer;
 pub mod kind_target;
