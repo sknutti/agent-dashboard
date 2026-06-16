@@ -460,6 +460,9 @@ export interface BootstrapExecuteSummary {
   reimported: number;
   skipped: number;
   skipped_items: BootstrapSkippedItem[];
+  /** Install records re-linked by case-only reconciliation this run (a manual
+   *  disk rename like `Teach`→`teach` left the record at the old case). */
+  reconciled: number;
   committed: boolean | null;
   commit_error: string | null;
 }
@@ -997,6 +1000,8 @@ export function parseBootstrapExecuteSummary(v: unknown): BootstrapExecuteSummar
     reimported: asNumber(v.reimported, "BootstrapExecuteSummary.reimported"),
     skipped: asNumber(v.skipped, "BootstrapExecuteSummary.skipped"),
     skipped_items: v.skipped_items.map(parseBootstrapSkippedItem),
+    // Absent on an older bridge → 0 (additive field; never a parse failure).
+    reconciled: v.reconciled === undefined ? 0 : asNumber(v.reconciled, "BootstrapExecuteSummary.reconciled"),
     // Commit-gating: the fields are present only when something was written;
     // absent (an all-skipped / empty run) → null, NOT a parse failure.
     committed: v.committed === undefined ? null : asNullableBool(v.committed, "BootstrapExecuteSummary.committed"),
