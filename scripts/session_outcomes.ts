@@ -39,11 +39,28 @@ export interface SessionGitInput {
   ended_at: string;
 }
 
+/** Normalize a stored timestamp to a form `git --since/--until` can't misread.
+ *  git interprets a timestamp WITHOUT an explicit offset as machine-LOCAL time, which
+ *  would skew the window by the UTC offset. If the string already carries an offset
+ *  (`Z` or `±HH:MM`/`±HHMM`) it is passed through verbatim — `Z` works today and must
+ *  not be reparsed. A no-offset string has its wall-clock treated AS UTC (separator
+ *  normalized, `Z` appended) — NOT date-parsed, which would apply the local offset and
+ *  re-introduce the very skew this prevents. Defensive: every known writer already
+ *  emits `Z` (`.toISOString()` / ISO-Z transcripts), so this is a guard, not a
+ *  behavior change for existing data. */
+export function normalizeGitTimestamp(ts: string): string {
+  const t = ts.trim();
+  if (/([Zz]|[+-]\d{2}:?\d{2})$/.test(t)) return t;
+  return `${t.replace(" ", "T")}Z`;
+}
+
 /** Build the `git log` argv array for a session's outcome window (Q1: scope to
  *  git_branch when present, else time-window only). ALWAYS a local `log` — the only
  *  subcommand this can ever produce, preserving the zero-network invariant. Argv
- *  array, never a shell string (mirrors library_bridge M1). Timestamps are ISO-8601
- *  from the adapters, which git --since/--until accept directly. */
+ *  array, never a shell string (mirrors library_bridge M1). `--no-merges` excludes
+ *  merge commits, which emit no numstat rows and would otherwise be counted as
+ *  zero-LOC commits (an "honest lines produced" estimate). Timestamps are normalized
+ *  to an explicit offset so git doesn't read them as machine-local. */
 export function buildGitOutcomeArgs(
   session: SessionGitInput,
 ): { args: string[]; method: CorrelationMethod } {
@@ -52,9 +69,9 @@ export function buildGitOutcomeArgs(
   const args = [
     "-C", session.cwd, "log",
     ...(branch ? [branch] : []),
-    "--since", session.started_at,
-    "--until", session.ended_at,
-    "--numstat", "--format=%H",
+    "--since", normalizeGitTimestamp(session.started_at),
+    "--until", normalizeGitTimestamp(session.ended_at),
+    "--no-merges", "--numstat", "--format=%H",
   ];
   return { args, method };
 }
@@ -101,14 +118,45 @@ export async function computeSessionOutcome(
     started_at: row.started_at,
     ended_at: row.ended_at,
   });
-  const proc = await runGit(args);
-  // git exits 128 when cwd isn't a repository — a clean inapplicable state, not an
-  // error. Any other non-zero/null exit is a genuine git failure (still not a 500).
+  let proc = await runGit(args);
+  let activeMethod = method;
+
+  // Finding 2: exit 128 is overloaded. "not a git repository" is a genuine inapplicable
+  // state; "unknown/bad revision" means the recorded git_branch was deleted but the repo
+  // is fine — fall back to a time-window-only query (one extra spawn at most) rather than
+  // mislabeling a valid repo as not_a_repo.
+  if (
+    proc.exitCode === 128 &&
+    method === "branch_window" &&
+    /unknown revision|bad revision/i.test(proc.stderr) &&
+    !/not a git repository/i.test(proc.stderr)
+  ) {
+    const { args: windowArgs } = buildGitOutcomeArgs({
+      cwd: row.cwd,
+      git_branch: null, // drop the dead branch → method "window"
+      started_at: row.started_at,
+      ended_at: row.ended_at,
+    });
+    proc = await runGit(windowArgs);
+    activeMethod = "window";
+  }
+
+  // git exits 128 when cwd isn't a repository — a clean inapplicable state, not an error.
   if (proc.exitCode === 128) return { status: 200, body: { applicable: false, reason: "not_a_repo" } };
-  if (proc.exitCode !== 0) return { status: 200, body: { applicable: false, reason: "git_failed" } };
+  // Any other non-zero/null exit is a genuine failure (still 200, never a misleading 0).
+  // 5b: distinguish the operability cases so a broken environment is diagnosable, and log
+  // stderr server-side rather than swallowing it into a permanent silent empty state.
+  if (proc.exitCode !== 0) {
+    const reason =
+      proc.exitCode === 127 || /could not be launched/i.test(proc.stderr) ? "git_not_found"
+      : proc.exitCode === null || /timed out/i.test(proc.stderr) ? "timeout"
+      : "git_failed";
+    console.error(`[git-outcome] git failed for session ${id} (${reason}): ${proc.stderr.trim()}`);
+    return { status: 200, body: { applicable: false, reason } };
+  }
 
   const figures = parseGitNumstat(proc.stdout);
-  return { status: 200, body: { applicable: true, fidelity: "estimated", method, ...figures } };
+  return { status: 200, body: { applicable: true, fidelity: "estimated", method: activeMethod, ...figures } };
 }
 
 /** A day's git output, summed over that day's ended sessions with per-hash dedupe
