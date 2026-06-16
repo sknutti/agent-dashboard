@@ -1819,4 +1819,218 @@ mod tests {
         assert!(plan.reimports.is_empty());
         let _ = ParseStatus::Parsed; // keep import live for later slices
     }
+
+    // ----------------------------------------------------------------------
+    // Regression: stale-plan / scan-time-snapshot bug (the bootstrap overlay
+    // bug). A BootstrapPlan is derived from one filesystem state (scan time)
+    // and EXECUTED against a later, mutated state (after the user syncs). The
+    // plan carries scan-time `source_path`s and target assignments; execution
+    // re-reads those paths verbatim, so deleted/changed copies on disk produce
+    // the wrong base/overlay split. See docs/notes/2026-06-16-bootstrap-overlay-bug.md.
+    //
+    // These tests FAIL today: they assert the CORRECT (post-sync) outcome, and
+    // the stale-plan execution produces the buggy outcome instead.
+    // ----------------------------------------------------------------------
+
+    use crate::{bootstrap_scan, WorkingCopy};
+
+    /// Re-scan + re-derive the plan against the CURRENT filesystem. This is
+    /// what a correct flow must do before executing. The bug is that the UI
+    /// (and `execute_creates` callers) hold the stale plan instead.
+    fn scan_and_plan(home: &Utf8Path, layout: LibraryLayout<'_>) -> BootstrapPlan {
+        let cr = bootstrap_scan(home, layout, |_| {}).unwrap();
+        derive_plan(cr)
+    }
+
+    /// Symptom 3 — the SMOKING GUN. A two-target group (claude NEW + pi OLD)
+    /// is scanned, yielding a Differs plan with base=claude, overlay=pi(OLD).
+    /// The user then SYNCS: pi is updated to match claude (both NEW). A fresh
+    /// scan now yields a single Identical group, base=NEW, NO overlay. But if
+    /// the STALE plan is executed, it re-reads the pi path as an overlay,
+    /// conjuring a phantom pi overlay. At execute time the ONLY correct outcome
+    /// is base=NEW with zero overlays.
+    ///
+    /// We assert the CORRECT outcome → currently FAILS.
+    #[test]
+    fn stale_plan_conjures_phantom_overlay_from_synced_source_bug() {
+        let tmp = TempDir::new().unwrap();
+        let lib = Utf8PathBuf::from_path_buf(tmp.path().join("lib")).unwrap();
+        let home = Utf8PathBuf::from_path_buf(tmp.path().join("home")).unwrap();
+        std::fs::create_dir_all(lib.as_std_path()).unwrap();
+        let layout = LibraryLayout::new(&lib);
+        let installs = lib.join("installs.json");
+        let nm = name("grill-with-docs");
+
+        let claude = home.join(".claude/skills/grill-with-docs");
+        let pi = home.join(".pi/agent/skills/grill-with-docs");
+        std::fs::create_dir_all(claude.as_std_path()).unwrap();
+        std::fs::create_dir_all(pi.as_std_path()).unwrap();
+        let old = b"---\ndescription: g\n---\nOLD body\n";
+        let new = b"---\ndescription: g\n---\nNEW body\n";
+        // Scan-time state: claude=NEW, pi=OLD → Differs (base=claude, overlay=pi OLD).
+        std::fs::write(claude.join("SKILL.md").as_std_path(), new).unwrap();
+        std::fs::write(pi.join("SKILL.md").as_std_path(), old).unwrap();
+
+        // 1. Derive the plan at scan time (this is the plan the UI caches).
+        let stale_plan = scan_and_plan(&home, layout);
+        // Sanity: scan-time plan IS a Differs-derived create with a pi overlay.
+        assert_eq!(stale_plan.creates.len(), 1);
+        assert_eq!(
+            stale_plan.creates[0].overlays.len(),
+            1,
+            "scan-time plan has the pi overlay (expected — this is the cached plan)"
+        );
+
+        // 2. USER SYNCS: pi is brought into line with claude (now both NEW).
+        //    A fresh scan here would collapse to one Identical group, no overlay.
+        std::fs::write(pi.join("SKILL.md").as_std_path(), new).unwrap();
+
+        // Confirm a FRESH plan would be correct: base=NEW, zero overlays.
+        let fresh_plan = scan_and_plan(&home, layout);
+        assert_eq!(fresh_plan.creates.len(), 1);
+        assert!(
+            fresh_plan.creates[0].overlays.is_empty(),
+            "a re-scan after sync correctly yields NO overlay"
+        );
+
+        // 3. But the buggy flow executes the STALE plan instead of re-scanning.
+        execute_creates(&stale_plan.creates, layout, &installs, "ts").unwrap();
+
+        // ASSERT THE CORRECT OUTCOME (currently fails): base=NEW, no pi overlay.
+        let base_md = lib.join("skills/grill-with-docs/working/base/SKILL.md");
+        assert_eq!(
+            std::fs::read(&base_md).unwrap(),
+            new,
+            "library base must be the NEW synced content"
+        );
+        let pi_overlay = lib.join("skills/grill-with-docs/working/targets/pi/SKILL.md");
+        assert!(
+            !pi_overlay.exists(),
+            "BUG: stale plan wrote a phantom pi overlay though both copies are now identical"
+        );
+        let meta_yaml =
+            std::fs::read_to_string(lib.join("skills/grill-with-docs/metadata.yaml")).unwrap();
+        let meta = PrimitiveMetadata::from_yaml(&meta_yaml).unwrap();
+        assert_eq!(
+            meta.allowed_targets,
+            vec![Target::Claude],
+            "BUG: phantom pi leaked into allowed_targets"
+        );
+        let _ = &nm;
+    }
+
+    /// Symptom 1 — `teach`. Scan-time: claude=NEW, codex=OLD → Differs.
+    /// Post-sync both are NEW. Correct outcome: base=NEW, NO overlays. Stale
+    /// plan keeps a redundant overlay.
+    #[test]
+    fn stale_plan_leaves_redundant_overlay_teach_bug() {
+        let tmp = TempDir::new().unwrap();
+        let lib = Utf8PathBuf::from_path_buf(tmp.path().join("lib")).unwrap();
+        let home = Utf8PathBuf::from_path_buf(tmp.path().join("home")).unwrap();
+        std::fs::create_dir_all(lib.as_std_path()).unwrap();
+        let layout = LibraryLayout::new(&lib);
+        let installs = lib.join("installs.json");
+
+        let claude = home.join(".claude/skills/teach");
+        let codex = home.join(".codex/skills/teach");
+        std::fs::create_dir_all(claude.as_std_path()).unwrap();
+        std::fs::create_dir_all(codex.as_std_path()).unwrap();
+        let old = b"---\ndescription: t\n---\nOLD\n";
+        let new = b"---\ndescription: t\n---\nNEW\n";
+        std::fs::write(claude.join("SKILL.md").as_std_path(), new).unwrap();
+        std::fs::write(codex.join("SKILL.md").as_std_path(), old).unwrap();
+
+        let stale_plan = scan_and_plan(&home, layout);
+        assert_eq!(stale_plan.creates.len(), 1);
+
+        // SYNC: codex brought up to NEW. Both identical now.
+        std::fs::write(codex.join("SKILL.md").as_std_path(), new).unwrap();
+
+        execute_creates(&stale_plan.creates, layout, &installs, "ts").unwrap();
+
+        // Correct: base=NEW, no overlays (both copies identical post-sync).
+        assert_eq!(
+            std::fs::read(lib.join("skills/teach/working/base/SKILL.md")).unwrap(),
+            new,
+            "base must be NEW content"
+        );
+        assert!(
+            !lib.join("skills/teach/working/targets/codex/SKILL.md").exists()
+                && !lib.join("skills/teach/working/targets/claude/SKILL.md").exists(),
+            "BUG: redundant overlay survived though both copies are identical"
+        );
+    }
+
+    /// Symptom 2 — `grill-with-docs` reimport. A primitive imported earlier
+    /// with phantom multi-target metadata (from a stale create) is later
+    /// reimported. Because reimport routes base-vs-overlay off
+    /// `metadata.allowed_targets`, multi-target metadata makes the NEW bytes
+    /// land in a `targets/claude` overlay, leaving `base` OLD. Correct outcome
+    /// for a single-real-source primitive: base=NEW.
+    #[test]
+    fn reimport_with_phantom_multitarget_metadata_keeps_base_stale_bug() {
+        let tmp = TempDir::new().unwrap();
+        let lib = Utf8PathBuf::from_path_buf(tmp.path().join("lib")).unwrap();
+        let home = Utf8PathBuf::from_path_buf(tmp.path().join("home")).unwrap();
+        std::fs::create_dir_all(lib.as_std_path()).unwrap();
+        let layout = LibraryLayout::new(&lib);
+        let installs = lib.join("installs.json");
+        let nm = name("grill-with-docs");
+
+        let claude = home.join(".claude/skills/grill-with-docs");
+        let pi = home.join(".pi/agent/skills/grill-with-docs");
+        std::fs::create_dir_all(claude.as_std_path()).unwrap();
+        std::fs::create_dir_all(pi.as_std_path()).unwrap();
+        let new = b"---\ndescription: g\n---\nNEW\n";
+        // Differs requires distinct content; pi is a byte off so create yields
+        // base=claude(OLD) + overlay=pi → metadata gets BOTH targets.
+        std::fs::write(claude.join("SKILL.md").as_std_path(), b"---\ndescription: g\n---\nOLD\n")
+            .unwrap();
+        std::fs::write(pi.join("SKILL.md").as_std_path(), b"---\ndescription: g\n---\nOLD-pi\n")
+            .unwrap();
+        let plan0 = scan_and_plan(&home, layout);
+        execute_creates(&plan0.creates, layout, &installs, "ts0").unwrap();
+        let meta0 = PrimitiveMetadata::from_yaml(
+            &std::fs::read_to_string(lib.join("skills/grill-with-docs/metadata.yaml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(meta0.allowed_targets.len(), 2, "setup: multi-target metadata");
+
+        // User deletes the pi copy and edits claude → NEW. Only claude remains.
+        std::fs::remove_dir_all(pi.as_std_path()).unwrap();
+        std::fs::write(claude.join("SKILL.md").as_std_path(), new).unwrap();
+
+        // Reimport the claude drift.
+        let paths = InstallPaths::new(home.as_str());
+        let s = execute_reimports(
+            &[ReimportAction {
+                kind: PrimitiveKind::Skill,
+                name: nm.clone(),
+                base: parsed_base(Target::Claude, claude.as_str()),
+            }],
+            layout,
+            &paths,
+            &installs,
+            "ts1",
+        )
+        .unwrap();
+        assert_eq!(s.reimported, 1);
+
+        // Correct: the NEW bytes should land at base. Because metadata still
+        // lists pi, reimport treats claude as an OVERLAY → base stays OLD.
+        let cur = std::fs::read_to_string(lib.join("skills/grill-with-docs/current.txt"))
+            .unwrap()
+            .trim()
+            .trim_start_matches('v')
+            .to_string();
+        let wc = WorkingCopy::new(layout)
+            .load(PrimitiveKind::Skill, &nm)
+            .unwrap();
+        let base_bytes = wc.base.get(Utf8Path::new("SKILL.md")).cloned();
+        assert_eq!(
+            base_bytes.as_deref(),
+            Some(new.as_slice()),
+            "BUG (v{cur}): reimport wrote NEW to a claude overlay; base left stale OLD"
+        );
+    }
 }
