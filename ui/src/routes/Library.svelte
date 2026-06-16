@@ -1064,6 +1064,20 @@
 </script>
 
 <div class="library">
+  <!-- Bootstrap discovery wizard (bootstrap slice): the first-run scan→review→
+       execute flow + the Reconcile/forget tab. Rendered at the TOP of the
+       library column (`.library` is a flex-column) so it's visible just above
+       the panels when opened — not pushed off-screen at the bottom. Reloads the
+       primitives + drift reads after an import or a forget. -->
+  {#if bootstrapOpen}
+    <BootstrapWizard
+      {orphans}
+      onClose={() => (bootstrapOpen = false)}
+      onImported={onBootstrapImported}
+      onForgotten={() => driftBatchRes.reload()}
+    />
+  {/if}
+
   {#if status.loading && !status.data}
     <div class="muted">Loading…</div>
   {:else if status.error}
@@ -1887,17 +1901,6 @@
     </div>
   {/if}
 
-  <!-- Bootstrap discovery wizard (bootstrap slice): the first-run scan→review→
-       execute flow + the Reconcile/forget tab. Self-contained modal; reloads the
-       primitives + drift reads after an import or a forget. -->
-  {#if bootstrapOpen}
-    <BootstrapWizard
-      {orphans}
-      onClose={() => (bootstrapOpen = false)}
-      onImported={onBootstrapImported}
-      onForgotten={() => driftBatchRes.reload()}
-    />
-  {/if}
 
   <!-- Git remote sync (Slice 8): library-wide push/pull + remote/PAT config +
        the conflict resolver. Self-contained modal; onChanged reloads the status
