@@ -2,7 +2,7 @@
 
 - Date: 2026-06-16
 - Type: fix
-- Status: in progress — Q1=`--no-merges`, Q2=(b) bounded backfill, both confirmed by Scott 2026-06-16. Phase 0 done: merge zero-numstat behavior confirmed empirically; A2 found FALSE (all timestamp writers emit `Z` via `.toISOString()`/ISO-Z transcripts), so Phase 3 is a defensive guard + regression test, not a behavior change.
+- Status: in review — PR #27 (Phases 1/2/3/4/5a/5b shipped; 5c deferred). Q1=`--no-merges`, Q2=(b) bounded backfill, both confirmed by Scott 2026-06-16. Phase 0 done: merge zero-numstat behavior confirmed empirically; A2 found FALSE (all timestamp writers emit `Z` via `.toISOString()`/ISO-Z transcripts), so Phase 3 is a defensive guard + regression test, not a behavior change.
 - Scope: correctness fixes to `scripts/session_outcomes.ts` (the per-session + per-day
   git-outcome heuristic shipped by
   `docs/plans/2026-06-15-feat-session-git-outcomes-tracer-plan.md`), surfaced by a
