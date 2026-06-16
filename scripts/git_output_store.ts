@@ -79,6 +79,39 @@ export async function refreshGitOutput(
   return { days };
 }
 
+/** One-time bounded recompute of EXISTING git_output_daily rows. The worker's
+ *  missingRecentDays only fills dates with NO row yet, so after a logic fix that changes
+ *  computed figures (e.g. excluding merge commits), already-persisted rows would stay
+ *  stale forever unless their date is independently touched. This recomputes the `cap`
+ *  most-recent existing rows via the same upsert path. Bounded + each date isolated so a
+ *  long history can't git-storm and one bad day can't stall the rest. Intended to run
+ *  once after such a fix (Q2 = bounded backfill). */
+export async function backfillExistingDayOutputs(
+  db: Database,
+  runGit: GitRunner,
+  opts: { cap?: number } = {},
+): Promise<{ days: number }> {
+  const cap = opts.cap ?? 400;
+  if (cap <= 0) return { days: 0 };
+  const dates = db
+    .query<{ date: string }, [number]>(
+      `SELECT date FROM git_output_daily ORDER BY date DESC LIMIT ?`,
+    )
+    .all(cap)
+    .map((r) => r.date);
+
+  let days = 0;
+  for (const date of dates) {
+    try {
+      await upsertDayOutcome(db, date, runGit);
+      days += 1;
+    } catch (err) {
+      console.error(`[sync] git output backfill recompute for ${date} failed:`, err);
+    }
+  }
+  return { days };
+}
+
 /** Compute one day's deduped git output and upsert it (mirrors upsertBurnDaily's
  *  INSERT … ON CONFLICT shape). Returns the computed outcome. Injected runGit so it
  *  is unit-tested with no subprocess; stamps computed_at for freshness/observability. */
