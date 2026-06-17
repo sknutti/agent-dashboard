@@ -28,6 +28,7 @@ pub mod duplicate;
 pub mod find;
 pub mod import_path;
 pub mod primitive_name;
+pub mod flatten;
 pub mod reimport;
 pub mod rename;
 pub mod remote_url;
@@ -96,6 +97,7 @@ pub use materializer::{materialize, Materialized};
 pub use md_primitive::MdPrimitive;
 pub use metadata::{update_primitive_metadata, MetadataUpdate, PrimitiveMetadata};
 pub use primitive_name::PrimitiveName;
+pub use flatten::{flatten_promote_to_base, FlattenRequest, FlattenResult, TargetConflict};
 pub use reimport::{reimport_install_as_version, ReimportRequest, ReimportResult};
 pub use rename::{rename_primitive, RenamePrimitiveRequest, RenamePrimitiveSummary};
 pub use duplicate::{

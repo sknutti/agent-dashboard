@@ -643,6 +643,100 @@ describe("Library route — reimport-from-drift", () => {
   });
 });
 
+// ── flatten (ADR-0009) ──────────────────────────────────────────────────────
+// A skill installed to claude+codex with a CLAUDE overlay (codex is a
+// base-follower). Flatten is offered only for the overlay-bearing target; a
+// hand-edited converging install routes to a force confirm.
+const FLATTENABLE: LibraryPrimitiveDetail = {
+  kind: "skill", name: "diagnose",
+  metadata: { allowed_targets: ["claude", "codex"], created_at: "2026-04-30T12:00:00Z", author: "Ada Lovelace" },
+  working: { kind: "md", frontmatter: "", body: "x" },
+  versions: ["v1"], current_version: "v1",
+};
+const INSTALLED_CODEX: LibraryInstalledTarget = {
+  target: "codex", installed_version: "v1", installed_at: "2026-04-30T12:00:00Z",
+};
+const FLATTENED_OK = {
+  kind: "flattened" as const, new_version: "v2",
+  converged_targets: ["codex" as const], preserved_targets: [],
+  reinstall: { successes: [], failures: [] }, committed: true, commit_error: null,
+};
+
+function mockFlattenable(opts: { installs?: LibraryInstalledTarget[] } = {}) {
+  mockValidLibrary(FLATTENABLE, { installs: opts.installs ?? [INSTALLED_CLAUDE, INSTALLED_CODEX] });
+  // Claude has an overlay; codex does not → only claude is flatten-eligible.
+  vi.spyOn(api, "listOverlays").mockResolvedValue([{ target: "claude", paths: ["SKILL.md"] }]);
+}
+
+describe("Library route — flatten an overlay into the base", () => {
+  test("Flatten is offered ONLY for overlay-bearing targets", async () => {
+    mockFlattenable();
+    render(Library);
+    await selectDiagnose();
+    await screen.findByText("Flatten an overlay into the base");
+    const buttons = screen.getAllByRole("button", { name: /Flatten into base/ });
+    expect(buttons).toHaveLength(1); // claude only — codex is a base-follower
+    expect(screen.getByText("Flatten an overlay into the base")).toBeTruthy();
+  });
+
+  test("a clean flatten calls flattenPrimitive with the captured target + label and shows the cue", async () => {
+    mockFlattenable();
+    const spy = vi.spyOn(api, "flattenPrimitive").mockResolvedValue(FLATTENED_OK);
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(await screen.findByRole("button", { name: /Flatten into base/ }));
+    const form = screen.getByRole("group", { name: /Flatten overlay into base/ });
+    await fireEvent.input(within(form).getByPlaceholderText("v2"), { target: { value: "v2" } });
+    await fireEvent.click(within(form).getByRole("button", { name: "Flatten" }));
+    expect(spy).toHaveBeenCalledWith("skill", "diagnose", expect.objectContaining({
+      source_target: "claude", version_label: "v2", force: false,
+    }));
+    expect(await screen.findByText(/flattened.*as v2/)).toBeTruthy();
+  });
+
+  test("the form surfaces which base-follower targets will be rewritten before confirm", async () => {
+    mockFlattenable();
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(await screen.findByRole("button", { name: /Flatten into base/ }));
+    // codex is an installed base-follower → named as a target that will be rewritten.
+    expect(await screen.findByText(/Rewritten on disk to match the new base: codex/)).toBeTruthy();
+  });
+
+  test("converging_conflicts shows the blocking targets + a force retry that re-calls with force:true", async () => {
+    mockFlattenable();
+    const spy = vi.spyOn(api, "flattenPrimitive")
+      .mockResolvedValueOnce({ kind: "converging_conflicts", conflicts: [{ target: "codex", paths: ["SKILL.md"] }] })
+      .mockResolvedValueOnce(FLATTENED_OK);
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(await screen.findByRole("button", { name: /Flatten into base/ }));
+    const form = screen.getByRole("group", { name: /Flatten overlay into base/ });
+    await fireEvent.input(within(form).getByPlaceholderText("v2"), { target: { value: "v2" } });
+    await fireEvent.click(within(form).getByRole("button", { name: "Flatten" }));
+
+    // The conflict surfaces; confirming overwrites with force:true.
+    const alert = await screen.findByRole("alert");
+    expect(within(alert).getByText(/codex/)).toBeTruthy();
+    await fireEvent.click(within(alert).getByRole("button", { name: /Flatten anyway/ }));
+    expect(spy).toHaveBeenLastCalledWith("skill", "diagnose", expect.objectContaining({ force: true }));
+    expect(await screen.findByText(/flattened.*as v2/)).toBeTruthy();
+  });
+
+  test("an invalid version label is refused client-side; no flatten fires", async () => {
+    mockFlattenable();
+    const spy = vi.spyOn(api, "flattenPrimitive").mockResolvedValue(FLATTENED_OK);
+    render(Library);
+    await selectDiagnose();
+    await fireEvent.click(await screen.findByRole("button", { name: /Flatten into base/ }));
+    const form = screen.getByRole("group", { name: /Flatten overlay into base/ });
+    await fireEvent.input(within(form).getByPlaceholderText("v2"), { target: { value: "nope" } });
+    await fireEvent.click(within(form).getByRole("button", { name: "Flatten" }));
+    expect(spy).not.toHaveBeenCalled();
+    expect(screen.getByText(/looks like v1, v2/)).toBeTruthy();
+  });
+});
+
 describe("Library route — content search (search slice)", () => {
   const HIT = { kind: "command" as const, name: "deploy", line_number: 3, line_text: "deploy the thing" };
 

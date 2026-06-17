@@ -295,6 +295,32 @@ export type ReimportResult =
   | { kind: "not_installed" }
   | { kind: "install_missing" };
 
+/** One converging target whose installed copy is hand-edited, blocking a
+ *  non-forced flatten. `paths` are install-relative. */
+export interface TargetConflict {
+  target: TargetName;
+  paths: string[];
+}
+
+/** Outcome of a `flatten` (ADR-0009). `flattened` carries the new version, the
+ *  per-target split (converged base-followers vs preserved overlays), the
+ *  reinstall summary for the converged targets, and the advisory commit. The
+ *  other variants are actionable states the UI routes on; they wrote nothing. */
+export type FlattenResult =
+  | {
+      kind: "flattened";
+      new_version: string;
+      converged_targets: TargetName[];
+      preserved_targets: TargetName[];
+      reinstall: InstallSummary;
+      committed: boolean;
+      commit_error: string | null;
+    }
+  | { kind: "working_copy_dirty" }
+  | { kind: "converging_conflicts"; conflicts: TargetConflict[] }
+  | { kind: "not_an_overlay_target" }
+  | { kind: "no_current_version" };
+
 // ---------------------------------------------------------------------------
 // Primitive-lifecycle wire models (lifecycle slice)
 //
@@ -825,6 +851,47 @@ export function parseReimportResult(v: unknown): ReimportResult {
       return { kind: "install_missing" };
     default:
       return fail("ReimportResult (unknown kind)");
+  }
+}
+
+function parseTargetConflict(v: unknown): TargetConflict {
+  if (!isObject(v) || !Array.isArray(v.paths)) fail("TargetConflict");
+  return {
+    target: asTarget(v.target, "TargetConflict.target"),
+    paths: v.paths.map((p) => asString(p, "TargetConflict.paths[]")),
+  };
+}
+
+export function parseFlattenResult(v: unknown): FlattenResult {
+  if (!isObject(v)) fail("FlattenResult");
+  switch (v.kind) {
+    case "flattened":
+      if (!Array.isArray(v.converged_targets) || !Array.isArray(v.preserved_targets))
+        fail("FlattenResult.targets");
+      return {
+        kind: "flattened",
+        new_version: asString(v.new_version, "FlattenResult.new_version"),
+        converged_targets: v.converged_targets.map((t) =>
+          asTarget(t, "FlattenResult.converged_targets[]"),
+        ),
+        preserved_targets: v.preserved_targets.map((t) =>
+          asTarget(t, "FlattenResult.preserved_targets[]"),
+        ),
+        reinstall: parseInstallSummary(v.reinstall),
+        committed: asBool(v.committed, "FlattenResult.committed"),
+        commit_error: asNullableString(v.commit_error, "FlattenResult.commit_error"),
+      };
+    case "working_copy_dirty":
+      return { kind: "working_copy_dirty" };
+    case "converging_conflicts":
+      if (!Array.isArray(v.conflicts)) fail("FlattenResult.conflicts");
+      return { kind: "converging_conflicts", conflicts: v.conflicts.map(parseTargetConflict) };
+    case "not_an_overlay_target":
+      return { kind: "not_an_overlay_target" };
+    case "no_current_version":
+      return { kind: "no_current_version" };
+    default:
+      return fail("FlattenResult (unknown kind)");
   }
 }
 

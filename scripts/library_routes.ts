@@ -31,6 +31,7 @@ import {
   parseOverlayLists,
   parseMetadataUpdateResult,
   parseReimportResult,
+  parseFlattenResult,
   parseSearchResults,
   parseDeletePrimitiveResult,
   parseRenamePrimitiveResult,
@@ -484,6 +485,52 @@ export async function buildReimport(
   const r = await withWriteLock(() =>
     run(config.bridgePath, "reimport_install", args, {
       validate: parseReimportResult,
+      timeoutMs: WRITE_TIMEOUT_MS,
+    }),
+  );
+  return r.ok ? { status: 200, body: r.data } : errorResult(r.error);
+}
+
+/** A flatten request (ADR-0009): promote `source_target`'s overlay into the
+ *  base as `version_label`. `force` confirms overwriting hand-edited converging
+ *  base-follower installs (the `converging_conflicts` two-phase confirm). */
+interface FlattenBody {
+  source_target?: unknown;
+  version_label?: unknown;
+  notes?: unknown;
+  force?: unknown;
+}
+
+/** Write: promote one target's overlay into the base as a new version, converge
+ *  base-follower targets on disk, and re-baseline `installs.json`. Like reimport
+ *  it mutates `installs.json`, so it takes `withWriteLock`; the server stamps
+ *  `created_at`. Every FlattenResult variant (flattened / working_copy_dirty /
+ *  converging_conflicts / not_an_overlay_target / no_current_version) rides 200;
+ *  only genuine core faults map to 4xx/502. */
+export async function buildFlatten(
+  config: LibraryConfig,
+  kind: string,
+  name: string,
+  body: FlattenBody,
+  run: Run = runBridge,
+  now: string = new Date().toISOString(),
+): Promise<LibraryRouteResult> {
+  if (!config.libraryPath) return errorResult(UNCONFIGURED);
+  const args = {
+    path: config.libraryPath,
+    home: config.home,
+    installs_path: config.installsPath,
+    kind,
+    name,
+    target: body.source_target ?? null,
+    version_label: body.version_label,
+    notes: typeof body.notes === "string" ? body.notes : null,
+    force: body.force === true,
+    created_at: now,
+  };
+  const r = await withWriteLock(() =>
+    run(config.bridgePath, "flatten", args, {
+      validate: parseFlattenResult,
       timeoutMs: WRITE_TIMEOUT_MS,
     }),
   );
@@ -1539,6 +1586,9 @@ export function registerLibraryRoutes(
   // WRITE_TIMEOUT in the handler. All ReimportResult variants ride 200 as data.
   app.post("/api/library/primitives/:kind/:name/reimport", async (c) =>
     json(c, await buildReimport(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
+  );
+  app.post("/api/library/primitives/:kind/:name/flatten", async (c) =>
+    json(c, await buildFlatten(loadConfig(), c.req.param("kind"), c.req.param("name"), await readJson(c))),
   );
   app.post("/api/library/import-installs", async (c) => json(c, await buildImportInstalls(loadConfig())));
   // Working-file editor writes (WRITE_TIMEOUT + SIGKILL; no ledger mutex — they

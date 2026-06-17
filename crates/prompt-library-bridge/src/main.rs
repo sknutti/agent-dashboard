@@ -58,12 +58,14 @@ use prompt_library_core::{
         read_primitive_version_view, revert_primitive_to_version,
     },
     delete_primitive, derive_plan, duplicate_primitive, fetch_from_url, find_in_library,
-    forget_primitive, import_primitive_from_path, install, listing::list_primitives,
+    flatten_promote_to_base, forget_primitive, import_primitive_from_path, install,
+    listing::list_primitives,
     reimport_install_as_version, rename_primitive, scaffold_primitive, scan_drift_for_primitive,
     scan_record, uninstall, RefFile, ScaffoldSource,
     update_primitive_metadata, working_files, BootstrapExecuteRequest, BootstrapPlan,
     BootstrapSession, DeletePrimitiveRequest, DriftReport, DuplicatePrimitiveRequest,
-    Error as CoreError, FindOptions, ImportFromPathResult, InstallPaths, InstallRequest,
+    Error as CoreError, FindOptions, FlattenRequest, FlattenResult, ImportFromPathResult,
+    InstallPaths, InstallRequest,
     InstallsFile, KindInfoTable, LibraryLayout, MetadataUpdate, PrimitiveKind, PrimitiveName,
     ReimportRequest, ReimportResult, RenamePrimitiveRequest, Target, UninstallRequest,
     VersionLabel, VersionMetadata, VersionStore, WorkingCopy, INSTALLS_FORMAT_VERSION,
@@ -219,6 +221,12 @@ async fn dispatch(command: &str, args: &Value) -> Result<Value, LibraryError> {
         // the wrong message. The non-success outcomes (dirty/broken/missing)
         // wrote nothing git-tracked, so they do NOT commit.
         "reimport_install" => cmd_reimport(args).await,
+        // Flatten (ADR-0009): promote one target's overlay into the base as a
+        // new version, converge base-follower targets on disk, and re-baseline
+        // `installs.json`. Like reimport it mutates `installs.json` (so the TS
+        // route takes the write lock) and COMMITS on the `flattened` outcome
+        // only — the new `versions/<label>/` tree is git-tracked.
+        "flatten" => cmd_flatten(args).await,
         // Primitive-lifecycle slice. Structural CRUD over the library:
         // create/delete/rename/duplicate/import edit the git-TRACKED library
         // tree, so they COMMIT on the same non-fatal commit-on-write posture as
@@ -1043,6 +1051,47 @@ async fn cmd_reimport(args: &Value) -> Result<Value, LibraryError> {
     // `git add -A` only ever sweeps `versions/<label>/` + `current.txt`).
     if let ReimportResult::Reimported { new_version } = &result {
         let message = format_reimport_commit_message(kind, &name, new_version, notes.as_deref());
+        let (committed, commit_error) = commit_change(&root, &message).await;
+        if let Value::Object(map) = &mut value {
+            map.insert("committed".into(), json!(committed));
+            map.insert("commit_error".into(), json!(commit_error));
+        }
+    }
+    Ok(value)
+}
+
+/// Flatten (ADR-0009): promote `source_target`'s overlay into the base as a new
+/// version, converge base-follower targets, and re-baseline `installs.json`.
+/// The `FlattenResult` tagged union rides the `ok` envelope as DATA; commit ONLY
+/// on the `flattened` outcome (the other results wrote nothing git-tracked).
+async fn cmd_flatten(args: &Value) -> Result<Value, LibraryError> {
+    let root = require_library(args)?;
+    let (install_paths, installs_file_path) = install_context(args)?;
+    let kind = parse_kind(args)?;
+    let name = parse_name(args)?;
+    let source_target = parse_target(args)?;
+    let new_version = parse_version_label(args)?;
+    let created_at = parse_created_at(args)?;
+    let notes = parse_optional_notes(args);
+    let force = parse_force(args);
+
+    let result = flatten_promote_to_base(FlattenRequest {
+        layout: LibraryLayout::new(&root),
+        install_paths: &install_paths,
+        installs_file_path: &installs_file_path,
+        kind,
+        name: &name,
+        source_target,
+        new_version,
+        created_at: &created_at,
+        notes: notes.clone(),
+        force,
+    })
+    .map_err(map_core_error)?;
+
+    let mut value = serde_json::to_value(&result).map_err(serialize_err)?;
+    if let FlattenResult::Flattened { new_version, .. } = &result {
+        let message = format_flatten_commit_message(kind, &name, new_version, notes.as_deref());
         let (committed, commit_error) = commit_change(&root, &message).await;
         if let Value::Object(map) = &mut value {
             map.insert("committed".into(), json!(committed));
@@ -1894,6 +1943,19 @@ fn format_reimport_commit_message(
     notes: Option<&str>,
 ) -> String {
     let subject = format!("reimport({}/{}): {}", kind.dir_name(), name.as_str(), label.as_str());
+    match notes.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(body) => format!("{subject}\n\n{body}\n"),
+        None => format!("{subject}\n"),
+    }
+}
+
+fn format_flatten_commit_message(
+    kind: PrimitiveKind,
+    name: &PrimitiveName,
+    label: &VersionLabel,
+    notes: Option<&str>,
+) -> String {
+    let subject = format!("flatten({}/{}): {}", kind.dir_name(), name.as_str(), label.as_str());
     match notes.map(str::trim).filter(|s| !s.is_empty()) {
         Some(body) => format!("{subject}\n\n{body}\n"),
         None => format!("{subject}\n"),
@@ -4193,6 +4255,154 @@ mod tests {
             cmd_update_metadata(&args).await.unwrap_err().code,
             "library_invalid_target"
         );
+    }
+
+    // ---- flatten (ADR-0009) -------------------------------------------------
+    //
+    // Precondition: `diagnose` published with a base + a Claude overlay, allowed
+    // for Claude+Codex, installed to both. Claude materializes base∪overlay;
+    // Codex is a base-follower. Flatten promotes Claude's overlay into the base.
+
+    fn publish_skill_with_claude_overlay(root: &Utf8PathBuf) {
+        let layout = LibraryLayout::new(root);
+        let n = PrimitiveName::try_new("diagnose").unwrap();
+        scaffold_skill(layout, &n, NOW).unwrap();
+        let wc = WorkingCopy::new(layout);
+        wc.save_base_file(PrimitiveKind::Skill, &n, Utf8Path::new("SKILL.md"), b"---\n---\nbase body\n")
+            .unwrap();
+        wc.save_target_file(
+            PrimitiveKind::Skill,
+            &n,
+            Target::Claude,
+            Utf8Path::new("SKILL.md"),
+            b"---\n---\nclaude body\n",
+        )
+        .unwrap();
+        update_primitive_metadata(
+            layout,
+            PrimitiveKind::Skill,
+            &n,
+            MetadataUpdate {
+                allowed_targets: vec![Target::Claude, Target::Codex],
+                display_name: None,
+                author: None,
+                discard_orphan_overlays: false,
+            },
+        )
+        .unwrap();
+        VersionStore::new(layout)
+            .snapshot(
+                PrimitiveKind::Skill,
+                &n,
+                &VersionLabel::try_new("v1").unwrap(),
+                &VersionMetadata { created_at: NOW.into(), notes: None },
+            )
+            .unwrap();
+    }
+
+    fn flatten_fx() -> InstallFx {
+        let lib = TempDir::new().unwrap();
+        let root = Utf8PathBuf::from_path_buf(lib.path().canonicalize().unwrap()).unwrap();
+        init_library(&root, NOW).unwrap();
+        publish_skill_with_claude_overlay(&root);
+        let home_tmp = TempDir::new().unwrap();
+        let home = Utf8PathBuf::from_path_buf(home_tmp.path().canonicalize().unwrap()).unwrap();
+        let data = TempDir::new().unwrap();
+        let installs = Utf8PathBuf::from_path_buf(data.path().canonicalize().unwrap())
+            .unwrap()
+            .join("installs.json");
+        let fx = InstallFx { _lib: lib, _home: home_tmp, _data: data, root, home, installs };
+        let summary = cmd_install(&write_args(&fx, json!(["claude", "codex"]), false)).unwrap();
+        assert_eq!(
+            summary["failures"].as_array().unwrap().len(),
+            0,
+            "fixture precondition: diagnose must install to both targets"
+        );
+        fx
+    }
+
+    fn flatten_args(fx: &InstallFx, label: &str, force: bool) -> Value {
+        json!({
+            "path": fx.root.as_str(),
+            "home": fx.home.as_str(),
+            "installs_path": fx.installs.as_str(),
+            "kind": "skill",
+            "name": "diagnose",
+            "target": "claude",
+            "version_label": label,
+            "created_at": NOW,
+            "force": force,
+        })
+    }
+
+    fn codex_skill_file(fx: &InstallFx, name: &str) -> Utf8PathBuf {
+        fx.home.join(".codex/skills").join(name).join("SKILL.md")
+    }
+
+    #[tokio::test]
+    async fn flatten_commits_on_success() {
+        let fx = flatten_fx();
+        git_init_repo(&fx.root);
+        let env = handle(
+            &json!({ "v": 1, "command": "flatten", "args": flatten_args(&fx, "v2", false) })
+                .to_string(),
+        )
+        .await;
+        assert_eq!(env["ok"], json!(true));
+        assert_eq!(env["data"]["kind"], json!("flattened"));
+        assert_eq!(env["data"]["committed"], json!(true));
+        assert_eq!(env["data"]["commit_error"], json!(null));
+        assert_eq!(
+            git_capture(&fx.root, &["log", "-1", "--pretty=%s"]),
+            "flatten(skills/diagnose): v2"
+        );
+        // Codex (base-follower) converged to the new base on disk.
+        assert_eq!(
+            std::fs::read(codex_skill_file(&fx, "diagnose").as_std_path()).unwrap(),
+            b"---\n---\nclaude body\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn flatten_conflict_rides_ok_envelope_without_commit() {
+        let fx = flatten_fx();
+        git_init_repo(&fx.root);
+        // Hand-edit the Codex install (sleep past the 1s mtime gate).
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(
+            codex_skill_file(&fx, "diagnose").as_std_path(),
+            b"---\n---\nhand edited\n",
+        )
+        .unwrap();
+        let env = handle(
+            &json!({ "v": 1, "command": "flatten", "args": flatten_args(&fx, "v2", false) })
+                .to_string(),
+        )
+        .await;
+        assert_eq!(env["ok"], json!(true));
+        assert_eq!(env["data"]["kind"], json!("converging_conflicts"));
+        assert_eq!(env["data"]["conflicts"][0]["target"], json!("codex"));
+        // The conflict arm wrote nothing git-tracked → no commit field.
+        assert_eq!(env["data"]["committed"], json!(null));
+        // Still on the initial commit (no flatten version landed).
+        assert_eq!(current_label(&fx.root).as_deref(), Some("v1"));
+    }
+
+    #[tokio::test]
+    async fn flatten_dirty_working_copy_no_commit() {
+        let fx = flatten_fx();
+        // Unpublished edit in working/ → hard block.
+        WorkingCopy::new(LibraryLayout::new(&fx.root))
+            .save_base_file(
+                PrimitiveKind::Skill,
+                &PrimitiveName::try_new("diagnose").unwrap(),
+                Utf8Path::new("SKILL.md"),
+                b"---\n---\nunpublished\n",
+            )
+            .unwrap();
+        let data = cmd_flatten(&flatten_args(&fx, "v2", false)).await.unwrap();
+        assert_eq!(data["kind"], json!("working_copy_dirty"));
+        assert_eq!(data["committed"], json!(null));
     }
 
     // ---- reimport-from-drift (reimport slice) -------------------------------

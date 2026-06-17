@@ -11,6 +11,7 @@ import {
   parsePrimitiveVersionView,
   parsePublishResult,
   parseReimportResult,
+  parseFlattenResult,
   parseMetadataUpdateResult,
   parseTargetView,
   parseOverlayLists,
@@ -521,6 +522,55 @@ describe("parseReimportResult (tagged union — every variant rides the ok envel
     expect(() => parseReimportResult({ kind: "reimported", new_version: "v2" })).toThrow(BridgeShapeError);
     expect(() =>
       parseReimportResult({ kind: "broken_source", primary_path: "SKILL.md", raw_bytes: ["x"], parse_error: "e" }),
+    ).toThrow(BridgeShapeError);
+  });
+});
+
+describe("parseFlattenResult (tagged union — every variant rides the ok envelope)", () => {
+  test("flattened carries the new label, the per-target split, reinstall summary, and commit contract", () => {
+    const r = parseFlattenResult({
+      kind: "flattened",
+      new_version: "v2",
+      converged_targets: ["codex"],
+      preserved_targets: ["pi"],
+      reinstall: { successes: [{ target: "codex", outcome: { kind: "installed", version: "v2" } }], failures: [] },
+      committed: true,
+      commit_error: null,
+    });
+    expect(r).toMatchObject({
+      kind: "flattened",
+      new_version: "v2",
+      converged_targets: ["codex"],
+      preserved_targets: ["pi"],
+      committed: true,
+      commit_error: null,
+    });
+    expect((r as { reinstall: { successes: unknown[] } }).reinstall.successes).toHaveLength(1);
+  });
+
+  test("converging_conflicts lists the blocking targets and their paths", () => {
+    expect(
+      parseFlattenResult({
+        kind: "converging_conflicts",
+        conflicts: [{ target: "codex", paths: ["SKILL.md"] }],
+      }),
+    ).toEqual({ kind: "converging_conflicts", conflicts: [{ target: "codex", paths: ["SKILL.md"] }] });
+  });
+
+  test("working_copy_dirty / not_an_overlay_target / no_current_version are bare tagged variants", () => {
+    expect(parseFlattenResult({ kind: "working_copy_dirty" })).toEqual({ kind: "working_copy_dirty" });
+    expect(parseFlattenResult({ kind: "not_an_overlay_target" })).toEqual({ kind: "not_an_overlay_target" });
+    expect(parseFlattenResult({ kind: "no_current_version" })).toEqual({ kind: "no_current_version" });
+  });
+
+  test("an unknown discriminant throws (a core serde rename must not surface as undefined)", () => {
+    expect(() => parseFlattenResult({ kind: "squashed" })).toThrow(BridgeShapeError);
+    expect(() => parseFlattenResult(null)).toThrow(BridgeShapeError);
+  });
+
+  test("rejects a flattened missing its target arrays or commit fields", () => {
+    expect(() =>
+      parseFlattenResult({ kind: "flattened", new_version: "v2", committed: true, commit_error: null }),
     ).toThrow(BridgeShapeError);
   });
 });

@@ -653,6 +653,31 @@ export type LibraryReimportResult =
   | { kind: "not_installed" }
   | { kind: "install_missing" };
 
+/** One converging target whose installed copy is hand-edited, blocking a
+ *  non-forced flatten. `paths` are install-relative. */
+export interface LibraryTargetConflict {
+  target: LibraryTarget;
+  paths: string[];
+}
+
+/** Outcome of a flatten (ADR-0009). All variants ride 200 as data the caller
+ *  routes on: `converging_conflicts` → show the list + a force retry;
+ *  `working_copy_dirty` → publish/discard first; `flattened` → success. */
+export type LibraryFlattenResult =
+  | {
+      kind: "flattened";
+      new_version: string;
+      converged_targets: LibraryTarget[];
+      preserved_targets: LibraryTarget[];
+      reinstall: LibraryInstallSummary;
+      committed: boolean;
+      commit_error: string | null;
+    }
+  | { kind: "working_copy_dirty" }
+  | { kind: "converging_conflicts"; conflicts: LibraryTargetConflict[] }
+  | { kind: "not_an_overlay_target" }
+  | { kind: "no_current_version" };
+
 export interface LibraryImportResult {
   imported: number;
 }
@@ -725,6 +750,21 @@ export const reimportInstall = (
     fixed_primary_text?: string;
   },
 ) => sendJson<LibraryReimportResult>(`${primPath(kind, name)}/reimport`, "POST", opts);
+
+/** Flatten a primitive: promote `source_target`'s overlay into the base as a new
+ *  version, converge base-follower targets, and clear drift (ADR-0009). All
+ *  LibraryFlattenResult variants ride 200; `converging_conflicts` → re-call with
+ *  `force: true` after the user confirms overwriting hand-edited installs. */
+export const flattenPrimitive = (
+  kind: string,
+  name: string,
+  opts: {
+    source_target: LibraryTarget;
+    version_label: string;
+    notes?: string;
+    force?: boolean;
+  },
+) => sendJson<LibraryFlattenResult>(`${primPath(kind, name)}/flatten`, "POST", opts);
 
 export const importInstalls = () =>
   sendJson<LibraryImportResult>("/api/library/import-installs", "POST", {});
