@@ -14,6 +14,7 @@ import type {
   LibraryTargetOutcome,
   LibraryUninstallOutcome,
   LibraryReimportResult,
+  LibraryFlattenResult,
   LibraryImportFromPathResult,
   LibraryBootstrapClassification,
 } from "./api";
@@ -247,6 +248,25 @@ export function reimportResultCue(result: LibraryReimportResult): Cue {
       return { label: "not installed", tone: "default", glyph: "○" };
     case "install_missing":
       return { label: "install path is gone", tone: "cyan", glyph: "⊘" };
+  }
+}
+
+/** Colorblind-safe cue for a flatten outcome (ADR-0009). Never red/green — tone
+ *  + glyph + label carry the signal (Okabe-Ito amber/cyan + neutral default). */
+export function flattenResultCue(result: LibraryFlattenResult): Cue {
+  switch (result.kind) {
+    case "flattened":
+      if (result.committed) return { label: "flattened · committed", tone: "default", glyph: "✓" };
+      if (result.commit_error) return { label: "flattened · not committed", tone: "amber", glyph: "●" };
+      return { label: "flattened", tone: "default", glyph: "✓" };
+    case "working_copy_dirty":
+      return { label: "working copy has unpublished edits", tone: "amber", glyph: "●" };
+    case "converging_conflicts":
+      return { label: "installed copies edited — confirm overwrite", tone: "amber", glyph: "●" };
+    case "not_an_overlay_target":
+      return { label: "no overlay to promote", tone: "default", glyph: "○" };
+    case "no_current_version":
+      return { label: "nothing published yet", tone: "default", glyph: "○" };
   }
 }
 

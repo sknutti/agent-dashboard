@@ -26,6 +26,8 @@
     uninstallPrimitive,
     acknowledgeDrift,
     reimportInstall,
+    flattenPrimitive,
+    listOverlays,
     importInstalls,
     publishVersion,
     setCurrentVersion,
@@ -46,6 +48,8 @@
     type LibraryUninstallSummary,
     type LibraryPublishResult,
     type LibraryReimportResult,
+    type LibraryFlattenResult,
+    type LibraryTargetConflict,
     type WorkingContent,
   } from "../lib/api";
   import {
@@ -61,6 +65,7 @@
     outcomeCue,
     uninstallCue,
     reimportResultCue,
+    flattenResultCue,
     anyDrift,
     publishStateCue,
     currentVersionCue,
@@ -357,6 +362,12 @@
     reimportDirty = null;
     reimportBroken = null;
     reimportNotice = null;
+    // Flatten surfaces are scoped to the open primitive too.
+    flattenForm = null;
+    flattenConflicts = null;
+    flattenNotice = null;
+    flattenLabel = "";
+    flattenNotes = "";
     // Lifecycle surfaces are scoped to the open primitive too — never leak a
     // rename/duplicate/delete confirm or a success banner across a selection.
     renameDialog = null;
@@ -747,6 +758,139 @@
     const { intent, discard } = sheet;
     reimportBroken = null;
     void doReimport(intent, discard, text);
+  }
+
+  // ── flatten: promote an overlay into the base (ADR-0009) ──────────────────
+  // Flatten is offered ONLY for overlay-bearing targets (base-followers have
+  // nothing to promote). It snapshots a new version, converges base-follower
+  // installs on disk, and clears drift. The converging targets are surfaced
+  // BEFORE confirm; a hand-edited converging install routes to a force confirm.
+  const flattenOverlaysRes = resource(
+    () => selected ?? "library:none",
+    (k) => {
+      const sel = parseSelection(k);
+      return sel ? listOverlays(sel.kind, sel.name) : Promise.resolve([]);
+    },
+  );
+  // Targets that carry an overlay → the only ones eligible to flatten.
+  const flattenEligibleTargets = $derived(
+    new Set((flattenOverlaysRes.data ?? []).map((o) => o.target)),
+  );
+
+  interface FlattenIntent {
+    kind: LibraryKind;
+    name: string;
+    source_target: LibraryTarget;
+    label: string;
+    notes: string;
+  }
+  let flattenForm = $state<{ kind: LibraryKind; name: string; source_target: LibraryTarget } | null>(
+    null,
+  );
+  let flattenLabel = $state("");
+  let flattenNotes = $state("");
+  // The converging-conflict confirm: captured intent + the blocking targets. A
+  // force retry overwrites the hand-edited installs (D4 two-phase confirm).
+  let flattenConflicts = $state<{ intent: FlattenIntent; conflicts: LibraryTargetConflict[] } | null>(
+    null,
+  );
+  let flattenNotice = $state<{ tone: "default" | "amber" | "cyan"; text: string } | null>(null);
+
+  /** Base-follower targets a flatten of `source` would rewrite on disk: allowed,
+   *  no overlay, not the source, and currently installed. Surfaced before confirm
+   *  (ADR consequence: "must surface which targets will change"). */
+  function convergingPreview(source: LibraryTarget): LibraryTarget[] {
+    return targetRows
+      .filter((r) => r.target !== source && !flattenEligibleTargets.has(r.target) && r.installed)
+      .map((r) => r.target);
+  }
+
+  function openFlatten(source: LibraryTarget): void {
+    if (!detail) return;
+    flattenForm = { kind: detail.kind, name: detail.name, source_target: source };
+    flattenLabel = "";
+    flattenNotes = "";
+    flattenNotice = null;
+  }
+  function closeFlatten(): void {
+    flattenForm = null;
+    flattenLabel = "";
+    flattenNotes = "";
+  }
+
+  async function submitFlatten(): Promise<void> {
+    if (!flattenForm) return;
+    const label = flattenLabel.trim();
+    if (!/^v\d/.test(label)) {
+      flattenNotice = {
+        tone: "amber",
+        text: "A version label looks like v1, v2, or v1.0 — start with “v” and a number.",
+      };
+      return;
+    }
+    await doFlatten({ ...flattenForm, label, notes: flattenNotes.trim() }, false);
+  }
+
+  /** Issue a flatten and route on the result. `force` overwrites hand-edited
+   *  converging installs. Keyed pending-write lock so a row can't double-fire. */
+  async function doFlatten(intent: FlattenIntent, force: boolean): Promise<void> {
+    const key = writeKey(intent.kind, intent.name, intent.source_target);
+    if (pending.has(key)) return;
+    setPending(key, true);
+    flattenNotice = null;
+    try {
+      const result = await flattenPrimitive(intent.kind, intent.name, {
+        source_target: intent.source_target,
+        version_label: intent.label,
+        notes: intent.notes || undefined,
+        force,
+      });
+      applyFlattenResult(intent, result);
+    } catch (e) {
+      flattenNotice = { tone: "amber", text: noticeFor(e, "Couldn’t flatten this overlay.") };
+    } finally {
+      setPending(key, false);
+      reloadInstallState();
+    }
+  }
+
+  function applyFlattenResult(intent: FlattenIntent, result: LibraryFlattenResult): void {
+    const cue = flattenResultCue(result);
+    switch (result.kind) {
+      case "flattened":
+        // The overlay is now the base + a new version; converging installs were
+        // rewritten and drift cleared. Reset every flatten surface and reload.
+        flattenForm = null;
+        flattenConflicts = null;
+        flattenNotice = {
+          tone: cue.tone,
+          text: `${intent.source_target}: ${cue.label} as ${result.new_version}`,
+        };
+        detailRes.reload();
+        primitivesRes.reload();
+        flattenOverlaysRes.reload();
+        break;
+      case "converging_conflicts":
+        // Hand off to the force confirm (captured intent + the blocking targets).
+        flattenConflicts = { intent, conflicts: result.conflicts };
+        break;
+      case "working_copy_dirty":
+      case "not_an_overlay_target":
+      case "no_current_version":
+        flattenForm = null;
+        flattenNotice = { tone: cue.tone, text: `${intent.source_target}: ${cue.label}` };
+        break;
+    }
+  }
+
+  function confirmFlattenForce(): void {
+    const captured = flattenConflicts;
+    if (!captured) return;
+    flattenConflicts = null;
+    void doFlatten(captured.intent, true);
+  }
+  function cancelFlattenForce(): void {
+    flattenConflicts = null;
   }
 
   async function doImport(): Promise<void> {
@@ -1392,6 +1536,82 @@
                   {onOverlayWrite}
                 />
               {/key}
+            </section>
+          {/if}
+
+          <!-- Flatten (ADR-0009): promote one target's overlay into the base.
+               Offered ONLY for overlay-bearing targets; surfaces which
+               base-follower installs will be rewritten before confirm. -->
+          {#if flattenEligibleTargets.size}
+            <section class="flatten-section">
+              <h4>Flatten an overlay into the base</h4>
+              <p class="muted-line">
+                Promote a target's overlay so it becomes the shared base. Base-follower targets
+                converge to it; other overlay targets keep their own. Snapshots a new version and
+                clears drift.
+              </p>
+              <ul class="flatten-list">
+                {#each targetRows.filter((r) => flattenEligibleTargets.has(r.target)) as row (row.target)}
+                  <li class="flatten-row">
+                    <span class="mono">{row.target}</span> overlay
+                    <button
+                      type="button"
+                      class="ghost"
+                      onclick={() => openFlatten(row.target)}
+                      disabled={isPending(detail.kind, detail.name, row.target)}
+                    >
+                      Flatten into base…
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+
+              {#if flattenForm}
+                {@const converging = convergingPreview(flattenForm.source_target)}
+                <div class="flatten-form" role="group" aria-label="Flatten overlay into base">
+                  <p>
+                    Promote the <span class="mono">{flattenForm.source_target}</span> overlay into the base.
+                  </p>
+                  {#if converging.length}
+                    <p class="muted-line">
+                      Rewritten on disk to match the new base: {converging.join(", ")}.
+                    </p>
+                  {:else}
+                    <p class="muted-line">No installed base-follower targets to rewrite.</p>
+                  {/if}
+                  <label>
+                    New version
+                    <input type="text" bind:value={flattenLabel} placeholder="v2" />
+                  </label>
+                  <label>
+                    Notes (optional)
+                    <input type="text" bind:value={flattenNotes} />
+                  </label>
+                  <div class="flatten-actions">
+                    <button type="button" onclick={submitFlatten}>Flatten</button>
+                    <button type="button" class="ghost" onclick={closeFlatten}>Cancel</button>
+                  </div>
+                </div>
+              {/if}
+
+              {#if flattenConflicts}
+                <div class="flatten-conflicts" role="alert">
+                  <p>
+                    These installed copies were edited and will be overwritten:
+                    <span class="mono">{flattenConflicts.conflicts.map((c) => c.target).join(", ")}</span>.
+                  </p>
+                  <div class="flatten-actions">
+                    <button type="button" onclick={confirmFlattenForce}>Flatten anyway (overwrite)</button>
+                    <button type="button" class="ghost" onclick={cancelFlattenForce}>Cancel</button>
+                  </div>
+                </div>
+              {/if}
+
+              {#if flattenNotice}
+                <div class="route-notice" class:warn={flattenNotice.tone === "amber"} role="status">
+                  {flattenNotice.text}
+                </div>
+              {/if}
             </section>
           {/if}
 
@@ -2591,9 +2811,34 @@
     font-weight: 700;
   }
   .targets-section,
-  .overlays-section {
+  .overlays-section,
+  .flatten-section {
     margin-top: 16px;
     display: grid;
+    gap: 8px;
+  }
+  .flatten-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 4px;
+  }
+  .flatten-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .flatten-form,
+  .flatten-conflicts {
+    display: grid;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+  }
+  .flatten-actions {
+    display: flex;
     gap: 8px;
   }
   .metadata-section {

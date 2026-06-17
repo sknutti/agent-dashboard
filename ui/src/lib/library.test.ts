@@ -17,6 +17,7 @@ import {
   outcomeCue,
   uninstallCue,
   reimportResultCue,
+  flattenResultCue,
   anyDrift,
   lifecycleCommitCue,
   renameInstallCaveat,
@@ -228,6 +229,34 @@ describe("reimportResultCue (every variant visible + CVD-safe)", () => {
     // Both warn (amber), so color CANNOT disambiguate them — the label + glyph must.
     expect(dirty.label).not.toBe(broken.label);
     expect(dirty.glyph).not.toBe(broken.glyph);
+  });
+});
+
+describe("flattenResultCue (every variant visible + CVD-safe)", () => {
+  const summary = { successes: [], failures: [] };
+
+  test("flattened commit nuance: committed vs not-committed vs no-commit, none green", () => {
+    const committed = flattenResultCue({ kind: "flattened", new_version: "v2", converged_targets: [], preserved_targets: [], reinstall: summary, committed: true, commit_error: null });
+    const failed = flattenResultCue({ kind: "flattened", new_version: "v2", converged_targets: [], preserved_targets: [], reinstall: summary, committed: false, commit_error: "Author identity unknown" });
+    const noCommit = flattenResultCue({ kind: "flattened", new_version: "v2", converged_targets: [], preserved_targets: [], reinstall: summary, committed: false, commit_error: null });
+    expect(failed.tone).toBe("amber");
+    expect(committed.tone).not.toBe("amber");
+    expect(noCommit.tone).not.toBe("amber");
+  });
+
+  test("every variant carries a non-empty label + glyph and a CVD-safe tone", () => {
+    const cues = [
+      flattenResultCue({ kind: "flattened", new_version: "v2", converged_targets: [], preserved_targets: [], reinstall: summary, committed: true, commit_error: null }),
+      flattenResultCue({ kind: "working_copy_dirty" }),
+      flattenResultCue({ kind: "converging_conflicts", conflicts: [{ target: "codex", paths: ["SKILL.md"] }] }),
+      flattenResultCue({ kind: "not_an_overlay_target" }),
+      flattenResultCue({ kind: "no_current_version" }),
+    ];
+    for (const c of cues) {
+      expect(c.label.length).toBeGreaterThan(0);
+      expect(c.glyph.length).toBeGreaterThan(0);
+      expect(["amber", "cyan", "default"]).toContain(c.tone); // never a bare red/green
+    }
   });
 });
 
