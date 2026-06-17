@@ -13,6 +13,7 @@ import {
   buildUninstall,
   buildAcknowledgeDrift,
   buildReimport,
+  buildFlatten,
   buildInstallsForPrimitive,
   buildDriftBatch,
   buildScanDrift,
@@ -1395,6 +1396,104 @@ describe("registerLibraryRoutes — reimport HTTP wiring", () => {
 
     const summary = await app.request("/api/summary");
     expect(summary.status).toBe(200); // Observability untouched
+  });
+});
+
+const FLATTENED = {
+  kind: "flattened",
+  new_version: "v2",
+  converged_targets: ["codex"],
+  preserved_targets: [],
+  reinstall: { successes: [{ target: "codex", outcome: { kind: "installed", version: "v2" } }], failures: [] },
+  committed: true,
+  commit_error: null,
+};
+const FLATTEN_CONFLICT = { kind: "converging_conflicts", conflicts: [{ target: "codex", paths: ["SKILL.md"] }] };
+
+describe("buildFlatten", () => {
+  test("a flattened result → 200 with the per-target split + commit fields", async () => {
+    const r = await buildFlatten(CONFIGURED, "skill", "improve", { source_target: "claude", version_label: "v2" }, okRun(FLATTENED));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual(FLATTENED);
+  });
+
+  test("converging_conflicts rides 200 as DATA (the two-phase force confirm)", async () => {
+    const r = await buildFlatten(CONFIGURED, "skill", "improve", { source_target: "claude", version_label: "v2" }, okRun(FLATTEN_CONFLICT));
+    expect(r.status).toBe(200);
+    expect((r.body as any).kind).toBe("converging_conflicts");
+    expect((r.body as any).conflicts[0].target).toBe("codex");
+  });
+
+  test("forwards source_target→target, label, notes, force + a SERVER-stamped created_at; root/home/installs stay config", async () => {
+    const { run, calls } = captureRun({ ok: true, data: FLATTENED });
+    await buildFlatten(
+      CONFIGURED,
+      "skill",
+      "improve",
+      {
+        source_target: "claude",
+        version_label: "v2",
+        notes: "flattened",
+        force: true,
+        path: "/etc/evil",
+        home: "/etc/evil-home",
+        installs_path: "/etc/evil-installs",
+        created_at: "1999-01-01T00:00:00Z",
+      } as any,
+      run,
+      "2026-06-12T00:00:00Z",
+    );
+    expect(calls[0]!.command).toBe("flatten");
+    expect(calls[0]!.args).toMatchObject({
+      path: "/libs/x", // config root, NOT the body's /etc/evil
+      home: "/home/test",
+      installs_path: "/data/installs.json",
+      kind: "skill",
+      name: "improve",
+      target: "claude", // source_target → bridge's single-target `target`
+      version_label: "v2",
+      notes: "flattened",
+      force: true,
+      created_at: "2026-06-12T00:00:00Z", // injected `now`, NOT the body's 1999
+    });
+  });
+
+  test("unconfigured → 409 WITHOUT spawning", async () => {
+    const { run, calls } = captureRun({ ok: true, data: FLATTENED });
+    const r = await buildFlatten(UNCONFIGURED, "skill", "improve", { source_target: "claude", version_label: "v2" }, run);
+    expect(r.status).toBe(409);
+    expect((r.body as any).code).toBe("library_unconfigured");
+    expect(calls).toHaveLength(0);
+  });
+
+  test("D1: flatten serializes against a concurrent ledger write (acknowledge)", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const slowRun: typeof runBridge = (async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((res) => setTimeout(res, 5));
+      active -= 1;
+      return { ok: true, data: FLATTENED };
+    }) as any;
+    await Promise.all([
+      buildFlatten(CONFIGURED, "skill", "improve", { source_target: "claude", version_label: "v2" }, slowRun),
+      buildAcknowledgeDrift(CONFIGURED, "skill", "improve", { target: "claude" }, slowRun),
+    ]);
+    expect(maxActive).toBe(1);
+  });
+});
+
+describe("registerLibraryRoutes — flatten HTTP wiring", () => {
+  test("the flatten route is wired (POST …/flatten)", async () => {
+    const app = new Hono();
+    registerLibraryRoutes(app, () => CONFIGURED);
+    const res = await app.request("/api/library/primitives/skill/improve/flatten", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:8765" },
+      body: JSON.stringify({ source_target: "claude", version_label: "v2" }),
+    });
+    expect(res.status).not.toBe(404);
   });
 });
 
