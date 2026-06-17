@@ -22,8 +22,9 @@ use specta::Type;
 
 use crate::fs_helpers::walk_into;
 use crate::{
-    BaseAssignment, DedupeContent, DedupeGroup, DedupeOutput, Error, LibraryLayout,
-    ManualReviewGroup, PrimitiveKind, PrimitiveName, SymlinkedItem, UnclassifiedItem, VersionStore,
+    overlay_merge, DedupeContent, DedupeGroup, DedupeOutput, Error, LibraryLayout,
+    ManualReviewGroup, PrimitiveKind, PrimitiveName, SymlinkedItem, Target, UnclassifiedItem,
+    VersionStore,
 };
 
 /// Output of cross-referencing dedupe groups against the library.
@@ -56,9 +57,15 @@ pub enum Classification {
     /// Library has this primitive and its current-version `base/` content
     /// matches the source bundle byte-for-byte. Wizard silently links it.
     AlreadyImported,
-    /// Library has the primitive but its current-version `base/` content
-    /// differs from the source. Wizard routes to `Re-import as new version`.
-    Drifted { content: DedupeContent },
+    /// Library has the primitive but at least one source target's content
+    /// differs from the library's EFFECTIVE content for that target (base
+    /// merged with the target's overlay). Wizard routes to `Re-import as new
+    /// version`. `drifted_targets` names exactly the targets that diverge so
+    /// the wizard can say "claude overlay drifted" rather than just "drifted".
+    Drifted {
+        content: DedupeContent,
+        drifted_targets: Vec<Target>,
+    },
 }
 
 /// Counts for the wizard's "Found N candidates: A already, B drifted, C new" banner.
@@ -113,10 +120,6 @@ fn classify_one(
     store: &VersionStore<'_>,
 ) -> Result<ClassifiedGroup, Error> {
     let DedupeGroup { kind, name, content } = group;
-    let base: &BaseAssignment = match &content {
-        DedupeContent::Identical { base } => base,
-        DedupeContent::Differs { base, .. } => base,
-    };
 
     let current = store.read_current(kind, &name)?;
     let Some(label) = current else {
@@ -127,34 +130,61 @@ fn classify_one(
         });
     };
 
-    let library_base = store.read_version(kind, &name, &label)?.base;
-    let source_base = read_source_canonicalized(kind, &name, base)?;
+    // Compare each source target against the library's EFFECTIVE content for
+    // that target (base merged with the target's overlay), not against `base`
+    // alone. A primitive whose targets legitimately diverge (e.g. a claude
+    // copy with an extra paragraph + an unmodified codex copy) is modelled in
+    // the library as base + per-target overlays; comparing one source bundle
+    // against `base` only would phantom-flag it as drifted forever.
+    let library = store.read_version(kind, &name, &label)?;
+    let mut drifted_targets = Vec::new();
+    for (target, source_path) in source_targets(&content) {
+        let source = read_source_canonicalized(kind, &name, source_path)?;
+        let effective = overlay_merge::merge(&library, target);
+        if !hashes_equal(&effective, &source) {
+            drifted_targets.push(target);
+        }
+    }
 
-    if hashes_equal(&library_base, &source_base) {
-        Ok(ClassifiedGroup {
-            kind,
-            name,
-            classification: Classification::AlreadyImported,
-        })
+    let classification = if drifted_targets.is_empty() {
+        Classification::AlreadyImported
     } else {
-        Ok(ClassifiedGroup {
-            kind,
-            name,
-            classification: Classification::Drifted { content },
-        })
+        Classification::Drifted {
+            content,
+            drifted_targets,
+        }
+    };
+    Ok(ClassifiedGroup {
+        kind,
+        name,
+        classification,
+    })
+}
+
+/// Every `(target, source_path)` pair in a dedupe group: the base candidate
+/// plus any overlay candidates. The base is the deduper's pick (by file
+/// count / mtime / priority), which need not match the library's stored base
+/// target — that mismatch is exactly why we compare per-target.
+fn source_targets(content: &DedupeContent) -> Vec<(Target, &camino::Utf8Path)> {
+    match content {
+        DedupeContent::Identical { base } => vec![(base.target, base.source_path.as_path())],
+        DedupeContent::Differs { base, overlays } => {
+            let mut out = vec![(base.target, base.source_path.as_path())];
+            out.extend(overlays.iter().map(|o| (o.target, o.source_path.as_path())));
+            out
+        }
     }
 }
 
-/// Read the source bundle at `base.source_path` and canonicalize relpaths
-/// to the library's working/base/ layout. Single-file sources land under
+/// Read the source bundle at `path` and canonicalize relpaths to the
+/// library's working/base/ layout. Single-file sources land under
 /// `kind.primary_filename(name)`; dir-form sources keep their relative
 /// layout.
 fn read_source_canonicalized(
     kind: PrimitiveKind,
     name: &PrimitiveName,
-    base: &BaseAssignment,
+    path: &camino::Utf8Path,
 ) -> Result<HashMap<Utf8PathBuf, Vec<u8>>, Error> {
-    let path = base.source_path.as_path();
     let meta = std::fs::metadata(path.as_std_path()).map_err(|source| Error::Io {
         path: path.to_string(),
         source,
@@ -189,7 +219,7 @@ fn hashes_equal(a: &HashMap<Utf8PathBuf, Vec<u8>>, b: &HashMap<Utf8PathBuf, Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Target, VersionLabel, VersionMetadata, WorkingCopy};
+    use crate::{BaseAssignment, VersionLabel, VersionMetadata, WorkingCopy};
     use camino::Utf8Path;
     use tempfile::TempDir;
 
@@ -258,6 +288,66 @@ mod tests {
         }
     }
 
+    /// Publish a primitive at v1 with base files PLUS one target overlay,
+    /// modelling a multi-target primitive whose targets diverge.
+    fn publish_v1_with_overlay(
+        layout: LibraryLayout<'_>,
+        kind: PrimitiveKind,
+        name: &PrimitiveName,
+        base: &[(&str, &[u8])],
+        overlay_target: Target,
+        overlay: &[(&str, &[u8])],
+    ) {
+        let working = WorkingCopy::new(layout);
+        for (rel, bytes) in base {
+            working
+                .save_base_file(kind, name, Utf8Path::new(rel), bytes)
+                .unwrap();
+        }
+        for (rel, bytes) in overlay {
+            working
+                .save_target_file(kind, name, overlay_target, Utf8Path::new(rel), bytes)
+                .unwrap();
+        }
+        let label = VersionLabel::try_new("v1").unwrap();
+        let meta = VersionMetadata {
+            created_at: "2026-05-05T00:00:00Z".into(),
+            notes: None,
+        };
+        VersionStore::new(layout)
+            .snapshot(kind, name, &label, &meta)
+            .unwrap();
+    }
+
+    /// A `Differs` dedupe group: one base candidate + N overlay candidates,
+    /// each `(target, source_path)`.
+    fn differs_group(
+        kind: PrimitiveKind,
+        name: PrimitiveName,
+        base: (Target, Utf8PathBuf),
+        overlays: Vec<(Target, Utf8PathBuf)>,
+    ) -> DedupeGroup {
+        DedupeGroup {
+            kind,
+            name,
+            content: DedupeContent::Differs {
+                base: BaseAssignment {
+                    target: base.0,
+                    source_path: base.1,
+                    parse: crate::ParseStatus::Parsed,
+                },
+                overlays: overlays
+                    .into_iter()
+                    .map(|(t, p)| crate::OverlayCandidate {
+                        target: t,
+                        source_path: p,
+                        parse: crate::ParseStatus::Parsed,
+                    })
+                    .collect(),
+            },
+        }
+    }
+
     fn dedupe_output_with(groups: Vec<DedupeGroup>) -> DedupeOutput {
         DedupeOutput {
             groups,
@@ -316,6 +406,101 @@ mod tests {
         let g = &out.groups[0];
         assert_eq!(g.name, nm);
         assert!(matches!(g.classification, Classification::AlreadyImported));
+    }
+
+    #[test]
+    fn multi_target_skill_with_matching_overlays_is_already_imported() {
+        // The `improve` regression: a skill installed to two targets with
+        // divergent content. The library models it as base (codex content) +
+        // a claude overlay (claude content). Both source targets match their
+        // EFFECTIVE library content (base merged with the per-target overlay),
+        // so the group is AlreadyImported — not phantom-Drifted just because
+        // the deduper's base pick (claude) differs from the library's stored
+        // base target (codex).
+        let tmp = TempDir::new().unwrap();
+        let lib_root = Utf8PathBuf::from_path_buf(tmp.path().join("lib")).unwrap();
+        let home = Utf8PathBuf::from_path_buf(tmp.path().join("home")).unwrap();
+        std::fs::create_dir_all(lib_root.as_std_path()).unwrap();
+        std::fs::create_dir_all(home.as_std_path()).unwrap();
+        let layout = make_layout(&lib_root);
+
+        let nm = PrimitiveName::try_new("improve").unwrap();
+        let codex_body = b"---\n---\nshared base\n";
+        let claude_body = b"---\n---\nshared base\nscope note\n";
+        publish_v1_with_overlay(
+            layout,
+            PrimitiveKind::Skill,
+            &nm,
+            &[("SKILL.md", codex_body)],
+            Target::Claude,
+            &[("SKILL.md", claude_body)],
+        );
+
+        // Deduper picks claude as base (e.g. newer mtime); codex is an overlay
+        // candidate. Both diverge from each other, but each matches the
+        // library's effective content for its target.
+        let claude_src =
+            write_source_dir(&home, ".claude/skills/improve", &[("SKILL.md", claude_body)]);
+        let codex_src =
+            write_source_dir(&home, ".codex/skills/improve", &[("SKILL.md", codex_body)]);
+        let group = differs_group(
+            PrimitiveKind::Skill,
+            nm,
+            (Target::Claude, claude_src),
+            vec![(Target::Codex, codex_src)],
+        );
+        let out = cross_reference(dedupe_output_with(vec![group]), layout).unwrap();
+        assert!(
+            matches!(out.groups[0].classification, Classification::AlreadyImported),
+            "expected AlreadyImported, got {:?}",
+            out.groups[0].classification
+        );
+    }
+
+    #[test]
+    fn multi_target_drift_names_only_the_diverged_target() {
+        // Library: base (codex) + claude overlay. Source: codex still matches
+        // base, but the claude copy was edited further so it no longer matches
+        // the library's effective claude content. Only claude should be named.
+        let tmp = TempDir::new().unwrap();
+        let lib_root = Utf8PathBuf::from_path_buf(tmp.path().join("lib")).unwrap();
+        let home = Utf8PathBuf::from_path_buf(tmp.path().join("home")).unwrap();
+        std::fs::create_dir_all(lib_root.as_std_path()).unwrap();
+        std::fs::create_dir_all(home.as_std_path()).unwrap();
+        let layout = make_layout(&lib_root);
+
+        let nm = PrimitiveName::try_new("improve").unwrap();
+        let codex_body = b"---\n---\nshared base\n";
+        let claude_body = b"---\n---\nshared base\nscope note\n";
+        publish_v1_with_overlay(
+            layout,
+            PrimitiveKind::Skill,
+            &nm,
+            &[("SKILL.md", codex_body)],
+            Target::Claude,
+            &[("SKILL.md", claude_body)],
+        );
+
+        let claude_src = write_source_dir(
+            &home,
+            ".claude/skills/improve",
+            &[("SKILL.md", b"---\n---\nshared base\nscope note\nEDITED AGAIN\n")],
+        );
+        let codex_src =
+            write_source_dir(&home, ".codex/skills/improve", &[("SKILL.md", codex_body)]);
+        let group = differs_group(
+            PrimitiveKind::Skill,
+            nm,
+            (Target::Claude, claude_src),
+            vec![(Target::Codex, codex_src)],
+        );
+        let out = cross_reference(dedupe_output_with(vec![group]), layout).unwrap();
+        match &out.groups[0].classification {
+            Classification::Drifted { drifted_targets, .. } => {
+                assert_eq!(drifted_targets, &vec![Target::Claude]);
+            }
+            other => panic!("expected Drifted, got {other:?}"),
+        }
     }
 
     #[test]

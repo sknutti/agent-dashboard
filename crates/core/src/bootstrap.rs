@@ -78,8 +78,17 @@ pub fn derive_plan(cr: CrossReferenced) -> BootstrapPlan {
                     overlays,
                 });
             }
-            Classification::Drifted { content } => {
-                let (base, _) = base_and_overlays(content);
+            Classification::Drifted {
+                content,
+                drifted_targets,
+            } => {
+                // Reimport a target that ACTUALLY drifted, not the deduper's
+                // arbitrary base pick (by file count / mtime). Reimporting an
+                // unchanged target would leave the drifted one diverged and
+                // re-flag it on the next scan — a non-converging loop. If
+                // several targets drifted, this round reimports one; the next
+                // scan picks up the rest (bounded convergence).
+                let base = reimport_base_for(content, &drifted_targets);
                 reimports.push(ReimportAction { kind, name, base });
             }
         }
@@ -92,6 +101,27 @@ fn base_and_overlays(content: DedupeContent) -> (BaseAssignment, Vec<OverlayCand
         DedupeContent::Identical { base } => (base, vec![]),
         DedupeContent::Differs { base, overlays } => (base, overlays),
     }
+}
+
+/// Choose which target's source bundle the reimport should pull from for a
+/// drifted group. Prefer the deduper's base pick when it itself drifted;
+/// otherwise promote a drifted overlay candidate to the reimport base so the
+/// reimport addresses real divergence. Falls back to the base pick if (by
+/// construction, impossible) no drifted target is present in the group.
+fn reimport_base_for(content: DedupeContent, drifted_targets: &[Target]) -> BaseAssignment {
+    let (base, overlays) = base_and_overlays(content);
+    if drifted_targets.contains(&base.target) {
+        return base;
+    }
+    overlays
+        .into_iter()
+        .find(|o| drifted_targets.contains(&o.target))
+        .map(|o| BaseAssignment {
+            target: o.target,
+            source_path: o.source_path,
+            parse: o.parse,
+        })
+        .unwrap_or(base)
 }
 
 /// Inputs to [`bootstrap_execute`] — the orchestrator that runs a batch
@@ -1791,6 +1821,7 @@ mod tests {
                     content: DedupeContent::Identical {
                         base: parsed_base(Target::Claude, "/x/.claude/skills/diagnose"),
                     },
+                    drifted_targets: vec![Target::Claude],
                 },
             }],
             ..empty_cr()
@@ -1801,6 +1832,37 @@ mod tests {
         assert_eq!(r.kind, PrimitiveKind::Skill);
         assert_eq!(r.name, nm);
         assert_eq!(r.base.target, Target::Claude);
+    }
+
+    #[test]
+    fn drifted_reimport_targets_the_drifted_overlay_not_the_base_pick() {
+        // Deduper picked codex as base, but codex is unchanged — only the
+        // claude overlay drifted. The reimport must pull from claude so the
+        // divergence is actually addressed (reimporting codex would loop).
+        let nm = name("improve");
+        let plan = derive_plan(CrossReferenced {
+            groups: vec![ClassifiedGroup {
+                kind: PrimitiveKind::Skill,
+                name: nm.clone(),
+                classification: Classification::Drifted {
+                    content: DedupeContent::Differs {
+                        base: parsed_base(Target::Codex, "/x/.codex/skills/improve"),
+                        overlays: vec![parsed_overlay(
+                            Target::Claude,
+                            "/x/.claude/skills/improve",
+                        )],
+                    },
+                    drifted_targets: vec![Target::Claude],
+                },
+            }],
+            ..empty_cr()
+        });
+        assert_eq!(plan.reimports.len(), 1);
+        assert_eq!(plan.reimports[0].base.target, Target::Claude);
+        assert_eq!(
+            plan.reimports[0].base.source_path,
+            Utf8PathBuf::from("/x/.claude/skills/improve")
+        );
     }
 
     /// Symlinked/Unclassified pass through CrossReferenced but don't

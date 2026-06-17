@@ -26,10 +26,10 @@ afterEach(() => {
 const SCAN: LibraryBootstrapScanResult = {
   crossReferenced: {
     groups: [
-      { kind: "skill", name: "alpha", classification: "new" },
-      { kind: "skill", name: "beta", classification: "new" },
-      { kind: "skill", name: "diag", classification: "drifted" },
-      { kind: "agent", name: "old", classification: "already_imported" },
+      { kind: "skill", name: "alpha", classification: "new", driftedTargets: [] },
+      { kind: "skill", name: "beta", classification: "new", driftedTargets: [] },
+      { kind: "skill", name: "diag", classification: "drifted", driftedTargets: ["claude"] },
+      { kind: "agent", name: "old", classification: "already_imported", driftedTargets: [] },
     ],
     needs_manual_review: [{ kind: "command", name: "weird" }],
     symlinked: 0,
@@ -127,6 +127,15 @@ describe("BootstrapWizard — scan → review", () => {
     expect(boxes.every((b) => b.checked)).toBe(true);
     // the already-imported / needs-review rows are surfaced but not importable
     expect(screen.getByText(/found but not importable/i)).toBeTruthy();
+  });
+
+  test("a drifted row names the specific overlay that drifted, not just 'drifted'", async () => {
+    vi.spyOn(api, "bootstrapScan").mockResolvedValue(SCAN);
+    mount({ session: null });
+    await fireEvent.click(await screen.findByRole("button", { name: /scan my machine/i }));
+    await screen.findByRole("button", { name: /import 3 items/i });
+    // diag drifted only in the claude overlay — the row says so.
+    expect(screen.getByText(/in claude overlay/i)).toBeTruthy();
   });
 
   test("unchecking an action drops it from the plan; execute gets the filtered plan + excluded_ids", async () => {

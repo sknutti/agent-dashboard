@@ -645,7 +645,7 @@ const SCAN = {
   cross_referenced: {
     groups: [
       { kind: "skill", name: "newskill", classification: { New: { content: { hash: "h1" } } } },
-      { kind: "skill", name: "diagnose", classification: { Drifted: { content: { hash: "h2" } } } },
+      { kind: "skill", name: "diagnose", classification: { Drifted: { content: { hash: "h2" }, drifted_targets: ["claude"] } } },
       { kind: "agent", name: "old", classification: "AlreadyImported" },
     ],
     needs_manual_review: [{ kind: "command", name: "weird", members: [] }],
@@ -676,6 +676,15 @@ describe("parseBootstrapScanResult", () => {
     expect(r.crossReferenced.symlinked).toBe(1);
     expect(r.crossReferenced.unclassified).toBe(0);
     expect(r.crossReferenced.needs_manual_review).toEqual([{ kind: "command", name: "weird" }]);
+  });
+
+  test("surfaces which targets drifted so the wizard can name the overlay", () => {
+    const r = parseBootstrapScanResult(SCAN);
+    const drifted = r.crossReferenced.groups.find((g) => g.name === "diagnose");
+    expect(drifted?.driftedTargets).toEqual(["claude"]);
+    // Non-drifted groups carry no drifted targets.
+    expect(r.crossReferenced.groups.find((g) => g.name === "newskill")?.driftedTargets).toEqual([]);
+    expect(r.crossReferenced.groups.find((g) => g.name === "old")?.driftedTargets).toEqual([]);
   });
 
   test("lifts kind/name for display but preserves the verbatim action object for re-send", () => {

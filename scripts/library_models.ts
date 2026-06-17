@@ -375,7 +375,8 @@ export interface ForgetResult {
 
 /** A scan candidate's classification against the library. Externally-tagged in
  *  Rust (`"AlreadyImported"` | `{New:…}` | `{Drifted:…}`); flattened to a tag
- *  here — the review UI only needs the tag, not the per-candidate content. */
+ *  here. For `Drifted` we also lift `drifted_targets` (which overlays diverge)
+ *  onto the group; the rest of the per-candidate content is dropped. */
 export type BootstrapClassification = "new" | "already_imported" | "drifted";
 
 /** One classified `(kind, name)` group from the scan — display-only. */
@@ -383,6 +384,11 @@ export interface BootstrapGroup {
   kind: Kind;
   name: string;
   classification: BootstrapClassification;
+  /** For `drifted` groups, the targets whose content diverges from the
+   *  library's effective content for that target (base merged with the
+   *  target's overlay) — e.g. `["claude"]`. Lets the wizard say "claude
+   *  overlay drifted" instead of a bare "drifted". Empty otherwise. */
+  driftedTargets: TargetName[];
 }
 
 /** The wizard's banner counts. core exposes this via a `summary()` method that
@@ -886,21 +892,33 @@ export function parseForgetResult(v: unknown): ForgetResult {
 
 // ---- bootstrap-discovery parsers ----------------------------------------
 
-function parseBootstrapClassification(v: unknown): BootstrapClassification {
-  if (v === "AlreadyImported") return "already_imported";
+function parseBootstrapClassification(v: unknown): {
+  classification: BootstrapClassification;
+  driftedTargets: TargetName[];
+} {
+  if (v === "AlreadyImported") return { classification: "already_imported", driftedTargets: [] };
   if (isObject(v)) {
-    if ("New" in v) return "new";
-    if ("Drifted" in v) return "drifted";
+    if ("New" in v) return { classification: "new", driftedTargets: [] };
+    if ("Drifted" in v) {
+      const d = v.Drifted;
+      const driftedTargets =
+        isObject(d) && Array.isArray(d.drifted_targets)
+          ? d.drifted_targets.map((t) => asTarget(t, "Classification.drifted_targets"))
+          : [];
+      return { classification: "drifted", driftedTargets };
+    }
   }
   return fail("Classification");
 }
 
 function parseBootstrapGroup(v: unknown): BootstrapGroup {
   if (!isObject(v) || !isKind(v.kind)) fail("BootstrapGroup");
+  const { classification, driftedTargets } = parseBootstrapClassification(v.classification);
   return {
     kind: v.kind,
     name: asString(v.name, "BootstrapGroup.name"),
-    classification: parseBootstrapClassification(v.classification),
+    classification,
+    driftedTargets,
   };
 }
 

@@ -1034,6 +1034,10 @@ export interface LibraryBootstrapGroup {
   kind: LibraryKind;
   name: string;
   classification: LibraryBootstrapClassification;
+  /** For `drifted` groups, the targets whose installed content diverges from
+   *  the library's effective content for that target — e.g. `["claude"]`.
+   *  Empty for `new`/`already_imported`. Drives the per-overlay drift label. */
+  driftedTargets: LibraryTarget[];
 }
 
 export interface LibraryBootstrapSummary {

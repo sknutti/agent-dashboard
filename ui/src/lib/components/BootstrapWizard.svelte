@@ -174,6 +174,16 @@
   // Derived display lists for the review step.
   const creates = $derived(scanResult?.plan.creates ?? []);
   const reimports = $derived(scanResult?.plan.reimports ?? []);
+  // Which target overlays drifted, keyed by the same selectionKey the reimport
+  // rows use — so a drifted row can name "claude overlay" instead of a bare
+  // "drifted". Sourced from the scan classification (the plan is action-only).
+  const driftedTargetsByKey = $derived(
+    new Map(
+      (scanResult?.crossReferenced.groups ?? [])
+        .filter((g) => g.classification === "drifted")
+        .map((g) => [selectionKey(g.kind, g.name), g.driftedTargets] as const),
+    ),
+  );
   const alreadyImported = $derived(
     (scanResult?.crossReferenced.groups ?? []).filter((g) => g.classification === "already_imported"),
   );
@@ -298,12 +308,18 @@
                   {#each reimports as a (selectionKey(a.kind, a.name))}
                     {@const key = selectionKey(a.kind, a.name)}
                     {@const cue = classificationCue("drifted")}
+                    {@const drifted = driftedTargetsByKey.get(key) ?? []}
                     <li class="action-row">
                       <label>
                         <input type="checkbox" checked={!excluded.has(key)} onchange={() => toggle(key)} />
                         <span class="action-name">{a.name}</span>
                         <Badge>{KIND_LABELS[a.kind]}</Badge>
                         <small class="cue amber">{cue.glyph} {cue.label}</small>
+                        {#if drifted.length}
+                          <small class="drift-where"
+                            >in {drifted.join(", ")} overlay{drifted.length > 1 ? "s" : ""}</small
+                          >
+                        {/if}
                       </label>
                     </li>
                   {/each}
@@ -559,6 +575,10 @@
   }
   .cue.amber {
     color: var(--cue-amber, #e69f00);
+  }
+  .drift-where {
+    font-size: 0.72rem;
+    color: var(--text-muted, #9aa);
   }
   .info-rows summary {
     cursor: pointer;
