@@ -306,8 +306,8 @@ fn validate_primary_parse(kind: PrimitiveKind, bytes: &[u8]) -> Result<(), Error
 
 /// True if `working/` ≠ the bytes of the current pinned version. With no
 /// current version pinned, an empty working/ counts as clean and anything
-/// else as dirty.
-fn working_diverges_from_current(
+/// else as dirty. Shared with `flatten` (its clean-working gate is identical).
+pub(crate) fn working_diverges_from_current(
     layout: LibraryLayout<'_>,
     kind: PrimitiveKind,
     name: &PrimitiveName,

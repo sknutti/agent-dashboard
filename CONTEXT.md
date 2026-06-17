@@ -77,6 +77,10 @@ _Avoid_: draft, scratch.
 A published, frozen snapshot of a **Primitive**.
 _Avoid_: snapshot, release, revision.
 
+**Base**:
+The shared default content of a **Primitive** that **Overlays** layer onto — the bytes a **Target** receives when it has no **Overlay**. Stored as `base/` in the **Working copy** and each **Version**.
+_Avoid_: default, common, root.
+
 **Overlay**:
 Target-specific bytes that replace base content for one **Target** on one **Primitive**.
 _Avoid_: variant, override.
@@ -84,6 +88,14 @@ _Avoid_: variant, override.
 **Materialized**:
 The output of merging **Working copy** base content plus any **Overlay** for a **Kind**, **Target**, and name.
 _Avoid_: rendered, built, baked.
+
+**Base-follower target**:
+An allowed **Target** that has no **Overlay** on a **Primitive**, so its **Materialized** content is exactly the **Base**. Contrast a **Target** with an **Overlay**, which is independent of base changes. A base-follower's content *changes* whenever base changes (e.g. on **Flatten**).
+_Avoid_: default target, plain target.
+
+**Flatten** (promote to base):
+A user-invoked operation that promotes one **Target**'s **Overlay** into the **Base**: base becomes that target's effective content, its **Overlay** is dropped, every *other* **Target** that has an **Overlay** is preserved (overlay recomputed against the new base), and **Base-follower targets** converge to the new base. Snapshots a new **Version** (never a reset), reinstalls the converging base-followers, and re-baselines their **Install records** so the **Primitive** shows no **Drift**.
+_Avoid_: collapse, squash, merge, reset.
 
 **KindTarget**:
 A legal (**Kind**, **Target**) pair backed by the install matrix.
@@ -143,6 +155,8 @@ _Avoid_: "the feed" for both — the live raw tail and the parsed Transcript car
 - **Target names** stay in Prompt Library vocabulary; map them to dashboard **Agents** only for explicit cross-links.
 - A **Primitive** has one **Working copy** and zero-or-more **Versions**.
 - A **Working copy** has one base and zero-or-more **Overlays**.
+- A **Target** with no **Overlay** is a **Base-follower target**; its **Materialized** content equals the **Base** and moves with it.
+- **Flatten** promotes one **Target**'s **Overlay** into the **Base**, converging **Base-follower targets**, preserving other **Targets**' **Overlays**, and reinstalling so no **Drift** remains. It snapshots a new **Version** — it never resets the version number or wipes **Version** history.
 - A (**Primitive**, **Target**) pair **Materializes** into bytes whose **InstallLayout** is determined by the **KindTarget** and bundle shape.
 - An **Install** produces an **Install record**; later **Drift** is detected by comparing the install path against that record.
 - Every token figure produced by an **Adapter** carries a **Fidelity**; **Burn** aggregates them per **Agent** per day.
@@ -166,3 +180,5 @@ _Avoid_: "the feed" for both — the live raw tail and the parsed Transcript car
 - "Library consolidation" could be treated as Phase 5 because it writes to local agent-tool homes — resolved: it is a separate **Library consolidation track** and the existing Phase 5 remains the Claude-only **Operations layer**.
 - "error" vs "failure" were used interchangeably (the Failures panel spans crashes/rate-limits/truncations, while the AgentCard "errors" cell counts only `error_count`) — resolved: an **Error** is one failed tool call (code-actionable); a **Failure** is any unclean session outcome (`errored` · `rate_limited` · `truncated`). The Errors view anchors context windows only on **Errors**; rate-limited/truncated **Failures** show a one-line explanation and defer to the Messages feed.
 - "the Messages feed" originally meant the raw byte-tail JSONL stream (ADR-0005 made it the *raw* "source of truth", deliberately un-parsed) — amended: for **ended** sessions the Messages tab now renders the parsed **Transcript** as cards; the raw tail survives only for **live** sessions. The Errors and Messages views are now both *parsed* (windowed vs whole), no longer *parsed vs raw*. See ADR-0006.
+- "reset the version number" (the original framing for **Flatten**) implied wiping **Version** history back to v1 — resolved: that fights **Version** immutability and orphans **Install records** pinned to vanished labels. The real goal was "**Primitive** shows no **Drift** after flatten," achieved by snapshotting a new **Version** + reinstalling + re-baselining, not by resetting. See ADR-0009.
+- "same version" was used to mean "same content" across **Targets** — resolved: one **Version** label per **Primitive** (`current.txt`), but two **Targets** on that label can hold different bytes (**Base** vs **Base** ∪ **Overlay**). Same **Version** label ≠ same **Materialized** content.
