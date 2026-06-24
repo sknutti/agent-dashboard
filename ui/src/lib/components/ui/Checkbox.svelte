@@ -11,17 +11,19 @@
     onchange,
     label,
     children,
+    ...rest
   }: {
     checked?: boolean;
     disabled?: boolean;
     onchange?: (e: Event) => void;
     label?: string;
     children?: Snippet;
-  } = $props();
+    // Forward arbitrary native attributes (data-testid, name, …) to the input.
+  } & Record<string, unknown> = $props();
 </script>
 
 <label class="check">
-  <input type="checkbox" bind:checked {disabled} {onchange} />
+  <input type="checkbox" bind:checked {disabled} {onchange} {...rest} />
   <span>{#if children}{@render children()}{:else}{label}{/if}</span>
 </label>
 

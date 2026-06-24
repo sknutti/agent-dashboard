@@ -18,8 +18,7 @@
   // inline confirm (idempotent + git-recoverable + single file).
   import { untrack } from "svelte";
   import Icon from "./ui/Icon.svelte";
-  import Badge from "./ui/Badge.svelte";
-  import EmptyState from "./ui/EmptyState.svelte";
+  import { Badge, Button, IconButton, Input, Callout, EmptyState } from "./ui";
   import { resource } from "../resource.svelte";
   import {
     getWorkingFiles,
@@ -301,31 +300,30 @@
     <div class="tree">
       <div class="tree-head">
         <span><Icon name="folder" size={13} /> files</span>
-        <button
-          type="button"
-          class="tree-add"
-          title="Add a new ref file"
+        <Button
+          size="sm"
+          icon="plus"
+          ariaLabel="Add a new ref file"
           onclick={() => {
             creating = !creating;
             editorError = null;
           }}
         >
-          <Icon name="plus" size={13} /> New
-        </button>
+          New
+        </Button>
       </div>
 
       {#if creating}
         <div class="tree-form">
-          <input
-            type="text"
+          <Input
             bind:value={newPath}
             placeholder="notes.md"
-            aria-label="new file path"
+            ariaLabel="new file path"
             onkeydown={(e) => e.key === "Enter" && createFile()}
           />
           <div class="tree-form-actions">
-            <button type="button" class="act" disabled={!newPath.trim() || saving} onclick={createFile}>Create</button>
-            <button type="button" class="act ghost" onclick={() => { creating = false; newPath = ""; }}>Cancel</button>
+            <Button size="sm" disabled={!newPath.trim() || saving} onclick={createFile}>Create</Button>
+            <Button size="sm" variant="ghost" onclick={() => { creating = false; newPath = ""; }}>Cancel</Button>
           </div>
         </div>
       {/if}
@@ -339,20 +337,20 @@
           {#each files as f (f.path)}
             <li class="tree-row" class:active={isActive(f.path, f.role)} data-path={f.path}>
               {#if renaming === f.path}
-                <input
+                <Input
                   class="rename-input"
-                  type="text"
                   bind:value={renameTo}
-                  aria-label="rename to"
+                  ariaLabel="rename to"
                   onkeydown={(e) => e.key === "Enter" && renameFile(f.path)}
                 />
-                <button type="button" class="row-act" disabled={!renameTo.trim() || filePending.has(f.path)} onclick={() => renameFile(f.path)}>Save</button>
-                <button type="button" class="row-act ghost" onclick={() => { renaming = null; renameTo = ""; }}>Cancel</button>
+                <Button size="sm" disabled={!renameTo.trim() || filePending.has(f.path)} onclick={() => renameFile(f.path)}>Save</Button>
+                <Button size="sm" variant="ghost" onclick={() => { renaming = null; renameTo = ""; }}>Cancel</Button>
               {:else if confirmingDelete === f.path}
                 <span class="confirm-label">Delete {f.path}?</span>
-                <button type="button" class="row-act danger" disabled={filePending.has(f.path)} onclick={() => deleteFile(f.path)}>Delete</button>
-                <button type="button" class="row-act ghost" onclick={() => (confirmingDelete = null)}>Cancel</button>
+                <Button size="sm" variant="danger" disabled={filePending.has(f.path)} onclick={() => deleteFile(f.path)}>Delete</Button>
+                <Button size="sm" variant="ghost" onclick={() => (confirmingDelete = null)}>Cancel</Button>
               {:else}
+                <!-- ds-allow-native: clickable file-tree row (whole-row selector), not a form-control button -->
                 <button type="button" class="tree-name" onclick={() => selectFile(f.path)} title={f.path}>
                   {#if f.role === "primary"}<Icon name="star" size={11} />{/if}
                   <span class="tree-name-text">{f.path}</span>
@@ -360,12 +358,8 @@
                 </button>
                 {#if f.role === "ref"}
                   <span class="row-tools">
-                    <button type="button" class="row-act ghost" title="Rename" disabled={filePending.has(f.path)} onclick={() => startRename(f.path)}>
-                      <Icon name="edit" size={12} />
-                    </button>
-                    <button type="button" class="row-act ghost" title="Delete" disabled={filePending.has(f.path)} onclick={() => (confirmingDelete = f.path)}>
-                      <Icon name="trash" size={12} />
-                    </button>
+                    <IconButton icon="edit" size={22} iconSize={12} label="Rename" variant="ghost" disabled={filePending.has(f.path)} onclick={() => startRename(f.path)} />
+                    <IconButton icon="trash" size={22} iconSize={12} label="Delete" variant="ghost" disabled={filePending.has(f.path)} onclick={() => (confirmingDelete = f.path)} />
                   </span>
                 {/if}
               {/if}
@@ -383,9 +377,9 @@
           {#if isPrimaryOpen}<Badge tone="default">primary</Badge>{/if}
           {#if canEdit}
             <Badge tone={dirtyCueV.tone}>{dirtyCueV.glyph} {dirtyCueV.label}</Badge>
-            <button type="button" class="act" disabled={!isDirty || saving} onclick={save}>
+            <Button size="sm" disabled={!isDirty || saving} onclick={save}>
               {saving ? "Saving…" : "Save"}
-            </button>
+            </Button>
           {/if}
         </span>
       </div>
@@ -398,6 +392,7 @@
           <p>Binary file — {loadedContent?.kind === "binary" ? loadedContent.size : 0} bytes. No text preview.</p>
         </div>
       {:else}
+        <!-- ds-allow-native: full-pane code editor (borderless, transparent, flex-fill) — not a form-field Textarea; needs aria-label + spellcheck the primitive doesn't expose -->
         <textarea
           class="editor-area mono"
           bind:value={buffer}
@@ -407,7 +402,9 @@
       {/if}
 
       {#if editorError}
-        <div class="editor-error" role="alert">{editorError}</div>
+        <div class="pane-notice">
+          <Callout tone="warn" role="alert">{editorError}</Callout>
+        </div>
       {/if}
     </div>
   </div>
@@ -447,35 +444,16 @@
     align-items: center;
     gap: 5px;
   }
-  .tree-add {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    padding: 2px 6px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface-2);
-    color: var(--text);
-    font-size: 11px;
-  }
-  .tree-add:hover {
-    border-color: var(--border-glow);
-  }
   .tree-form {
     display: flex;
     flex-direction: column;
     gap: 4px;
   }
-  .tree-form input,
-  .rename-input {
-    width: 100%;
+  /* The rename Input shares its flex row with Save/Cancel — let it shrink.
+     `:global` because the class lands on the child Input's inner field. */
+  :global(.rename-input) {
+    flex: 1;
     min-width: 0;
-    padding: 3px 6px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface);
-    color: var(--text);
-    font-size: 12px;
   }
   .tree-form-actions {
     display: flex;
@@ -611,42 +589,9 @@
     color: var(--text-dim);
     font-size: 12px;
   }
-  .editor-error {
+  /* The route-local error Callout sits flush under the pane, separated by a rule. */
+  .pane-notice {
     padding: 7px 10px;
     border-top: 1px solid var(--border);
-    background: color-mix(in srgb, var(--amber, #d08b1d) 14%, transparent);
-    color: var(--text);
-    font-size: 12px;
-  }
-  /* Buttons ------------------------------------------------------------- */
-  .act,
-  .row-act {
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface-2);
-    color: var(--text);
-    font-size: 11.5px;
-    padding: 3px 9px;
-    cursor: pointer;
-  }
-  .row-act {
-    padding: 2px 6px;
-    display: inline-flex;
-    align-items: center;
-  }
-  .act:hover:not(:disabled),
-  .row-act:hover:not(:disabled) {
-    border-color: var(--border-glow);
-  }
-  .act:disabled,
-  .row-act:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .ghost {
-    background: transparent;
-  }
-  .danger {
-    border-color: color-mix(in srgb, var(--amber, #d08b1d) 55%, var(--border));
   }
 </style>

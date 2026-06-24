@@ -67,20 +67,21 @@
 
   {#if selected}
     <!-- ── Session detail ── -->
+    <!-- ds-allow-native: inline link-style text affordance (no button chrome), not a form-control button -->
     <button class="back" onclick={back}><Icon name="chevron-right" size={13} /> back to list</button>
     {#if detailLoading}
-      <div class="muted">Loading session…</div>
+      <div class="u-muted">Loading session…</div>
     {:else if !detail}
-      <div class="muted">Could not load this session.</div>
+      <div class="u-muted">Could not load this session.</div>
     {:else}
       {@const s = detail.session}
       <div class="dhead">
         <h4>{s.title ?? `session:${s.session_id.slice(0, 8)}`}</h4>
         <div class="dmeta">
           <Badge tone={OUTCOME_TONE[s.outcome] ?? "default"}>{s.outcome}</Badge>
-          {#if s.model}<span class="mono dim">{s.model}</span>{/if}
-          <span class="dim">{projectName(s.cwd)}</span>
-          {#if s.branch_count != null && s.branch_count > 1}<span class="dim">· {s.branch_count} branches</span>{/if}
+          {#if s.model}<span class="mono u-subtle">{s.model}</span>{/if}
+          <span class="u-subtle">{projectName(s.cwd)}</span>
+          {#if s.branch_count != null && s.branch_count > 1}<span class="u-subtle">· {s.branch_count} branches</span>{/if}
         </div>
       </div>
       <div class="tokgrid">
@@ -106,13 +107,14 @@
   {:else}
     <!-- ── Filtered session list ── -->
     {#if listRes.loading && !listRes.data}
-      <div class="muted">Loading…</div>
+      <div class="u-muted">Loading…</div>
     {:else if !listRes.data?.sessions.length}
-      <div class="muted">No matching sessions.</div>
+      <div class="u-muted">No matching sessions.</div>
     {:else}
       <p class="count">{listRes.data.total} session{listRes.data.total === 1 ? "" : "s"} · range {ui.range}</p>
       <div class="list">
         {#each listRes.data.sessions as s (s.session_id)}
+          <!-- ds-allow-native: clickable session list row (opens detail or navigates), not a form-control button -->
           <button class="srow" onclick={() => pickSession(s.session_id)}>
             <div class="s-main">
               <span class="s-title">{s.title ?? `session:${s.session_id.slice(0, 8)}`}</span>
@@ -131,7 +133,6 @@
 
 <style>
   .query { margin: 0 0 16px; font-size: 11px; color: var(--text-subtle); background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; overflow-x: auto; }
-  .muted { color: var(--text-subtle); font-size: 13px; }
   .count { margin: 0 0 12px; font-size: 11.5px; color: var(--text-subtle); }
   .list { display: flex; flex-direction: column; gap: 6px; }
   .srow {
@@ -150,7 +151,6 @@
   .back:hover { color: var(--text-dim); }
   .dhead h4 { margin: 0 0 7px; font-size: 15px; font-weight: 600; }
   .dmeta { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; font-size: 11.5px; margin-bottom: 16px; }
-  .dim { color: var(--text-subtle); }
   .tokgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
   .tk { display: flex; flex-direction: column; gap: 3px; padding: 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
   .tk-v { font-size: 14px; font-weight: 600; color: var(--text); }

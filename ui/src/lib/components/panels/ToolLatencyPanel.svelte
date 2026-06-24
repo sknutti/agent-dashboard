@@ -22,7 +22,7 @@
 
 <Card title="Tool latency" icon="wrench" kicker="p50 · p95 · max — sorted by p95">
   {#if res.loading && !res.data}
-    <div class="muted">Loading…</div>
+    <div class="u-muted">Loading…</div>
   {:else if !tools.length}
     <EmptyState icon="wrench" title="No tool calls in range" message="Per-tool p50/p95/max + error rate, sorted by p95. Red flags at p95 ≥ 10s." error={res.error} onRetry={res.reload} />
   {:else}
@@ -43,9 +43,9 @@
               {#if t.humanGated}<span class="tag human" title="Latency is your response time, not tool execution — excluded from the slow ranking">· human-gated</span>{:else if flag(t) === "slow"}<span class="tag slow">· slow</span>{:else if flag(t) === "fast"}<span class="tag fast">· fast</span>{/if}
             </span>
             <span class="c-n mono">{compact(t.calls)}</span>
-            <span class="c-num mono" class:dim={t.humanGated}>{ms(t.p50)}</span>
-            <span class="c-num mono" class:bad={flag(t) === "slow"} class:good={flag(t) === "fast"} class:dim={t.humanGated}>{ms(t.p95)}</span>
-            <span class="c-num mono dim">{ms(t.max)}</span>
+            <span class="c-num mono" class:u-subtle={t.humanGated}>{ms(t.p50)}</span>
+            <span class="c-num mono" class:bad={flag(t) === "slow"} class:good={flag(t) === "fast"} class:u-subtle={t.humanGated}>{ms(t.p95)}</span>
+            <span class="c-num mono u-subtle">{ms(t.max)}</span>
             <span class="c-num mono" class:bad={t.errorRate > 0}>{t.errors ? pct(t.errorRate, 0) : "0"}</span>
           </div>
         {/each}
@@ -58,7 +58,6 @@
 </Card>
 
 <style>
-  .muted { color: var(--text-subtle); font-size: 13px; }
   .tbl { font-size: 12px; }
   .scroll { max-height: 300px; overflow-y: auto; }
   .row {
@@ -81,7 +80,6 @@
   }
   .c-tool { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
   .c-n, .c-num { text-align: right; }
-  .dim { color: var(--text-subtle); }
   .bad { color: var(--red); }
   .good { color: var(--cyan); } /* "good/fast" is cyan, not green (colourblind-safe vs red) */
   .tag { font-size: 9.5px; font-weight: 600; }

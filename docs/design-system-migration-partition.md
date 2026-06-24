@@ -18,6 +18,11 @@ in-flight edits). The orchestrator runs the full suite once in P5.
 - **M4 (layout + ui-internal):** layout/AppShell, layout/CommandPalette, layout/Nav,
   layout/SystemHealthStrip, ui/EmptyState (retry→Button), ui/Sheet (close→IconButton),
   ui/InfoModal (info→IconButton)
+- **M5 (routes/Library — HUGE):** routes/Library.svelte ALONE (52 btn / 11 in / 1 sel / 3 ta /
+  7 hex). Found via the gate, not the initial grep. Has Library.svelte.test.ts.
+- **M6 (routes-rest + SessionFeed + App):** routes/Session.svelte (3 btn / 1 hex, has test),
+  panels/SessionFeed.svelte (5 hex), routes/Activity.svelte, routes/Command.svelte,
+  routes/Skills.svelte, App.svelte (these last 4 are clean — verify/no-op).
 
 Tests that MUST stay green (assert behavior; preserve props/text/roles/bind targets):
 BootstrapWizard, ConflictResolver, GitSyncPanel, MetadataForm, ReconcileView, TargetOverlayPane,

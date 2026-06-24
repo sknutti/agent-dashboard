@@ -1,7 +1,6 @@
 <script lang="ts">
   import Card from "../ui/Card.svelte";
-  import EmptyState from "../ui/EmptyState.svelte";
-  import Badge from "../ui/Badge.svelte";
+  import { EmptyState, Badge, Callout } from "../ui";
   import { getAgents } from "../../api";
   import { resource } from "../../resource.svelte";
   import { ui } from "../../stores.svelte";
@@ -26,25 +25,22 @@
 
 <Card title="Subscription savings" icon="dollar" kicker="rack-rate (est) − native · {ui.range}">
   {#if res.loading && !res.data}
-    <div class="muted">Loading…</div>
+    <div class="u-muted">Loading…</div>
   {:else if res.error && !res.data}
     <EmptyState title="" error onRetry={res.reload} />
   {:else if !anyNative}
-    <div class="teach">
-      <p class="lead">Savings needs the native figure.</p>
-      <p class="body">
-        Rack-rate estimated cost is computed from tokens for every agent. The <em>native</em> cost
-        Claude stamps lives in OTEL metrics — interactive sessions don't write it to JSONL.
-        Turn telemetry on (<code>bun run setup:otel</code>) and the savings delta lights up here.
-      </p>
-      {#each rows as r (r.id)}
-        <div class="est-only">
-          <span class="name">{r.name}</span>
-          <span class="mono est">{usd(r.est)} <span class="tag">est</span></span>
-          <Badge tone="amber">native pending OTEL</Badge>
-        </div>
-      {/each}
-    </div>
+    <Callout tone="info" icon="info" title="Savings needs the native figure.">
+      Rack-rate estimated cost is computed from tokens for every agent. The <em>native</em> cost
+      Claude stamps lives in OTEL metrics — interactive sessions don't write it to JSONL.
+      Turn telemetry on (<code>bun run setup:otel</code>) and the savings delta lights up here.
+    </Callout>
+    {#each rows as r (r.id)}
+      <div class="est-only">
+        <span class="name">{r.name}</span>
+        <span class="mono est">{usd(r.est)} <span class="tag">est</span></span>
+        <Badge tone="amber">native pending OTEL</Badge>
+      </div>
+    {/each}
   {:else}
     {#each rows as r (r.id)}
       <div class="srow">
@@ -65,9 +61,7 @@
 </Card>
 
 <style>
-  .muted { color: var(--text-subtle); font-size: 13px; }
-  .teach .lead { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--text-dim); }
-  .teach .body { margin: 0 0 14px; font-size: 12.5px; line-height: 1.6; color: var(--text-subtle); }
+  .est-only { margin-top: 10px; }
   .est-only, .srow { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; border-top: 1px solid var(--border); }
   .name { font-size: 13px; font-weight: 560; color: var(--text); }
   .est { color: var(--amber); display: inline-flex; align-items: baseline; gap: 5px; }

@@ -13,6 +13,7 @@
     disabled = false,
     onclick,
     class: cls = "",
+    ...rest
   }: {
     icon: string;
     size?: number;
@@ -22,7 +23,8 @@
     disabled?: boolean;
     onclick?: (e: MouseEvent) => void;
     class?: string;
-  } = $props();
+    // Forward arbitrary native attributes (data-testid, aria-*, …).
+  } & Record<string, unknown> = $props();
 
   // Larger affordances get r8, the smaller info-style get r7 (matches the originals).
   const radius = $derived(size >= 30 ? 8 : 7);
@@ -38,6 +40,7 @@
 
 <button
   class="icon-btn {variant} {cls}"
+  {...rest}
   style="width:{size}px;height:{size}px;border-radius:{radius}px;"
   aria-label={label}
   title={label}

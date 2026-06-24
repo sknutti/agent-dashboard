@@ -25,6 +25,7 @@
     onclick,
     class: cls = "",
     children,
+    ...rest
   }: {
     variant?: ButtonVariant;
     size?: ButtonSize;
@@ -38,7 +39,9 @@
     onclick?: (e: MouseEvent) => void;
     class?: string;
     children?: Snippet;
-  } = $props();
+    // Forward arbitrary native attributes (data-testid, name, title, aria-*, …)
+    // to the rendered element — a wrapper must not swallow them.
+  } & Record<string, unknown> = $props();
 
   // loading implies disabled; either one blocks the click.
   const isDisabled = $derived(disabled || loading);
@@ -54,6 +57,7 @@
   <a
     class="btn {variant} {size} {cls}"
     class:loading
+    {...rest}
     {href}
     aria-label={ariaLabel}
     aria-disabled={isDisabled || undefined}
@@ -66,6 +70,7 @@
   <button
     class="btn {variant} {size} {cls}"
     class:loading
+    {...rest}
     {type}
     disabled={isDisabled}
     aria-label={ariaLabel}

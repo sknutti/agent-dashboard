@@ -6,6 +6,7 @@
   // (SessionFeed) — the tab auto-branches on `data.live`, no raw/cards toggle.
   // Errored tool cards pair red with the ✗ glyph (colorblind rule); the role dots
   // use the luminance-ordered token palette, no red/green pairing.
+  import { Button, Callout } from "../ui";
   import { getSessionMessages, type DisplayMessage } from "../../api";
   import { resource } from "../../resource.svelte";
   import { groupTurns, readableInput } from "../../transcript";
@@ -42,17 +43,17 @@
         {#if e.text}
           <pre class="output mono" class:clamped={isLong(e.text) && !expanded[key]}>{e.text}</pre>
           {#if isLong(e.text)}
-            <button class="expand" onclick={() => (expanded[key] = !expanded[key])}>
+            <Button size="sm" class="expand" onclick={() => (expanded[key] = !expanded[key])}>
               {expanded[key] ? "Show less" : "Show more"}
-            </button>
+            </Button>
           {/if}
         {/if}
       {:else}
         <div class="text" class:clamped={isLong(e.text) && !expanded[key]}>{e.text}</div>
         {#if isLong(e.text)}
-          <button class="expand" onclick={() => (expanded[key] = !expanded[key])}>
+          <Button size="sm" class="expand" onclick={() => (expanded[key] = !expanded[key])}>
             {expanded[key] ? "Show less" : "Show more"}
-          </button>
+          </Button>
         {/if}
       {/if}
     </article>
@@ -61,17 +62,17 @@
 
 <div class="messages-view">
   {#if res.loading && !data}
-    <div class="note muted">Loading messages…</div>
+    <Callout>Loading messages…</Callout>
   {:else if res.error || !data}
-    <div class="note">Couldn't load the parsed messages for this session.</div>
+    <Callout>Couldn't load the parsed messages for this session.</Callout>
   {:else if data.live}
     <!-- Still live: the unchanged raw byte-tail (its own SSE lifecycle). -->
     <SessionFeed {sessionId} fill />
   {:else if !data.supported}
     <!-- This IS the Messages tab, so no "open Messages" affordance — just the note. -->
-    <div class="note">{data.note ?? "Parsed message view is unavailable for this session."}</div>
+    <Callout>{data.note ?? "Parsed message view is unavailable for this session."}</Callout>
   {:else if turns.length === 0}
-    <div class="note muted">No messages in this session.</div>
+    <Callout>No messages in this session.</Callout>
   {:else}
     <div class="turns">
       {#each turns as turn, ti (ti)}
@@ -86,9 +87,9 @@
                   {#if turn.prompt.ts}<time class="ts">{relTime(turn.prompt.ts)}</time>{/if}
                 </div>
                 {#if isLong(turn.prompt.text)}
-                  <button class="expand" onclick={() => (expanded[pkey] = !expanded[pkey])}>
+                  <Button size="sm" class="expand" onclick={() => (expanded[pkey] = !expanded[pkey])}>
                     {expanded[pkey] ? "Show less" : "Show more"}
-                  </button>
+                  </Button>
                 {/if}
               </div>
             </div>
@@ -112,17 +113,6 @@
     overflow-y: auto;
     padding: 16px 24px;
   }
-  .note {
-    padding: 14px 16px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: var(--surface);
-    color: var(--text-dim);
-    font-size: 13px;
-    line-height: 1.5;
-  }
-  .note.muted { color: var(--text-subtle); }
-
   .turns { display: flex; flex-direction: column; gap: 22px; }
   .turn { display: flex; flex-direction: column; gap: 10px; }
 
@@ -238,7 +228,7 @@
     margin: 0;
     padding: 8px 10px;
     border-radius: 6px;
-    background: var(--bg, #0a0a0f);
+    background: var(--bg);
     font-size: 11.5px;
     line-height: 1.5;
     white-space: pre-wrap;
@@ -252,19 +242,17 @@
   .clamped {
     max-height: 14em;
     overflow: hidden;
-    -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent);
-    mask-image: linear-gradient(to bottom, #000 70%, transparent);
+    /* Alpha-only mask ramp: the colour channel is irrelevant (only the opaque →
+       transparent alpha matters); use the floating-surface token as the opaque
+       anchor so no raw hex lives in <style> (design-system gate). */
+    -webkit-mask-image: linear-gradient(to bottom, var(--surface-floating) 70%, transparent);
+    mask-image: linear-gradient(to bottom, var(--surface-floating) 70%, transparent);
   }
 
-  .expand {
+  /* The expand toggle (a Button) must not stretch in its flex-column parent. */
+  .card :global(.expand),
+  .prompt-body :global(.expand) {
     align-self: flex-start;
-    padding: 3px 8px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface-2);
-    color: var(--text-dim);
-    font-size: 11.5px;
   }
-  .expand:hover { color: var(--text); border-color: var(--border-glow); }
   .mono { font-family: var(--mono, ui-monospace, monospace); }
 </style>

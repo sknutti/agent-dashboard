@@ -13,8 +13,7 @@
   // handlers, so nothing reactive can clobber an in-progress edit (the W5 pattern
   // from the base editor). A stale-read nonce guards a slow fetch from a newer tab.
   import { untrack } from "svelte";
-  import Icon from "./ui/Icon.svelte";
-  import Badge from "./ui/Badge.svelte";
+  import { Badge, Button, Callout } from "./ui";
   import { resource } from "../resource.svelte";
   import {
     readPrimitiveTarget,
@@ -188,6 +187,7 @@
     <div class="overlay-tabs" role="tablist">
       {#each allowedTargets as t (t)}
         {@const tc = overlayCue(overlayTargets.has(t))}
+        <!-- ds-allow-native: custom tab-strip control (role=tab), structural — not a form-action Button -->
         <button
           type="button"
           role="tab"
@@ -218,19 +218,19 @@
         <span class="pane-cues">
           {#if editable}
             <Badge tone={dirtyCueV.tone}>{dirtyCueV.glyph} {dirtyCueV.label}</Badge>
-            <button type="button" class="act" disabled={!isDirty || saving} onclick={save}>
+            <Button size="sm" disabled={!isDirty || saving} onclick={save}>
               {saving ? "Saving…" : "Save overlay"}
-            </button>
+            </Button>
           {/if}
           {#if hasOverlay && !confirmingRemove}
-            <button type="button" class="act danger" disabled={removing} onclick={() => (confirmingRemove = true)}>
+            <Button size="sm" variant="danger" disabled={removing} onclick={() => (confirmingRemove = true)}>
               Remove overlay
-            </button>
+            </Button>
           {/if}
           {#if !hasOverlay && !adding}
-            <button type="button" class="act" onclick={startAdd}>
-              <Icon name="plus" size={12} /> Add overlay for {activeTarget}
-            </button>
+            <Button size="sm" icon="plus" iconSize={12} onclick={startAdd}>
+              Add overlay for {activeTarget}
+            </Button>
           {/if}
         </span>
       </div>
@@ -239,10 +239,10 @@
         <div class="confirm-bar" role="alertdialog" aria-label="confirm remove overlay">
           <span>Remove the <span class="mono">{activeTarget}</span> overlay? The target falls back to the base primary.</span>
           <span class="confirm-actions">
-            <button type="button" class="act danger" disabled={removing} onclick={removeOverlayFile}>
+            <Button size="sm" variant="danger" disabled={removing} onclick={removeOverlayFile}>
               {removing ? "Removing…" : "Remove"}
-            </button>
-            <button type="button" class="act ghost" disabled={removing} onclick={() => (confirmingRemove = false)}>Cancel</button>
+            </Button>
+            <Button size="sm" variant="ghost" disabled={removing} onclick={() => (confirmingRemove = false)}>Cancel</Button>
           </span>
         </div>
       {/if}
@@ -250,6 +250,7 @@
       {#if loading}
         <div class="pane-muted">Loading…</div>
       {:else}
+        <!-- ds-allow-native: full-pane overlay editor (borderless, transparent, readonly toggle, aria-label) — not a form-field Textarea -->
         <textarea
           class="overlay-area mono"
           bind:value={buffer}
@@ -260,7 +261,9 @@
       {/if}
 
       {#if error}
-        <div class="overlay-error" role="alert">{error}</div>
+        <div class="pane-notice">
+          <Callout tone="warn" role="alert">{error}</Callout>
+        </div>
       {/if}
     </div>
   </div>
@@ -310,10 +313,10 @@
      but the hue reinforces it for those who see it. Cyan/amber only (CVD-safe);
      never a bare red/green (Scott is red/green colorblind). */
   .tone-cyan {
-    color: var(--cyan, #56b4e9);
+    color: var(--cyan);
   }
   .tone-amber {
-    color: var(--amber, #d08b1d);
+    color: var(--amber);
   }
   .tone-default {
     color: var(--text-subtle);
@@ -359,7 +362,7 @@
     gap: 8px;
     padding: 7px 10px;
     border-bottom: 1px solid var(--border);
-    background: color-mix(in srgb, var(--amber, #d08b1d) 12%, transparent);
+    background: color-mix(in srgb, var(--amber) 12%, transparent);
     font-size: 12px;
     color: var(--text);
   }
@@ -393,36 +396,9 @@
     color: var(--text-dim);
     font-size: 12px;
   }
-  .overlay-error {
+  /* The route-local error Callout sits flush under the pane, separated by a rule. */
+  .pane-notice {
     padding: 7px 10px;
     border-top: 1px solid var(--border);
-    background: color-mix(in srgb, var(--amber, #d08b1d) 14%, transparent);
-    color: var(--text);
-    font-size: 12px;
-  }
-  .act {
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface-2);
-    color: var(--text);
-    font-size: 11.5px;
-    padding: 3px 9px;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-  }
-  .act:hover:not(:disabled) {
-    border-color: var(--border-glow);
-  }
-  .act:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .ghost {
-    background: transparent;
-  }
-  .danger {
-    border-color: color-mix(in srgb, var(--amber, #d08b1d) 55%, var(--border));
   }
 </style>

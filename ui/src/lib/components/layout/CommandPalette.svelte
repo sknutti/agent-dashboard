@@ -2,6 +2,7 @@
   import { fade, scale } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
   import Icon from "../ui/Icon.svelte";
+  import { Input } from "../ui";
   import { palette } from "../../stores.svelte";
   import { ROUTES, navigate, type RoutePath } from "../../router.svelte";
 
@@ -43,6 +44,14 @@
     close();
   }
 
+  // Autofocus the query input when the palette mounts. The native `autofocus`
+  // attribute isn't exposed by the Input primitive, so a focus action preserves
+  // the "type immediately after ⌘K" behaviour. DOM lifecycle sync (a Svelte
+  // action), not a component effect.
+  function autofocus(node: HTMLElement) {
+    node.querySelector("input")?.focus();
+  }
+
   function onKeydown(e: KeyboardEvent) {
     if (e.key === "Escape") {
       e.preventDefault();
@@ -71,22 +80,22 @@
     aria-label="Command palette"
     transition:scale={{ duration: 160, start: 0.97, easing: cubicOut }}
   >
-    <div class="search">
+    <div class="search" use:autofocus>
       <Icon name="search" size={16} />
-      <!-- svelte-ignore a11y_autofocus -->
-      <input
-        autofocus
+      <Input
+        class="palette-input"
         bind:value={query}
         oninput={() => (selected = 0)}
         onkeydown={onKeydown}
         placeholder="Search pages and actions…"
-        aria-label="Search pages and actions"
+        ariaLabel="Search pages and actions"
       />
       <kbd>ESC</kbd>
     </div>
     <ul class="results">
       {#each filtered as item, i (item.label)}
         <li>
+          <!-- ds-allow-native: clickable result row (full-width list item), not a form-control button. -->
           <button
             class="row"
             class:active={i === selected}
@@ -136,17 +145,21 @@
     border-bottom: 1px solid var(--border);
     color: var(--text-dim);
   }
-  .search input {
+  /* The Input primitive carries a border/surface/padding by default; inside the
+     palette search row it needs to read as a borderless 14.5px field that fills
+     the row. Override the primitive's scoped base via :global on our class. */
+  .search :global(.palette-input) {
     flex: 1;
+    width: auto;
     background: none;
     border: none;
-    outline: none;
+    border-radius: 0;
+    padding: 0;
     color: var(--text);
-    font-family: inherit;
     font-size: 14.5px;
   }
-  .search input::placeholder {
-    color: var(--text-subtle);
+  .search :global(.palette-input:focus) {
+    border-color: transparent;
   }
   kbd {
     font-family: var(--font-mono);

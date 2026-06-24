@@ -10,9 +10,7 @@
   // unit-testable with direct orphan input. Forget is a two-phase confirm against
   // a captured SNAPSHOT (D2): the confirm re-issues against the snapshot, so an
   // orphan-list change across the await can't redirect the forget.
-  import Badge from "./ui/Badge.svelte";
-  import Icon from "./ui/Icon.svelte";
-  import EmptyState from "./ui/EmptyState.svelte";
+  import { Badge, Button, Callout, EmptyState } from "./ui";
   import { forgetPrimitive, LibraryApiError, type LibraryTarget } from "../api";
   import { orphanCue, type OrphanInstall } from "../library";
 
@@ -70,7 +68,7 @@
   </p>
 
   {#if notice}
-    <div class="route-notice" class:warn={notice.tone === "amber"} role="status">{notice.text}</div>
+    <Callout tone={notice.tone === "amber" ? "warn" : "neutral"} role="status">{notice.text}</Callout>
   {/if}
 
   {#if !orphans.length}
@@ -101,16 +99,16 @@
                 {o.targets.length === 1 ? "record" : "records"} for <strong>{o.name}</strong>?
               </span>
               <div class="confirm-actions">
-                <button type="button" class="act" disabled={busy} onclick={cancel}>Cancel</button>
-                <button type="button" class="act danger" disabled={busy} onclick={doForget}>
+                <Button size="sm" disabled={busy} onclick={cancel}>Cancel</Button>
+                <Button variant="danger" size="sm" disabled={busy} onclick={doForget}>
                   {busy ? "Forgetting…" : "Forget"}
-                </button>
+                </Button>
               </div>
             </div>
           {:else}
-            <button type="button" class="orphan-forget" onclick={() => ask(o)}>
-              <Icon name="trash" size={13} /> Forget
-            </button>
+            <Button variant="ghost" size="sm" icon="trash" iconSize={13} onclick={() => ask(o)}>
+              Forget
+            </Button>
           {/if}
         </li>
       {/each}
@@ -126,7 +124,7 @@
   }
   .reconcile-intro {
     margin: 0;
-    color: var(--text-muted, #9aa);
+    color: var(--text-dim);
     font-size: 0.85rem;
     line-height: 1.45;
   }
@@ -139,12 +137,17 @@
     gap: 0.5rem;
   }
   .orphan-row {
-    border: 1px solid var(--border, #2a2a33);
+    border: 1px solid var(--border);
     border-radius: 6px;
     padding: 0.6rem 0.75rem;
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
+  }
+  /* The reveal/confirm Buttons sit in a column row — keep them left-aligned
+     instead of stretching to full width (replaces .orphan-forget's align-self). */
+  .orphan-row > :global(.btn) {
+    align-self: flex-start;
   }
   .orphan-head {
     display: flex;
@@ -156,7 +159,7 @@
   }
   .orphan-targets {
     font-size: 0.8rem;
-    color: var(--text-muted, #9aa);
+    color: var(--text-dim);
     display: flex;
     gap: 0.35rem;
     align-items: center;
@@ -166,23 +169,7 @@
     font-size: 0.75rem;
   }
   .cue.cyan {
-    color: var(--cue-cyan, #56b4e9);
-  }
-  .orphan-forget {
-    align-self: flex-start;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    background: none;
-    border: 1px solid var(--border, #2a2a33);
-    border-radius: 5px;
-    padding: 0.25rem 0.55rem;
-    color: var(--text, #ddd);
-    cursor: pointer;
-    font-size: 0.8rem;
-  }
-  .orphan-forget:hover {
-    border-color: var(--cue-amber, #e69f00);
+    color: var(--cyan);
   }
   .orphan-confirm {
     display: flex;
@@ -198,31 +185,5 @@
   .confirm-actions {
     display: flex;
     gap: 0.4rem;
-  }
-  .act {
-    border: 1px solid var(--border, #2a2a33);
-    border-radius: 5px;
-    padding: 0.25rem 0.6rem;
-    background: none;
-    color: var(--text, #ddd);
-    cursor: pointer;
-    font-size: 0.8rem;
-  }
-  .act.danger {
-    border-color: var(--cue-amber, #e69f00);
-    color: var(--cue-amber, #e69f00);
-  }
-  .act:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .route-notice {
-    border-radius: 5px;
-    padding: 0.4rem 0.6rem;
-    font-size: 0.82rem;
-    border: 1px solid var(--border, #2a2a33);
-  }
-  .route-notice.warn {
-    border-color: var(--cue-amber, #e69f00);
   }
 </style>

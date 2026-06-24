@@ -12,13 +12,13 @@
 
 <Card title="Skill economics" icon="dollar" kicker="invocations per skill · token cost needs OTEL">
   {#if res.loading && !res.data}
-    <div class="muted">Loading…</div>
+    <div class="u-muted">Loading…</div>
   {:else if res.error && !res.data}
     <EmptyState title="" error onRetry={res.reload} />
   {:else if d && d.attributed.length}
     <div class="rows">
       {#each d.attributed as s (s.skill)}
-        <div class="srow"><span class="sn">{s.skill}</span><span class="sv mono dim">{compact(s.uses)} uses</span></div>
+        <div class="srow"><span class="sn">{s.skill}</span><span class="sv mono u-subtle">{compact(s.uses)} uses</span></div>
       {/each}
     </div>
   {:else}
@@ -34,7 +34,6 @@
 </Card>
 
 <style>
-  .muted { color: var(--text-subtle); font-size: 13px; }
   .summary { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
   .big { font-size: 26px; font-weight: 650; color: var(--text); }
   .sub { font-size: 12px; color: var(--text-dim); }
@@ -43,5 +42,4 @@
   .rows { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
   .srow { display: flex; justify-content: space-between; gap: 8px; }
   .sn { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .dim { color: var(--text-subtle); }
 </style>

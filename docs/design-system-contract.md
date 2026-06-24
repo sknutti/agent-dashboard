@@ -71,6 +71,12 @@ type `--font-sans --font-mono`; shape `--radius (15) --radius-sm (10) --pad (28)
 Reproduce the current look exactly (values lifted from `.act` / `.meta-field input` / `.sel` /
 `.check` / EmptyState `.retry`). Provide accessible, hard-to-misuse prop contracts.
 
+> **Rest-props passthrough (ALL control primitives):** Button, IconButton, Input, Textarea,
+> Select, Checkbox each collect `...rest` (typed `& Record<string, unknown>`) and spread it onto
+> the rendered native element, so `data-testid`, `name`, `autocomplete`, `aria-*`, `title`, etc.
+> pass straight through. A wrapper primitive must never swallow caller-supplied native attributes —
+> this is what lets migrated controls keep `getByTestId(...)`-based tests green.
+
 ### Button.svelte
 ```ts
 type ButtonVariant = "default" | "primary" | "ghost" | "danger";
@@ -270,6 +276,13 @@ A Bun/TS script, exit non-zero on any violation, wired into `package.json` and C
 2. **Bare native controls outside the library:** flag `<button`, `<input`, `<select`,
    `<textarea` opening tags in any `.svelte` NOT under `ui/src/lib/components/ui/`. Print
    `file:line` and the suggested primitive. (`<label>`, `<fieldset>`, `<form>`, `<a>` are allowed.)
+   **Escape hatch:** a flagged native element is SUPPRESSED if its matched line OR the line
+   immediately above contains the comment `ds-allow-native:` followed by a short reason. This
+   is for genuinely-structural interactive elements that do NOT map to a form-control primitive
+   — e.g. a `<button>` wrapping an entire clickable list-row, or a custom disclosure widget.
+   Form/action controls (real buttons, text inputs, selects, checkboxes, textareas) MUST become
+   primitives — the escape hatch is for structural cases only, and every use carries a reason the
+   reviewer can audit. Keep these rare.
 3. Wire-up: add `"check:ds": "bun run ui/scripts/check-design-system.ts"` to root `package.json`,
    include it in the root `check` script, and add a step to the GitHub Actions workflow.
    After full migration the gate MUST pass with zero violations (that is the migration's done-bar).
@@ -288,6 +301,11 @@ A Bun/TS script, exit non-zero on any violation, wired into `package.json` and C
   in the library's scope.
 - Replace `.note` boxes → `<Callout tone>`; `.bar` → `<MetricBar>`; `.pill` → `<Badge>`;
   stat clusters → `<Stat>` where it maps cleanly.
+- **Clickable rows / structural interactive elements** that are not form-control buttons (a
+  `<button>` wrapping a whole list row, a custom disclosure toggle that doesn't map to Accordion/
+  CollapsibleSection): KEEP the native element but add a `<!-- ds-allow-native: <reason> -->`
+  comment on the line above so the gate (contract §7.2) suppresses it. Use sparingly — a real
+  action button is a `<Button>`, not an annotated native.
 - Standardize the 15 hand-rolled loading/empty/error blocks onto `<EmptyState>` where they are a
   panel's empty/error state (keep inline "Loading…" only where a skeleton/short text is genuinely
   better; prefer the existing pattern the panel already uses for its data state).

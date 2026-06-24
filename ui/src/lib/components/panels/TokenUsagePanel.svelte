@@ -1,6 +1,6 @@
 <script lang="ts">
   import Card from "../ui/Card.svelte";
-  import EmptyState from "../ui/EmptyState.svelte";
+  import { EmptyState, Select } from "../ui";
   import { getTokenUsage } from "../../api";
   import { resource } from "../../resource.svelte";
   import { ui } from "../../stores.svelte";
@@ -9,6 +9,9 @@
 
   // Per-agent dimension the API already returns (was collapsed to all-agents).
   const AGENTS = $derived(agentFilterOptions());
+  const agentOpts = $derived(
+    AGENTS.map((a) => ({ value: a, label: a === "all" ? "All agents" : AGENT_NAMES[a] ?? a })),
+  );
   let agent = $state("all");
   const res = resource(
     () => `tokens:${ui.range}:${agent}`,
@@ -121,17 +124,15 @@
 <Card title="Token usage" icon="cpu" kicker="effective · stacked daily · {ui.range}">
   {#snippet actions()}
     <div class="modetog" role="group" aria-label="Break down by">
+      <!-- ds-allow-native: segmented breakdown toggle (structural 2-state switch, not a form control). -->
       <button type="button" class:on={mode === "category"} onclick={() => setMode("category")}>category</button>
+      <!-- ds-allow-native: segmented breakdown toggle (structural 2-state switch, not a form control). -->
       <button type="button" class:on={mode === "agent"} onclick={() => setMode("agent")}>agent</button>
     </div>
-    <select class="sel" bind:value={agent} aria-label="Agent">
-      {#each AGENTS as a (a)}
-        <option value={a}>{a === "all" ? "All agents" : AGENT_NAMES[a] ?? a}</option>
-      {/each}
-    </select>
+    <Select bind:value={agent} options={agentOpts} size="sm" ariaLabel="Agent" />
   {/snippet}
   {#if res.loading && !res.data}
-    <div class="muted">Loading…</div>
+    <div class="u-muted">Loading…</div>
   {:else if !days.length}
     <EmptyState icon="cpu" title="No token data in range" message="Token usage appears here once a sync lands for this range." error={res.error} onRetry={res.reload} />
   {:else}
@@ -173,6 +174,7 @@
     </div>
     <div class="legend">
       {#each segs as s (s.key)}
+        <!-- ds-allow-native: legend entry is a structural brushing/highlight control (focusable), not a form action. -->
         <button
           type="button"
           class="leg"
@@ -189,15 +191,6 @@
 </Card>
 
 <style>
-  .muted { color: var(--text-subtle); font-size: 13px; }
-  .sel {
-    font-size: 11px;
-    padding: 3px 6px;
-    border-radius: 6px;
-    border: 1px solid var(--border);
-    background: var(--surface-2);
-    color: var(--text-dim);
-  }
   /* Segmented breakdown toggle (category | agent). */
   .modetog {
     display: inline-flex;

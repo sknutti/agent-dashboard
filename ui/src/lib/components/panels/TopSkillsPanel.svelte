@@ -1,6 +1,7 @@
 <script lang="ts">
   import Card from "../ui/Card.svelte";
   import EmptyState from "../ui/EmptyState.svelte";
+  import { MetricBar } from "../ui";
   import { getTopSkills } from "../../api";
   import { resource } from "../../resource.svelte";
   import { ui } from "../../stores.svelte";
@@ -13,7 +14,7 @@
 
 <Card title="Top skills" icon="sparkles" kicker="most used — by invocation">
   {#if res.loading && !res.data}
-    <div class="muted">Loading…</div>
+    <div class="u-muted">Loading…</div>
   {:else if res.error && !res.data}
     <EmptyState title="" error onRetry={res.reload} />
   {:else if d && d.attributed.length}
@@ -21,8 +22,8 @@
       {#each d.attributed as s (s.skill)}
         <div class="srow">
           <span class="sn" title={s.skill}>{s.skill}</span>
-          <span class="bar"><span class="fill" style="width:{((s.uses / maxUses) * 100).toFixed(0)}%"></span></span>
-          <span class="sv mono dim">{compact(s.uses)}</span>
+          <MetricBar value={s.uses} max={maxUses} color="var(--cyan)" ariaLabel={`${s.skill}: ${s.uses} uses`} />
+          <span class="sv mono u-subtle">{compact(s.uses)}</span>
         </div>
       {/each}
     </div>
@@ -40,7 +41,6 @@
 </Card>
 
 <style>
-  .muted { color: var(--text-subtle); font-size: 13px; }
   .summary { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
   .big { font-size: 26px; font-weight: 650; color: var(--text); }
   .sub { font-size: 12px; color: var(--text-dim); }
@@ -49,8 +49,5 @@
   .rows { display: flex; flex-direction: column; gap: 7px; font-size: 12px; }
   .srow { display: grid; grid-template-columns: 1fr 1fr 48px; gap: 8px; align-items: center; }
   .sn { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .bar { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
-  .fill { display: block; height: 100%; background: var(--cyan); }
   .sv { text-align: right; }
-  .dim { color: var(--text-subtle); }
 </style>

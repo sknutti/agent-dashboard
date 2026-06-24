@@ -65,6 +65,7 @@
     <p class="not-detected">{emptyReason}</p>
   {:else}
     <!-- Tokens + mix bar -->
+    <!-- ds-allow-native: clickable content block (token total + mix bar) that opens this agent's sessions drill, not a form-control button -->
     <button class="block-btn" onclick={() => drill("tokens")} title="Open this agent's sessions">
       <div class="tok-head">
         <span class="tok-total mono">{compact(effTotal)}</span>
@@ -105,14 +106,17 @@
 
     <!-- Stat cells (clickable drill-downs) -->
     <div class="cells">
+      <!-- ds-allow-native: clickable stat cell opening a drill-down, not a form-control button -->
       <button class="cell" onclick={() => drill("sessions")}>
         <span class="cell-val mono">{agent.sessions}</span>
         <span class="cell-label">sessions</span>
       </button>
+      <!-- ds-allow-native: clickable stat cell opening a drill-down, not a form-control button -->
       <button class="cell" onclick={() => drill("tools")}>
         <span class="cell-val mono">{compact(agent.tools)}</span>
         <span class="cell-label">tool calls</span>
       </button>
+      <!-- ds-allow-native: clickable stat cell opening a drill-down, not a form-control button -->
       <button class="cell" class:has-err={agent.errors > 0} onclick={() => drill("errors", "errored")}>
         <span class="cell-val mono">{agent.errors}</span>
         <span class="cell-label">errors</span>
@@ -216,10 +220,10 @@
     overflow: hidden;
     text-overflow: clip;
     padding: 0 3px;
-    color: #1a1208; /* on light (gold/amber) segments */
+    color: var(--on-light-seg); /* on light (gold/amber) segments */
   }
   .mixseg.ondark .mixlabel {
-    color: #eef3f8; /* on dark (teal/blue) segments */
+    color: var(--on-dark-seg); /* on dark (teal/blue) segments */
   }
   .cost-row {
     display: grid;

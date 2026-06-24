@@ -5,6 +5,7 @@
   // unsupported agent / missing log (a note → Messages), a non-errored Failure
   // (one-line explanation → Messages), and the populated windows. Red is ALWAYS
   // paired with the ✗ glyph (colorblind rule), reusing the .xmark convention.
+  import { Button, Callout } from "../ui";
   import { getSessionErrors, type DisplayMessage, type ErrorContext } from "../../api";
   import { resource } from "../../resource.svelte";
   import { navigate } from "../../router.svelte";
@@ -45,21 +46,23 @@
 
 <div class="errors-view">
   {#if res.loading && !data}
-    <div class="note muted">Loading parsed errors…</div>
+    <Callout>Loading parsed errors…</Callout>
   {:else if res.error || !data}
-    <div class="note">
+    <Callout>
       Couldn't load the parsed error view.
+      <!-- ds-allow-native: inline link-style text affordance (no button chrome), not a form-control button -->
       <button class="link" onclick={toMessages}>Open Messages</button>
-    </div>
+    </Callout>
   {:else if !data.supported}
-    <div class="note">
+    <Callout>
       {data.note ?? "Parsed error view is unavailable for this agent."}
+      <!-- ds-allow-native: inline link-style text affordance (no button chrome), not a form-control button -->
       <button class="link" onclick={toMessages}>Open Messages</button>
-    </div>
+    </Callout>
   {:else if data.failureNote}
-    <div class="note">{data.failureNote}</div>
+    <Callout>{data.failureNote}</Callout>
   {:else if !data.errors || data.errors.length === 0}
-    <div class="note muted">No errored tool calls in this session.</div>
+    <Callout>No errored tool calls in this session.</Callout>
   {:else}
     <div class="list">
       {#each data.errors as e, i (i)}
@@ -78,11 +81,11 @@
           {#each afterRows(e, i) as m, j (`a${j}`)}{@render ctxRow(m)}{/each}
 
           {#if hiddenCount(e) > 0}
-            <button class="expand" onclick={() => (expanded[i] = !expanded[i])}>
+            <Button size="sm" class="expand" onclick={() => (expanded[i] = !expanded[i])}>
               {expanded[i]
                 ? "Show less context"
                 : `Show ${hiddenCount(e)} more context message${hiddenCount(e) === 1 ? "" : "s"}`}
-            </button>
+            </Button>
           {/if}
         </article>
       {/each}
@@ -96,16 +99,6 @@
     overflow-y: auto;
     padding: 16px 24px;
   }
-  .note {
-    padding: 14px 16px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: var(--surface);
-    color: var(--text-dim);
-    font-size: 13px;
-    line-height: 1.5;
-  }
-  .note.muted { color: var(--text-subtle); }
   .link {
     color: var(--cyan);
     text-decoration: underline;
@@ -168,7 +161,7 @@
     margin: 0;
     padding: 8px 10px;
     border-radius: 6px;
-    background: var(--bg, #0a0a0f);
+    background: var(--bg);
     font-size: 11.5px;
     line-height: 1.5;
     white-space: pre-wrap;
@@ -179,15 +172,9 @@
   .input { color: var(--text-dim); }
   .err-text { color: color-mix(in srgb, var(--red) 70%, var(--text)); }
 
-  .expand {
+  /* The expand toggle (a Button) must not stretch in the flex-column card. */
+  .card :global(.expand) {
     align-self: flex-start;
-    padding: 3px 8px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface-2);
-    color: var(--text-dim);
-    font-size: 11.5px;
   }
-  .expand:hover { color: var(--text); border-color: var(--border-glow); }
   .mono { font-family: var(--mono, ui-monospace, monospace); }
 </style>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from "../lib/components/ui/Icon.svelte";
+  import { Button } from "../lib/components/ui";
   import SessionMessages from "../lib/components/panels/SessionMessages.svelte";
   import SessionErrors from "../lib/components/panels/SessionErrors.svelte";
   import GitOutcomeStrip from "../lib/components/panels/GitOutcomeStrip.svelte";
@@ -26,10 +27,10 @@
 
 <div class="session-page">
   <header class="head">
-    <button class="back" onclick={() => navigate("/")} title="Back to dashboard">
+    <Button class="back" onclick={() => navigate("/")} ariaLabel="Back to dashboard">
       <Icon name="chevron-right" size={16} class="flip" />
       <span>Dashboard</span>
-    </button>
+    </Button>
 
     {#if session}
       <div class="head-main">
@@ -52,11 +53,13 @@
   </header>
 
   <div class="tabs" role="tablist" aria-label="Session view">
+    <!-- ds-allow-native: ARIA tablist tab, not a form/action control — no primitive maps -->
     <button
       class="tab" role="tab" aria-selected={activeTab === "errors"}
       class:active={activeTab === "errors"} onclick={() => selectTab("errors")}>
       Errors
     </button>
+    <!-- ds-allow-native: ARIA tablist tab, not a form/action control — no primitive maps -->
     <button
       class="tab" role="tab" aria-selected={activeTab === "messages"}
       class:active={activeTab === "messages"} onclick={() => selectTab("messages")}>
@@ -81,7 +84,7 @@
     display: flex;
     flex-direction: column;
     height: 100dvh;
-    background: var(--bg, #0a0a0f);
+    background: var(--bg);
   }
   .head {
     flex: none;
@@ -91,21 +94,16 @@
     padding: 18px 24px;
     border-bottom: 1px solid var(--border);
   }
-  .back {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
+  /* The back affordance is a <Button> (master §8). These :global overrides reach
+     the rendered .btn to keep the icon-snug padding and the chevron flip; the base
+     border/surface/hover all come from the Button primitive. */
+  .head :global(.btn.back) {
     align-self: flex-start;
+    gap: 5px;
     padding: 5px 9px 5px 5px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface-2);
     color: var(--text-dim);
-    font-size: 12.5px;
-    transition: all 0.15s var(--ease);
   }
-  .back:hover { color: var(--text); border-color: var(--border-glow); }
-  .back :global(svg.flip) { transform: rotate(180deg); }
+  .head :global(.btn.back svg.flip) { transform: rotate(180deg); }
   .head-main { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
   .title {
     margin: 0;

@@ -15,6 +15,7 @@
   <ul class="links">
     {#each ROUTES as r (r.path)}
       <li>
+        <!-- ds-allow-native: sidebar nav item (structural navigation row with active/aria-current state), not a form-control button. -->
         <button
           class="link"
           class:active={router.path === r.path}
@@ -58,7 +59,7 @@
     width: 34px;
     height: 34px;
     border-radius: 10px;
-    color: #fff;
+    color: var(--text);
     background: var(--accent-gradient);
     flex: none;
     box-shadow: 0 4px 16px color-mix(in srgb, var(--accent-from) 40%, transparent);

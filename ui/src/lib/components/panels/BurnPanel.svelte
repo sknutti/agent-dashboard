@@ -1,6 +1,6 @@
 <script lang="ts">
   import Card from "../ui/Card.svelte";
-  import EmptyState from "../ui/EmptyState.svelte";
+  import { EmptyState, Select } from "../ui";
   import DayOutputStrip from "./DayOutputStrip.svelte";
   import { getBurn, getAgents, getBurnOutput, type AgentId } from "../../api";
   import { resource } from "../../resource.svelte";
@@ -22,6 +22,16 @@
   const agentOpts = $derived(
     (agents.data?.agents ?? []).filter((a) => a.sessions > 0).map((a) => a.id),
   );
+  // Option lists for the Select primitives. Agent list is data-driven (above);
+  // "All agents" leads, then one entry per agent with burn data this window.
+  const agentSelOpts = $derived([
+    { value: "all", label: "All agents" },
+    ...agentOpts.map((id) => ({ value: id, label: AGENT_NAMES[id] ?? id })),
+  ]);
+  const rangeOpts = [
+    { value: "30d", label: "30 days" },
+    { value: "90d", label: "90 days" },
+  ];
 
   // Build a Sunday-aligned week grid over the range window ending today.
   const cells = $derived.by(() => {
@@ -77,20 +87,12 @@
 
 <Card title="Burn" icon="gauge" kicker="fluent, or just expensive?">
   {#snippet actions()}
-    <select class="sel" bind:value={agent} aria-label="Agent">
-      <option value="all">All agents</option>
-      {#each agentOpts as id (id)}
-        <option value={id}>{AGENT_NAMES[id] ?? id}</option>
-      {/each}
-    </select>
-    <select class="sel" bind:value={range} aria-label="Range">
-      <option value="30d">30 days</option>
-      <option value="90d">90 days</option>
-    </select>
+    <Select bind:value={agent} options={agentSelOpts} size="sm" ariaLabel="Agent" />
+    <Select bind:value={range} options={rangeOpts} size="sm" ariaLabel="Range" />
   {/snippet}
 
   {#if res.loading && !res.data}
-    <div class="muted">Loading…</div>
+    <div class="u-muted">Loading…</div>
   {:else if !d || !d.daily.length}
     <EmptyState icon="gauge" title="Nothing to burn yet" message="A bill tells you what happened — a burn view changes what you hand the computer tomorrow." error={res.error} onRetry={res.reload} />
   {:else}
@@ -126,8 +128,8 @@
 
     <div class="receipts">
       <div class="totline">
-        <span class="big mono">{compact(d.totals.tokens)}</span>
-        <span class="sub">tokens · {usd(d.totals.estimatedUsd)} est over {range}</span>
+        <span class="u-big u-mono">{compact(d.totals.tokens)}</span>
+        <span class="u-sub">tokens · {usd(d.totals.estimatedUsd)} est over {range}</span>
       </div>
       <div class="scales">
         {#each d.scaleEquivalents as s (s.label)}
@@ -165,18 +167,9 @@
 </Card>
 
 <style>
-  .muted { color: var(--text-subtle); font-size: 13px; }
-  .sel {
-    font-size: 11px;
-    padding: 3px 6px;
-    border-radius: 6px;
-    border: 1px solid var(--border);
-    background: var(--surface-2);
-    color: var(--text-dim);
-  }
   .caption { margin: 0 0 8px; font-size: 11.5px; color: var(--text-subtle); }
   .legend { display: flex; align-items: center; gap: 4px; margin: 0 0 12px; font-size: 10px; color: var(--text-subtle); }
-  .lg-sw { width: 12px; height: 12px; border-radius: 3px; border: 1px solid color-mix(in srgb, #000 22%, transparent); }
+  .lg-sw { width: 12px; height: 12px; border-radius: 3px; border: 1px solid color-mix(in srgb, var(--bg) 22%, transparent); }
   .lg-lbl { color: var(--text-subtle); }
   .lg-note { color: var(--text-subtle); opacity: 0.8; }
   .colnote { margin: 14px 0 6px; font-size: 10.5px; line-height: 1.5; color: var(--text-subtle); }
@@ -199,13 +192,11 @@
     height: 13px;
     border-radius: 3px;
     /* background is set inline from the colourblind-safe ramp (cellColor). */
-    border: 1px solid color-mix(in srgb, #000 22%, transparent);
+    border: 1px solid color-mix(in srgb, var(--bg) 22%, transparent);
   }
   .cell.empty { background: transparent; border-color: transparent; }
   .receipts { margin: 18px 0 14px; }
   .totline { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-  .big { font-size: 22px; font-weight: 600; color: var(--text); }
-  .sub { font-size: 11.5px; color: var(--text-subtle); display: inline-flex; align-items: center; gap: 5px; }
   .scales { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; }
   .scale { font-size: 12px; color: var(--text-dim); cursor: help; }
   .scale strong { color: var(--text); }

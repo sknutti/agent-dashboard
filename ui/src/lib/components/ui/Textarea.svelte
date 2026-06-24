@@ -9,6 +9,7 @@
     disabled = false,
     oninput,
     class: cls = "",
+    ...rest
   }: {
     value?: string;
     rows?: number;
@@ -16,11 +17,13 @@
     disabled?: boolean;
     oninput?: (e: Event) => void;
     class?: string;
-  } = $props();
+    // Forward arbitrary native attributes (data-testid, name, …).
+  } & Record<string, unknown> = $props();
 </script>
 
 <textarea
   class="textarea {cls}"
+  {...rest}
   bind:value
   {rows}
   {placeholder}

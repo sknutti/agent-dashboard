@@ -32,6 +32,7 @@
       <h1 class="page-title">{title}</h1>
       <div class="topbar-right">
         <SystemHealthStrip />
+        <!-- ds-allow-native: composite search affordance (Search label + ⌘K kbd hint needs scoped kbd styling Button can't provide). -->
         <button class="kbtn" onclick={() => (palette.open = true)} aria-label="Open command palette">
           <Icon name="search" size={14} />
           <span>Search</span>

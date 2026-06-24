@@ -46,9 +46,9 @@
     overflow-x: hidden;
     scrollbar-gutter: stable;
     scrollbar-width: thin;
-    scrollbar-color: var(--border-glow, #44445a) transparent;
+    scrollbar-color: var(--border-glow) transparent;
     border-top: 1px solid var(--border);
-    background: var(--bg, #0a0a0f);
+    background: var(--bg);
     padding: 10px 12px;
     font-size: 11px;
     line-height: 1.5;
@@ -66,12 +66,12 @@
     background: transparent;
   }
   .feed::-webkit-scrollbar-thumb {
-    background: var(--border-glow, #44445a);
+    background: var(--border-glow);
     border-radius: 6px;
-    border: 3px solid var(--bg, #0a0a0f);
+    border: 3px solid var(--bg);
   }
   .feed::-webkit-scrollbar-thumb:hover {
-    background: var(--text-subtle, #6a6a82);
+    background: var(--text-subtle);
   }
   .feed-empty { color: var(--text-subtle); }
   .line {

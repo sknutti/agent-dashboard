@@ -14,9 +14,7 @@
   // NOT the plan, so a cold resume re-scans (to re-derive the plan) and executes
   // with `resume=session` — core's filter_remaining drops already-completed items
   // by (kind,name,action), so no double-create even if the candidate set shifted.
-  import Badge from "./ui/Badge.svelte";
-  import Icon from "./ui/Icon.svelte";
-  import EmptyState from "./ui/EmptyState.svelte";
+  import { Badge, Button, IconButton, Checkbox, Callout, EmptyState } from "./ui";
   import ReconcileView from "./ReconcileView.svelte";
   import { resource } from "../resource.svelte";
   import {
@@ -195,12 +193,11 @@
   <div class="wizard">
     <header class="wizard-head">
       <h3 id="bootstrap-title">Bootstrap from your machine</h3>
-      <button type="button" class="close" title="Close" aria-label="Close" onclick={onClose}>
-        <Icon name="x" size={16} />
-      </button>
+      <IconButton icon="x" size={26} iconSize={16} label="Close" variant="ghost" onclick={onClose} />
     </header>
 
     <div class="tabs" role="tablist">
+      <!-- ds-allow-native: custom underline tab-strip (role=tab), structural — not a form-action Button -->
       <button
         type="button"
         role="tab"
@@ -211,6 +208,7 @@
       >
         Import
       </button>
+      <!-- ds-allow-native: custom underline tab-strip (role=tab), structural — not a form-action Button -->
       <button
         type="button"
         role="tab"
@@ -229,7 +227,7 @@
       {:else if step === "start"}
         <!-- Step 1: resume gate (if a session exists) or the scan CTA. -->
         {#if sessionRes.loading && !sessionRes.data}
-          <div class="muted">Checking for an in-progress import…</div>
+          <div class="u-muted">Checking for an in-progress import…</div>
         {:else if sessionRes.data}
           <section class="gate" aria-label="Resume or discard the previous import">
             <p>
@@ -237,15 +235,15 @@
               already imported), or discard it and start fresh.
             </p>
             <div class="gate-actions">
-              <button type="button" class="act primary" disabled={execBusy || scanBusy} onclick={resumeFromGate}>
+              <Button variant="primary" disabled={execBusy || scanBusy} onclick={resumeFromGate}>
                 {scanBusy || execBusy ? "Resuming…" : "Resume previous import"}
-              </button>
-              <button type="button" class="act" disabled={execBusy || scanBusy} onclick={discardSession}>
+              </Button>
+              <Button disabled={execBusy || scanBusy} onclick={discardSession}>
                 Discard &amp; start fresh
-              </button>
+              </Button>
             </div>
-            {#if scanError}<div class="route-notice warn" role="status">{scanError}</div>{/if}
-            {#if execError}<div class="route-notice warn" role="status">{execError}</div>{/if}
+            {#if scanError}<div class="route-notice"><Callout tone="warn" role="status">{scanError}</Callout></div>{/if}
+            {#if execError}<div class="route-notice"><Callout tone="warn" role="status">{execError}</Callout></div>{/if}
           </section>
         {:else}
           <section class="scan-cta">
@@ -261,11 +259,11 @@
                 </ul>
               </div>
             {:else}
-              <button type="button" class="act primary" onclick={doScan}>
-                <Icon name="search" size={14} /> Scan my machine
-              </button>
+              <Button variant="primary" icon="search" onclick={doScan}>
+                Scan my machine
+              </Button>
             {/if}
-            {#if scanError}<div class="route-notice warn" role="status">{scanError}</div>{/if}
+            {#if scanError}<div class="route-notice"><Callout tone="warn" role="status">{scanError}</Callout></div>{/if}
           </section>
         {/if}
       {:else if step === "review" && scanResult}
@@ -292,12 +290,11 @@
                     {@const key = selectionKey(a.kind, a.name)}
                     {@const cue = classificationCue("new")}
                     <li class="action-row">
-                      <label>
-                        <input type="checkbox" checked={!excluded.has(key)} onchange={() => toggle(key)} />
+                      <Checkbox checked={!excluded.has(key)} onchange={() => toggle(key)}>
                         <span class="action-name">{a.name}</span>
                         <Badge>{KIND_LABELS[a.kind]}</Badge>
                         <small class="cue cyan">{cue.glyph} {cue.label}</small>
-                      </label>
+                      </Checkbox>
                     </li>
                   {/each}
                 </ul>
@@ -310,8 +307,7 @@
                     {@const cue = classificationCue("drifted")}
                     {@const drifted = driftedTargetsByKey.get(key) ?? []}
                     <li class="action-row">
-                      <label>
-                        <input type="checkbox" checked={!excluded.has(key)} onchange={() => toggle(key)} />
+                      <Checkbox checked={!excluded.has(key)} onchange={() => toggle(key)}>
                         <span class="action-name">{a.name}</span>
                         <Badge>{KIND_LABELS[a.kind]}</Badge>
                         <small class="cue amber">{cue.glyph} {cue.label}</small>
@@ -320,7 +316,7 @@
                             >in {drifted.join(", ")} overlay{drifted.length > 1 ? "s" : ""}</small
                           >
                         {/if}
-                      </label>
+                      </Checkbox>
                     </li>
                   {/each}
                 </ul>
@@ -331,7 +327,7 @@
           {#if alreadyImported.length || needsReview.length}
             <details class="info-rows">
               <summary>{alreadyImported.length + needsReview.length} found but not importable</summary>
-              <ul class="action-list muted">
+              <ul class="action-list u-muted">
                 {#each alreadyImported as g (selectionKey(g.kind, g.name))}
                   {@const cue = classificationCue("already_imported")}
                   <li class="action-row info">
@@ -352,18 +348,17 @@
             </details>
           {/if}
 
-          {#if execError}<div class="route-notice warn" role="status">{execError}</div>{/if}
+          {#if execError}<div class="route-notice"><Callout tone="warn" role="status">{execError}</Callout></div>{/if}
 
           <div class="review-actions">
-            <button type="button" class="act" disabled={execBusy} onclick={() => (step = "start")}>Back</button>
-            <button
-              type="button"
-              class="act primary"
+            <Button disabled={execBusy} onclick={() => (step = "start")}>Back</Button>
+            <Button
+              variant="primary"
               disabled={execBusy || selectedCount <= 0}
               onclick={() => execute(null)}
             >
               {execBusy ? "Importing…" : `Import ${selectedCount} ${selectedCount === 1 ? "item" : "items"}`}
-            </button>
+            </Button>
           </div>
         </section>
       {:else if step === "result" && result}
@@ -393,9 +388,7 @@
             <div class="backup">
               A backup of your source dirs was written to
               <code class="mono">{backupPath}</code>
-              <button type="button" class="copy" title="Copy path" onclick={() => copyPath(backupPath)}>
-                <Icon name="copy" size={13} />
-              </button>
+              <IconButton icon="copy" size={24} iconSize={13} label="Copy path" variant="ghost" onclick={() => copyPath(backupPath)} />
             </div>
           {/if}
 
@@ -415,17 +408,17 @@
                   </li>
                 {/each}
               </ul>
-              {#if execError}<div class="route-notice warn" role="status">{execError}</div>{/if}
-              <button type="button" class="act primary" disabled={execBusy} onclick={resumeRemaining}>
+              {#if execError}<div class="route-notice"><Callout tone="warn" role="status">{execError}</Callout></div>{/if}
+              <Button variant="primary" disabled={execBusy} onclick={resumeRemaining}>
                 {execBusy ? "Resuming…" : "Resume the skipped items"}
-              </button>
+              </Button>
             </section>
           {:else}
             <EmptyState icon="check" title="Import complete" message="Everything selected was imported." />
           {/if}
 
           <div class="review-actions">
-            <button type="button" class="act primary" onclick={onClose}>Done</button>
+            <Button variant="primary" onclick={onClose}>Done</Button>
           </div>
         </section>
       {/if}
@@ -435,8 +428,8 @@
 
 <style>
   .wizard {
-    background: var(--panel, #15151c);
-    border: 1px solid var(--border, #2a2a33);
+    background: var(--surface);
+    border: 1px solid var(--border);
     border-radius: 10px;
     width: min(620px, 92vw);
     max-height: 86vh;
@@ -449,41 +442,35 @@
     align-items: center;
     justify-content: space-between;
     padding: 0.85rem 1rem;
-    border-bottom: 1px solid var(--border, #2a2a33);
+    border-bottom: 1px solid var(--border);
   }
   .wizard-head h3 {
     margin: 0;
     font-size: 1rem;
   }
-  .close {
-    background: none;
-    border: none;
-    color: var(--text-muted, #9aa);
-    cursor: pointer;
-  }
   .tabs {
     display: flex;
     gap: 0.25rem;
     padding: 0.5rem 1rem 0;
-    border-bottom: 1px solid var(--border, #2a2a33);
+    border-bottom: 1px solid var(--border);
   }
   .tab {
     background: none;
     border: none;
     border-bottom: 2px solid transparent;
-    color: var(--text-muted, #9aa);
+    color: var(--text-dim);
     padding: 0.4rem 0.7rem;
     cursor: pointer;
     font-size: 0.86rem;
   }
   .tab.active {
-    color: var(--text, #eee);
-    border-bottom-color: var(--cue-cyan, #56b4e9);
+    color: var(--text);
+    border-bottom-color: var(--cyan);
   }
   .tab-badge {
     margin-left: 0.35rem;
-    background: var(--cue-cyan, #56b4e9);
-    color: #06121b;
+    background: var(--cyan);
+    color: var(--on-light-seg);
     border-radius: 999px;
     padding: 0 0.4rem;
     font-size: 0.72rem;
@@ -492,10 +479,6 @@
   .wizard-body {
     padding: 1rem;
     overflow-y: auto;
-  }
-  .muted {
-    color: var(--text-muted, #9aa);
-    font-size: 0.86rem;
   }
   .banner {
     margin: 0 0 0.75rem;
@@ -508,7 +491,7 @@
   }
   .scan-bar {
     height: 4px;
-    background: var(--border, #2a2a33);
+    background: var(--border);
     border-radius: 2px;
     overflow: hidden;
   }
@@ -516,7 +499,7 @@
     display: block;
     height: 100%;
     width: 40%;
-    background: var(--cue-cyan, #56b4e9);
+    background: var(--cyan);
     animation: indeterminate 1.1s ease-in-out infinite;
   }
   @keyframes indeterminate {
@@ -531,7 +514,7 @@
     list-style: none;
     margin: 0;
     padding: 0;
-    color: var(--text-muted, #9aa);
+    color: var(--text-dim);
     font-size: 0.82rem;
     display: flex;
     flex-direction: column;
@@ -545,12 +528,6 @@
     flex-direction: column;
     gap: 0.3rem;
   }
-  .action-row label {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    cursor: pointer;
-  }
   .action-row.info {
     display: flex;
     align-items: center;
@@ -563,7 +540,7 @@
   h4 {
     margin: 0.5rem 0 0.4rem;
     font-size: 0.82rem;
-    color: var(--text-muted, #9aa);
+    color: var(--text-dim);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
@@ -571,37 +548,29 @@
     font-size: 0.76rem;
   }
   .cue.cyan {
-    color: var(--cue-cyan, #56b4e9);
+    color: var(--cyan);
   }
   .cue.amber {
-    color: var(--cue-amber, #e69f00);
+    color: var(--amber);
   }
   .drift-where {
     font-size: 0.72rem;
-    color: var(--text-muted, #9aa);
+    color: var(--text-dim);
   }
   .info-rows summary {
     cursor: pointer;
-    color: var(--text-muted, #9aa);
+    color: var(--text-dim);
     font-size: 0.82rem;
     margin-bottom: 0.4rem;
   }
   .backup {
     font-size: 0.8rem;
-    color: var(--text-muted, #9aa);
+    color: var(--text-dim);
     display: flex;
     align-items: center;
     gap: 0.4rem;
     flex-wrap: wrap;
     margin-bottom: 0.6rem;
-  }
-  .copy {
-    background: none;
-    border: 1px solid var(--border, #2a2a33);
-    border-radius: 4px;
-    color: var(--text-muted, #9aa);
-    cursor: pointer;
-    padding: 0.1rem 0.3rem;
   }
   .gate-actions,
   .review-actions,
@@ -615,38 +584,7 @@
     justify-content: flex-end;
     margin-top: 0.5rem;
   }
-  .act {
-    border: 1px solid var(--border, #2a2a33);
-    border-radius: 5px;
-    padding: 0.4rem 0.75rem;
-    background: none;
-    color: var(--text, #ddd);
-    cursor: pointer;
-    font-size: 0.85rem;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-  }
-  .act.primary {
-    border-color: var(--cue-cyan, #56b4e9);
-    color: var(--cue-cyan, #56b4e9);
-  }
-  .act:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .mono {
-    font-family: var(--mono, ui-monospace, monospace);
-    font-size: 0.82em;
-  }
   .route-notice {
-    border-radius: 5px;
-    padding: 0.4rem 0.6rem;
-    font-size: 0.82rem;
-    border: 1px solid var(--border, #2a2a33);
     margin: 0.5rem 0;
-  }
-  .route-notice.warn {
-    border-color: var(--cue-amber, #e69f00);
   }
 </style>

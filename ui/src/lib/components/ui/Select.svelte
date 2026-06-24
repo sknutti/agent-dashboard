@@ -10,6 +10,7 @@
     ariaLabel,
     onchange,
     class: cls = "",
+    ...rest
   }: {
     value?: string;
     options: Opt[];
@@ -18,7 +19,8 @@
     ariaLabel?: string;
     onchange?: (e: Event) => void;
     class?: string;
-  } = $props();
+    // Forward arbitrary native attributes (data-testid, name, …).
+  } & Record<string, unknown> = $props();
 
   // string → {value:s, label:s}; objects pass through.
   const normalized = $derived(
@@ -28,6 +30,7 @@
 
 <select
   class="sel {size} {cls}"
+  {...rest}
   bind:value
   {disabled}
   aria-label={ariaLabel}

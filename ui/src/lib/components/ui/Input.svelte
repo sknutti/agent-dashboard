@@ -13,6 +13,7 @@
     onkeydown,
     onchange,
     class: cls = "",
+    ...rest
   }: {
     value?: string;
     type?: "text" | "email" | "password" | "search" | "number" | "url";
@@ -24,11 +25,13 @@
     onkeydown?: (e: KeyboardEvent) => void;
     onchange?: (e: Event) => void;
     class?: string;
-  } = $props();
+    // Forward arbitrary native attributes (data-testid, name, autocomplete, …).
+  } & Record<string, unknown> = $props();
 </script>
 
 <input
   class="input {cls}"
+  {...rest}
   {type}
   bind:value
   {placeholder}
