@@ -13,7 +13,7 @@
   // relevant resource after it lands. The URL/PAT inputs are NOT pre-filled from
   // the async status (which would fight the poll) — the current values render as
   // labels; the inputs are for *changing* them.
-  import Icon from "./ui/Icon.svelte";
+  import { Icon, IconButton, Button, Input, Badge } from "./ui";
   import ConflictResolver from "./ConflictResolver.svelte";
   import { resource } from "../resource.svelte";
   import {
@@ -174,7 +174,7 @@
   <div class="panel">
     <header class="panel-head">
       <h3 id="git-sync-title"><Icon name="git-branch" size={15} /> Git sync</h3>
-      <button type="button" class="x" aria-label="Close" onclick={onClose}>×</button>
+      <IconButton icon="x" label="Close" variant="ghost" onclick={onClose} />
     </header>
 
     {#if conflictMode}
@@ -184,26 +184,27 @@
       <section class="block">
         <h4>Remote</h4>
         {#if status.loading}
-          <p class="muted">loading…</p>
+          <p class="u-muted">loading…</p>
         {:else}
           <p class="current" data-testid="current-remote">
             {#if status.data?.remote_url}
               <span class="mono">{status.data.remote_url}</span>
             {:else}
-              <span class="muted">no remote configured</span>
+              <span class="u-muted">no remote configured</span>
             {/if}
           </p>
           <div class="field">
-            <input
+            <Input
               type="url"
               placeholder="https://github.com/owner/repo"
               bind:value={urlInput}
-              aria-label="Remote URL"
+              ariaLabel="Remote URL"
+              class="grow"
               data-testid="remote-url-input"
             />
-            <button type="button" class="act" disabled={busy || !urlInput.trim()} onclick={saveRemote}>
+            <Button disabled={busy || !urlInput.trim()} onclick={saveRemote}>
               {remoteConfigured ? "Change" : "Set remote"}
-            </button>
+            </Button>
           </div>
           {#if urlError}
             <p class="field-err" role="alert" data-testid="url-error">{urlError}</p>
@@ -218,23 +219,24 @@
           {#if patStored}
             <span class="mono" data-testid="pat-redacted">{status.data?.pat_redacted}</span>
           {:else}
-            <span class="muted">no token stored</span>
+            <span class="u-muted">no token stored</span>
           {/if}
         </p>
         <div class="field">
-          <input
+          <Input
             type="password"
             placeholder="ghp_… (stored securely, never shown)"
             bind:value={patInput}
+            ariaLabel="Personal access token"
+            class="grow"
             autocomplete="off"
-            aria-label="Personal access token"
             data-testid="pat-input"
           />
-          <button type="button" class="act" disabled={busy || !patInput} onclick={savePat}>
+          <Button disabled={busy || !patInput} onclick={savePat}>
             {patStored ? "Replace" : "Store"}
-          </button>
+          </Button>
           {#if patStored}
-            <button type="button" class="act ghost" disabled={busy} onclick={removePat}>Remove</button>
+            <Button variant="ghost" disabled={busy} onclick={removePat}>Remove</Button>
           {/if}
         </div>
       </section>
@@ -248,21 +250,13 @@
           </span>
         </div>
         {#if !remoteConfigured}
-          <p class="muted">Configure a remote above to push or pull.</p>
+          <p class="u-muted">Configure a remote above to push or pull.</p>
         {:else}
           <div class="sync-actions">
-            <button
-              type="button"
-              class="act"
-              disabled={busy}
-              onclick={startPush}
-              data-testid="push-btn"
-            >
-              Push{#if unpushedCount > 0}<span class="badge">{unpushedCount}</span>{/if}
-            </button>
-            <button type="button" class="act" disabled={busy} onclick={startPull} data-testid="pull-btn">
-              Pull
-            </button>
+            <Button disabled={busy} onclick={startPush} data-testid="push-btn">
+              Push{#if unpushedCount > 0}<Badge tone="accent">{unpushedCount}</Badge>{/if}
+            </Button>
+            <Button disabled={busy} onclick={startPull} data-testid="pull-btn">Pull</Button>
           </div>
 
           {#if findings && findings.length > 0}
@@ -280,18 +274,10 @@
                 {/each}
               </ul>
               <div class="gate-actions">
-                <button type="button" class="act ghost" disabled={busy} onclick={() => (findings = null)}>
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  class="act danger"
-                  disabled={busy}
-                  onclick={doPush}
-                  data-testid="push-anyway"
-                >
+                <Button variant="ghost" disabled={busy} onclick={() => (findings = null)}>Cancel</Button>
+                <Button variant="danger" disabled={busy} onclick={doPush} data-testid="push-anyway">
                   Push despite {findings.length} finding{findings.length === 1 ? "" : "s"}
-                </button>
+                </Button>
               </div>
             </div>
           {/if}
@@ -318,8 +304,8 @@
     width: min(640px, 92vw);
     max-height: 88vh;
     overflow: auto;
-    background: var(--surface, #1b1b1b);
-    border: 1px solid var(--border, #2a2a2a);
+    background: var(--surface);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 1rem 1.1rem;
   }
@@ -332,16 +318,8 @@
   .panel-head h3 {
     margin: 0;
   }
-  .x {
-    background: transparent;
-    border: 0;
-    font-size: 1.3rem;
-    line-height: 1;
-    cursor: pointer;
-    color: var(--muted, #888);
-  }
   .block {
-    border-top: 1px solid var(--border, #2a2a2a);
+    border-top: 1px solid var(--border);
     padding: 0.7rem 0;
   }
   .block h4 {
@@ -356,17 +334,12 @@
     display: flex;
     gap: 0.4rem;
   }
-  .field input {
+  /* Let the primitive Input flex to fill the row beside its button. */
+  .field :global(.input.grow) {
     flex: 1;
-    padding: 0.35rem 0.5rem;
-    border-radius: 4px;
-    border: 1px solid var(--border, #2a2a2a);
-    background: var(--surface-2, #161616);
-    color: inherit;
-    font-size: 0.82rem;
   }
   .field-err {
-    color: var(--amber, #c79a3a);
+    color: var(--amber);
     font-size: 0.78rem;
     margin: 0.3rem 0 0;
   }
@@ -380,17 +353,8 @@
     gap: 0.5rem;
     margin-bottom: 0.5rem;
   }
-  .badge {
-    margin-left: 0.35rem;
-    padding: 0 0.35rem;
-    border-radius: 8px;
-    background: var(--accent, #4a7);
-    color: #08120c;
-    font-size: 0.72rem;
-    font-weight: 700;
-  }
   .gate {
-    border: 1px solid var(--amber, #c79a3a);
+    border: 1px solid var(--amber);
     border-radius: 6px;
     padding: 0.5rem 0.6rem;
   }
@@ -407,11 +371,11 @@
     padding: 0.15rem 0;
   }
   .matched {
-    color: var(--amber, #c79a3a);
+    color: var(--amber);
     word-break: break-all;
   }
   .kind {
-    color: var(--muted, #888);
+    color: var(--text-subtle);
     font-size: 0.72rem;
   }
   .gate-actions {
@@ -419,38 +383,15 @@
     justify-content: flex-end;
     gap: 0.5rem;
   }
-  .muted {
-    color: var(--muted, #888);
-    font-size: 0.82rem;
-  }
   .cue.amber {
-    color: var(--amber, #c79a3a);
+    color: var(--amber);
   }
   .cue.cyan {
-    color: var(--cyan, #4aa3c7);
+    color: var(--cyan);
   }
   .err {
-    color: var(--amber, #c79a3a);
+    color: var(--amber);
     font-size: 0.82rem;
     margin-top: 0.5rem;
-  }
-  .act {
-    padding: 0.35rem 0.7rem;
-    border-radius: 4px;
-    border: 1px solid var(--border, #2a2a2a);
-    background: var(--surface-2, #161616);
-    cursor: pointer;
-    color: inherit;
-    font-size: 0.82rem;
-  }
-  .act:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .act.ghost {
-    background: transparent;
-  }
-  .act.danger {
-    border-color: var(--amber, #c79a3a);
   }
 </style>

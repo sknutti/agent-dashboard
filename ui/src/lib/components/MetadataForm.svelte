@@ -18,7 +18,7 @@
   //    names the orphaned paths (derived from the already-loaded list_overlays
   //    data — O1, never the error payload) and re-issues with the flag set.
   import { untrack } from "svelte";
-  import Badge from "./ui/Badge.svelte";
+  import { Badge, Button, Input, Checkbox, Callout } from "./ui";
   import { resource } from "../resource.svelte";
   import {
     updateMetadata,
@@ -156,9 +156,8 @@
 <div class="meta-form">
   <div class="meta-row">
     <label class="meta-field">
-      <span>Display name</span>
-      <input
-        type="text"
+      <span class="u-label">Display name</span>
+      <Input
         placeholder="(none)"
         bind:value={displayName}
         disabled={saving}
@@ -169,9 +168,8 @@
       />
     </label>
     <label class="meta-field">
-      <span>Author</span>
-      <input
-        type="text"
+      <span class="u-label">Author</span>
+      <Input
         placeholder="(none)"
         bind:value={author}
         disabled={saving}
@@ -188,49 +186,45 @@
     <p class="meta-hint">Only targets this kind can ship to are offered.</p>
     <div class="target-checks">
       {#each kindAllowedTargets as t (t)}
-        <label class="check">
-          <input
-            type="checkbox"
-            checked={selectedTargets.has(t)}
-            disabled={saving}
-            onchange={() => toggleTarget(t)}
-          />
+        <Checkbox checked={selectedTargets.has(t)} disabled={saving} onchange={() => toggleTarget(t)}>
           <span class="mono">{t}</span>
-        </label>
+        </Checkbox>
       {/each}
     </div>
   </fieldset>
 
   {#if confirmDrop}
-    <div class="confirm-bar" role="alertdialog" aria-label="confirm discard overlays">
-      <div class="confirm-text">
-        {#if confirmDrop.length}
-          <strong>Dropping these targets will delete their overlay file(s):</strong>
-          <ul>
-            {#each confirmDrop as d (d.target)}
-              <li><span class="mono">{d.target}</span> — {d.paths.join(", ")}</li>
-            {/each}
-          </ul>
-        {:else}
-          <strong>Dropping a target will delete its overlay file(s).</strong>
-        {/if}
+    <Callout tone="warn" role="alertdialog">
+      <div class="confirm-bar">
+        <div class="confirm-text">
+          {#if confirmDrop.length}
+            <strong>Dropping these targets will delete their overlay file(s):</strong>
+            <ul>
+              {#each confirmDrop as d (d.target)}
+                <li><span class="mono">{d.target}</span> — {d.paths.join(", ")}</li>
+              {/each}
+            </ul>
+          {:else}
+            <strong>Dropping a target will delete its overlay file(s).</strong>
+          {/if}
+        </div>
+        <span class="confirm-actions">
+          <Button variant="danger" size="sm" disabled={saving} onclick={() => save(true)}>
+            {saving ? "Discarding…" : "Discard overlay(s) and save"}
+          </Button>
+          <Button variant="ghost" size="sm" disabled={saving} onclick={() => (confirmDrop = null)}>
+            Cancel
+          </Button>
+        </span>
       </div>
-      <span class="confirm-actions">
-        <button type="button" class="act danger" disabled={saving} onclick={() => save(true)}>
-          {saving ? "Discarding…" : "Discard overlay(s) and save"}
-        </button>
-        <button type="button" class="act ghost" disabled={saving} onclick={() => (confirmDrop = null)}>
-          Cancel
-        </button>
-      </span>
-    </div>
+    </Callout>
   {/if}
 
   <div class="meta-actions">
     <Badge tone={dirtyCue.tone}>{dirtyCue.glyph} {dirtyCue.label}</Badge>
-    <button type="button" class="act primary" disabled={!isDirty || saving} onclick={() => save(false)}>
+    <Button variant="primary" size="sm" disabled={!isDirty || saving} onclick={() => save(false)}>
       {saving ? "Saving…" : "Save metadata"}
-    </button>
+    </Button>
     {#if saveCue}
       <span class="save-cue tone-{saveCue.tone}" role="status">
         {saveCue.glyph} {saveCue.label}{#if commitError && saveCue.tone === "amber"} — {commitError.split("\n")[0]}{/if}
@@ -239,7 +233,7 @@
   </div>
 
   {#if error}
-    <div class="meta-error" role="alert">{error}</div>
+    <Callout tone="warn" role="alert">{error}</Callout>
   {/if}
 </div>
 
@@ -265,22 +259,6 @@
     flex: 1;
     min-width: 160px;
   }
-  .meta-field span {
-    font-size: 11px;
-    color: var(--text-dim);
-  }
-  .meta-field input {
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface);
-    color: var(--text);
-    font-size: 13px;
-    padding: 6px 8px;
-  }
-  .meta-field input:focus {
-    outline: none;
-    border-color: var(--border-glow);
-  }
   .meta-targets {
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -302,26 +280,13 @@
     gap: 14px;
     flex-wrap: wrap;
   }
-  .check {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12.5px;
-    color: var(--text);
-    cursor: pointer;
-  }
   .confirm-bar {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
     gap: 10px;
     flex-wrap: wrap;
-    padding: 9px 11px;
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--amber, #d08b1d) 12%, transparent);
-    border: 1px solid color-mix(in srgb, var(--amber, #d08b1d) 40%, var(--border));
-    font-size: 12px;
-    color: var(--text);
+    width: 100%;
   }
   .confirm-text ul {
     margin: 4px 0 0;
@@ -348,44 +313,9 @@
   /* CVD-safe tones — cyan/amber/default only, never a bare red/green (Scott is
      red/green colorblind). The glyph + label carry the meaning; hue reinforces. */
   .tone-amber {
-    color: var(--amber, #d08b1d);
+    color: var(--amber);
   }
   .tone-default {
     color: var(--text-subtle);
-  }
-  .meta-error {
-    padding: 7px 10px;
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--amber, #d08b1d) 14%, transparent);
-    color: var(--text);
-    font-size: 12px;
-  }
-  .act {
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface-2);
-    color: var(--text);
-    font-size: 11.5px;
-    padding: 4px 11px;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-  }
-  .act:hover:not(:disabled) {
-    border-color: var(--border-glow);
-  }
-  .act:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .act.primary {
-    background: color-mix(in srgb, var(--accent) 22%, var(--surface-2));
-  }
-  .ghost {
-    background: transparent;
-  }
-  .danger {
-    border-color: color-mix(in srgb, var(--amber, #d08b1d) 55%, var(--border));
   }
 </style>

@@ -1,6 +1,6 @@
 <script lang="ts">
   import Card from "../ui/Card.svelte";
-  import EmptyState from "../ui/EmptyState.svelte";
+  import { EmptyState } from "../ui";
   import { getContextHealth } from "../../api";
   import { resource } from "../../resource.svelte";
 
@@ -14,7 +14,7 @@
 
 <Card title="Context health" icon="info" kicker="settings.json + CLAUDE.md — read-only">
   {#if res.loading && !res.data}
-    <div class="muted">Loading…</div>
+    <div class="u-muted">Loading…</div>
   {:else if res.error && !res.data}
     <EmptyState title="" error onRetry={res.reload} />
   {:else if d}
@@ -37,12 +37,11 @@
         <div class="st"><span class="sv mono">{d.claudeMd.directives}</span><span class="sl">directives</span></div>
       </div>
     </div>
-    <p class="note">Counts only — file contents never leave your machine.</p>
+    <p class="note u-sub">Counts only — file contents never leave your machine.</p>
   {/if}
 </Card>
 
 <style>
-  .muted { color: var(--text-subtle); font-size: 13px; }
   .grp { margin-bottom: 14px; }
   .gh { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
   .gt { font-size: 12px; font-weight: 600; color: var(--text-dim); font-family: var(--mono, monospace); }
@@ -51,6 +50,7 @@
   .st { display: flex; flex-direction: column; gap: 1px; }
   .sv { font-size: 18px; font-weight: 650; color: var(--text); }
   .sl { font-size: 10.5px; color: var(--text-dim); }
-  .note { margin: 4px 0 0; font-size: 11px; color: var(--text-subtle); }
+  /* Bare caption (not a boxed messagebox) — type from .u-sub; only the layout margin is local. */
+  .note { margin: 4px 0 0; }
   .dim { color: var(--text-subtle); font-weight: 400; }
 </style>

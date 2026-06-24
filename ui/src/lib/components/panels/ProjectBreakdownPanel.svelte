@@ -1,6 +1,7 @@
 <script lang="ts">
   import Card from "../ui/Card.svelte";
   import EmptyState from "../ui/EmptyState.svelte";
+  import { MetricBar } from "../ui";
   import { getProjectBreakdown } from "../../api";
   import { resource } from "../../resource.svelte";
   import { ui } from "../../stores.svelte";
@@ -12,7 +13,7 @@
 
 <Card title="Project breakdown" icon="box" kicker="by working directory — effective tokens">
   {#if res.loading && !res.data}
-    <div class="muted">Loading…</div>
+    <div class="u-muted">Loading…</div>
   {:else if !projects.length}
     <EmptyState icon="box" title="No project activity in range" message="Sessions rolled up by cwd: effective tokens, sessions, tool calls. The home dir collapses to ~ — never a hardcoded username." error={res.error} onRetry={res.reload} />
   {:else}
@@ -29,11 +30,11 @@
           <div class="row">
             <span class="c-proj" title={homeDir(p.cwd)}>{projectName(p.cwd)}</span>
             <span class="c-n mono">{compact(p.sessions)}</span>
-            <span class="c-n mono dim">{compact(p.tools)}</span>
+            <span class="c-n mono u-subtle">{compact(p.tools)}</span>
             <span class="c-num mono">{compact(p.eff)}</span>
             <span class="c-share">
-              <span class="bar" aria-hidden="true"><span class="fill" style="width:{(p.share * 100).toFixed(1)}%"></span></span>
-              <span class="pctv mono dim">{pct(p.share, 0)}</span>
+              <span class="barwrap"><MetricBar value={p.share} color="var(--cyan)" ariaLabel={`${pct(p.share, 0)} share`} /></span>
+              <span class="pctv mono u-subtle">{pct(p.share, 0)}</span>
             </span>
           </div>
         {/each}
@@ -43,7 +44,6 @@
 </Card>
 
 <style>
-  .muted { color: var(--text-subtle); font-size: 13px; }
   .tbl { font-size: 12px; }
   .scroll { max-height: 300px; overflow-y: auto; }
   .row {
@@ -66,8 +66,6 @@
   .c-proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
   .c-n, .c-num { text-align: right; }
   .c-share { display: flex; align-items: center; gap: 6px; }
-  .bar { flex: 1; height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
-  .fill { display: block; height: 100%; background: var(--cyan); }
+  .barwrap { flex: 1; min-width: 0; }
   .pctv { width: 30px; text-align: right; }
-  .dim { color: var(--text-subtle); }
 </style>

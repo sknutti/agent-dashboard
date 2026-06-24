@@ -2,7 +2,7 @@
   import type { Snippet } from "svelte";
   import { fade, fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
-  import Icon from "./Icon.svelte";
+  import IconButton from "./IconButton.svelte";
 
   // Right slide-out drawer (master §17 / §22): Esc-to-close, backdrop click,
   // aria-modal. The drill-down detail and the info-modal both use this.
@@ -54,6 +54,10 @@
       }
     }
     node.addEventListener("keydown", onKey);
+    // Move focus into the dialog on open (the close button is the first focusable
+    // element). Replaces the close button's old `autofocus` attribute, which the
+    // IconButton primitive doesn't expose — keeps the modal's focus contract intact.
+    visible()[0]?.focus();
     return {
       destroy() {
         node.removeEventListener("keydown", onKey);
@@ -83,10 +87,7 @@
         <h2>{title}</h2>
         {#if subtitle}<p>{subtitle}</p>{/if}
       </div>
-      <!-- svelte-ignore a11y_autofocus -->
-      <button class="close" onclick={onClose} aria-label="Close" autofocus>
-        <Icon name="x" size={16} />
-      </button>
+      <IconButton icon="x" label="Close" iconSize={16} class="close" onclick={onClose} />
     </header>
     <div class="sheet-body">
       {#if children}{@render children()}{/if}
@@ -133,21 +134,10 @@
     font-size: 12.5px;
     color: var(--text-dim);
   }
-  .close {
+  /* The close control is the IconButton primitive (30px r8 default matches the
+     original); only keep it from shrinking in the header flex row. */
+  .sheet-head :global(.close) {
     flex: none;
-    display: grid;
-    place-items: center;
-    width: 30px;
-    height: 30px;
-    border-radius: 8px;
-    border: 1px solid var(--border);
-    background: var(--surface-2);
-    color: var(--text-dim);
-    transition: all 0.15s var(--ease);
-  }
-  .close:hover {
-    color: var(--text);
-    border-color: var(--border-glow);
   }
   .sheet-body {
     flex: 1;

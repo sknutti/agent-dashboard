@@ -11,6 +11,7 @@
   // explicit reload after a still_conflicted continue); every button is an event
   // handler.
   import ConflictRow from "./ConflictRow.svelte";
+  import { Button } from "./ui";
   import { resource } from "../resource.svelte";
   import {
     listPullConflicts,
@@ -94,14 +95,14 @@
 <section class="resolver" data-testid="conflict-resolver">
   <header>
     <h4>⚠ Resolve pull conflicts</h4>
-    <p class="muted">
+    <p class="u-muted">
       Pick a side for each file. Local is your change; Remote is the incoming change. Continue replays
       the rebase once every file is resolved.
     </p>
   </header>
 
   {#if conflicts.loading}
-    <p class="muted">loading conflicts…</p>
+    <p class="u-muted">loading conflicts…</p>
   {:else if conflicts.error}
     <p class="err" role="alert">Could not load the conflict list.</p>
   {:else if conflicts.data && conflicts.data.length > 0}
@@ -114,7 +115,7 @@
       />
     {/each}
   {:else}
-    <p class="muted">No conflicts remain.</p>
+    <p class="u-muted">No conflicts remain.</p>
   {/if}
 
   {#if error}
@@ -122,36 +123,24 @@
   {/if}
 
   <div class="actions">
-    <button type="button" class="act" disabled={busy} onclick={doAbort} data-testid="abort-pull">
-      Cancel (abort rebase)
-    </button>
-    <button
-      type="button"
-      class="act primary"
-      disabled={busy || !allResolved}
-      onclick={doContinue}
-      data-testid="continue-pull"
-    >
+    <Button disabled={busy} onclick={doAbort} data-testid="abort-pull">Cancel (abort rebase)</Button>
+    <Button variant="primary" disabled={busy || !allResolved} onclick={doContinue} data-testid="continue-pull">
       Continue
-    </button>
+    </Button>
   </div>
 </section>
 
 <style>
   .resolver {
-    border: 1px solid var(--amber, #c79a3a);
+    border: 1px solid var(--amber);
     border-radius: 6px;
     padding: 0.75rem;
   }
   header h4 {
     margin: 0 0 0.2rem;
   }
-  .muted {
-    color: var(--muted, #888);
-    font-size: 0.8rem;
-  }
   .err {
-    color: var(--amber, #c79a3a);
+    color: var(--amber);
     font-size: 0.8rem;
   }
   .actions {
@@ -159,19 +148,5 @@
     justify-content: flex-end;
     gap: 0.5rem;
     margin-top: 0.6rem;
-  }
-  .act {
-    padding: 0.35rem 0.8rem;
-    border-radius: 4px;
-    border: 1px solid var(--border, #2a2a2a);
-    background: var(--surface, #1d1d1d);
-    cursor: pointer;
-  }
-  .act:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .act.primary {
-    border-color: var(--accent, #4a7);
   }
 </style>

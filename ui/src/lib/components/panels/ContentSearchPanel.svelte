@@ -8,7 +8,7 @@
   // query short-circuits to an empty result WITHOUT hitting the API.
   import Card from "../ui/Card.svelte";
   import EmptyState from "../ui/EmptyState.svelte";
-  import Badge from "../ui/Badge.svelte";
+  import { Badge, Button, Input } from "../ui";
   import Icon from "../ui/Icon.svelte";
   import { searchContent, type SearchResponse } from "../../api";
   import { navigate } from "../../router.svelte";
@@ -71,14 +71,13 @@
   {#snippet actions()}
     <label class="search">
       <Icon name="search" size={13} />
-      <input
+      <Input
         type="search"
+        class="search-field"
         placeholder="search transcript content…"
-        aria-label="search transcript content"
+        ariaLabel="search transcript content"
         value={qInput}
-        oninput={(e) => onSearch(e.currentTarget.value)}
-        autocomplete="off"
-        spellcheck="false"
+        oninput={(e) => onSearch((e.currentTarget as HTMLInputElement).value)}
       />
     </label>
   {/snippet}
@@ -86,6 +85,7 @@
   <div class="filters">
     <div class="chips">
       {#each AGENTS as a (a)}
+        <!-- ds-allow-native: toggle-pill in a custom filter chip group, not a form-control button -->
         <button class="chip" class:on={agent === a} onclick={() => { agent = a; offset = 0; }}>
           {a === "all" ? "all agents" : agentName(a)}
         </button>
@@ -93,6 +93,7 @@
     </div>
     <div class="chips">
       {#each OUTCOMES as o (o)}
+        <!-- ds-allow-native: toggle-pill in a custom filter chip group, not a form-control button -->
         <button class="chip" class:on={outcome === o} onclick={() => { outcome = o; offset = 0; }}>
           {OUT_LABEL[o] ?? o}
         </button>
@@ -117,6 +118,7 @@
     <ul class="results">
       {#each results as r (r.session_id)}
         <li>
+          <!-- ds-allow-native: clickable result row (whole card opens the session), not a form-control button -->
           <button type="button" class="result" onclick={() => open(r.session_id)}>
             <div class="meta">
               <Badge>{agentName(r.agent)}</Badge>
@@ -130,8 +132,8 @@
     <div class="pager">
       <span class="pinfo">{showingFrom}–{showingTo} of {compact(total)}</span>
       <div class="pbtns">
-        <button class="pbtn" disabled={offset === 0} onclick={() => (offset = Math.max(0, offset - LIMIT))}>Prev</button>
-        <button class="pbtn" disabled={offset + LIMIT >= total} onclick={() => (offset += LIMIT)}>Next</button>
+        <Button size="sm" disabled={offset === 0} onclick={() => (offset = Math.max(0, offset - LIMIT))}>Prev</Button>
+        <Button size="sm" disabled={offset + LIMIT >= total} onclick={() => (offset += LIMIT)}>Next</Button>
       </div>
     </div>
   {/if}
@@ -148,12 +150,14 @@
     background: var(--surface-2);
     color: var(--text-subtle);
   }
-  .search input {
+  /* The Input primitive sits inside the icon wrapper, so strip its own chrome and
+     let the wrapper provide the border/background (the search-affordance look). */
+  .search :global(.search-field) {
     border: none;
     background: transparent;
     color: var(--text);
     font-size: 12px;
-    outline: none;
+    padding: 0;
     width: 170px;
   }
   .filters { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
@@ -228,15 +232,4 @@
   .pager { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; }
   .pinfo { font-size: 11.5px; color: var(--text-subtle); }
   .pbtns { display: flex; gap: 6px; }
-  .pbtn {
-    padding: 3px 12px;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    background: var(--surface-2);
-    color: var(--text-dim);
-    font-size: 12px;
-    cursor: pointer;
-  }
-  .pbtn:disabled { opacity: 0.4; cursor: default; }
-  .pbtn:not(:disabled):hover { border-color: var(--cyan); color: var(--cyan); }
 </style>

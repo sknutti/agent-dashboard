@@ -10,7 +10,7 @@
   // owns no rebase state — it reports the chosen side up; the parent drives
   // continue/abort. "Local" = the user's change, "Remote" = the incoming change
   // (the bridge hides the rebase --ours/--theirs swap).
-  import Icon from "./ui/Icon.svelte";
+  import { Button } from "./ui";
   import { resource } from "../resource.svelte";
   import { readConflictBlob, LibraryApiError, type LibraryConflictEntry, type LibraryConflictSide } from "../api";
   import { conflictResolvable } from "../library";
@@ -75,43 +75,39 @@
       <div class="side">
         <h5>Local <span class="hint">your change</span></h5>
         {#if local.loading}
-          <p class="muted">loading…</p>
+          <p class="u-muted">loading…</p>
         {:else if local.error}
-          <p class="muted">could not read</p>
+          <p class="u-muted">could not read</p>
         {:else}
           <pre class="blob">{local.data?.content ?? "(file removed on this side)"}</pre>
         {/if}
-        <button type="button" class="act" disabled={resolved} onclick={() => onResolve("local")}>
-          Use Local
-        </button>
+        <Button size="sm" disabled={resolved} onclick={() => onResolve("local")}>Use Local</Button>
       </div>
       <div class="side">
         <h5>Remote <span class="hint">incoming change</span></h5>
         {#if remote.loading}
-          <p class="muted">loading…</p>
+          <p class="u-muted">loading…</p>
         {:else if remote.error}
-          <p class="muted">could not read</p>
+          <p class="u-muted">could not read</p>
         {:else}
           <pre class="blob">{remote.data?.content ?? "(file removed on this side)"}</pre>
         {/if}
-        <button type="button" class="act" disabled={resolved} onclick={() => onResolve("remote")}>
-          Use Remote
-        </button>
+        <Button size="sm" disabled={resolved} onclick={() => onResolve("remote")}>Use Remote</Button>
       </div>
     </div>
   {:else}
     <!-- version_file / other: can't render a safe value-picker. Offer the path +
          pick-a-side (resolve still works; the user inspects the file out of band). -->
     <div class="escape">
-      <p class="muted">
+      <p class="u-muted">
         This {KIND_LABEL[conflict.kind] ?? "file"} can't be previewed here — open it to inspect, then pick a side.
       </p>
       <div class="escape-actions">
-        <button type="button" class="act ghost" onclick={copyPath}>
-          <Icon name="copy" size={12} /> {copied ? "copied path" : "Copy path"}
-        </button>
-        <button type="button" class="act" disabled={resolved} onclick={() => onResolve("local")}>Use Local</button>
-        <button type="button" class="act" disabled={resolved} onclick={() => onResolve("remote")}>Use Remote</button>
+        <Button variant="ghost" size="sm" icon="copy" iconSize={12} onclick={copyPath}>
+          {copied ? "copied path" : "Copy path"}
+        </Button>
+        <Button size="sm" disabled={resolved} onclick={() => onResolve("local")}>Use Local</Button>
+        <Button size="sm" disabled={resolved} onclick={() => onResolve("remote")}>Use Remote</Button>
       </div>
       <code class="mono abs">{absPath}</code>
     </div>
@@ -120,7 +116,7 @@
 
 <style>
   .conflict-row {
-    border: 1px solid var(--border, #2a2a2a);
+    border: 1px solid var(--border);
     border-radius: 6px;
     padding: 0.6rem 0.75rem;
     margin-bottom: 0.6rem;
@@ -139,7 +135,7 @@
   }
   .kind {
     font-size: 0.72rem;
-    color: var(--muted, #888);
+    color: var(--text-subtle);
   }
   .cue {
     margin-left: auto;
@@ -154,24 +150,24 @@
     margin: 0 0 0.3rem;
     font-size: 0.78rem;
   }
+  /* Keep the picker button off the blob preview above it. */
+  .side :global(.btn) {
+    margin-top: 0.3rem;
+  }
   .hint {
-    color: var(--muted, #888);
+    color: var(--text-subtle);
     font-weight: 400;
   }
   .blob {
     max-height: 9rem;
     overflow: auto;
-    background: var(--surface-2, #161616);
-    border: 1px solid var(--border, #2a2a2a);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
     border-radius: 4px;
     padding: 0.4rem;
     font-size: 0.74rem;
     white-space: pre-wrap;
     word-break: break-word;
-  }
-  .muted {
-    color: var(--muted, #888);
-    font-size: 0.78rem;
   }
   .escape-actions {
     display: flex;
@@ -180,23 +176,7 @@
   }
   .abs {
     font-size: 0.72rem;
-    color: var(--muted, #888);
+    color: var(--text-subtle);
     word-break: break-all;
-  }
-  .act {
-    margin-top: 0.3rem;
-    padding: 0.25rem 0.6rem;
-    font-size: 0.78rem;
-    border-radius: 4px;
-    border: 1px solid var(--border, #2a2a2a);
-    background: var(--surface, #1d1d1d);
-    cursor: pointer;
-  }
-  .act:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .act.ghost {
-    background: transparent;
   }
 </style>

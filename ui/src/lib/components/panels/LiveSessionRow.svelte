@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from "../ui/Icon.svelte";
+  import { Badge } from "../ui";
   import SessionFeed from "./SessionFeed.svelte";
   import { compact, homeDir, relTime } from "../../format";
   import type { LiveSession } from "../../api";
@@ -16,13 +17,14 @@
 
 <div class="acc" class:open>
   <div class="summary">
+    <!-- ds-allow-native: clickable session row / disclosure toggle -->
     <button class="summary-main" onclick={onToggle} aria-expanded={open}>
       <span class="chev"><Icon name="chevron-right" size={14} /></span>
       <span class="title">{session.title ?? `session:${session.session_id.slice(0, 8)}`}</span>
       <span class="meta mono">
         <span class="proj">{homeDir(session.cwd)}</span>
-        {#if session.model}<span class="pill model">{session.model}</span>{/if}
-        <span class="pill tok">{compact(session.total_tokens)} tok</span>
+        {#if session.model}<span class="model"><Badge tone="cyan">{session.model}</Badge></span>{/if}
+        <Badge>{compact(session.total_tokens)} tok</Badge>
         {#if (session.error_count ?? 0) > 0}<span class="err">{session.error_count} err</span>{/if}
         <span class="started">{relTime(session.started_at)}</span>
       </span>
@@ -75,18 +77,6 @@
   .title { font-size: 13px; font-weight: 560; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
   .meta { display: inline-flex; align-items: center; gap: 10px; font-size: 11px; color: var(--text-subtle); flex: none; }
   .meta .err { color: var(--red); }
-  .pill {
-    display: inline-flex;
-    align-items: center;
-    padding: 2px 8px;
-    border-radius: 999px;
-    border: 1px solid var(--border);
-    background: var(--surface);
-    font-size: 10.5px;
-    line-height: 1.4;
-  }
-  .pill.model { color: var(--cyan); border-color: color-mix(in srgb, var(--cyan) 35%, var(--border)); }
-  .pill.tok { color: var(--text-dim); }
   .open-page {
     display: grid;
     place-items: center;

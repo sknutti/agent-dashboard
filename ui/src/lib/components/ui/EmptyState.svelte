@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import Icon from "./Icon.svelte";
+  import Button from "./Button.svelte";
   // Empty states that TEACH (§22), not just "no data". Phase 0 panels are all
   // empty by design — this is the component that makes that feel intentional.
   //
@@ -32,7 +33,7 @@
   <p class="empty-title">{error ? "Couldn’t load data" : title}</p>
   {#if error}
     <p class="empty-msg">The server may be down or restarting. Numbers shown elsewhere may be stale.</p>
-    {#if onRetry}<button class="retry" onclick={onRetry}>Retry</button>{/if}
+    {#if onRetry}<Button size="sm" class="retry" onclick={onRetry}>Retry</Button>{/if}
   {:else}
     {#if message}<p class="empty-msg">{message}</p>{/if}
     {#if children}<div class="empty-extra">{@render children()}</div>{/if}
@@ -83,15 +84,8 @@
     border-color: color-mix(in srgb, var(--amber) 45%, var(--border));
     background: color-mix(in srgb, var(--amber) 12%, var(--surface-2));
   }
-  .retry {
+  /* The retry control is the Button primitive; only the spacing-above is ours. */
+  .empty :global(.retry) {
     margin-top: 10px;
-    padding: 5px 14px;
-    border-radius: 8px;
-    border: 1px solid var(--border);
-    background: var(--surface-2);
-    color: var(--text);
-    font-size: 12px;
-    transition: border-color 0.15s var(--ease);
   }
-  .retry:hover { border-color: var(--border-glow); }
 </style>

@@ -54,7 +54,7 @@
   {/snippet}
 
   {#if res.loading && !res.data}
-    <div class="muted">Loading…</div>
+    <div class="u-muted">Loading…</div>
   {:else if !servers.length}
     <EmptyState icon="plug" title="No MCP traffic in range" message="Servers with totals, avg + p95 latency. Click a server → per-tool breakdown. Slow tools (p95 ≥ 10s) flag red." error={res.error} onRetry={res.reload} />
   {:else}
@@ -65,6 +65,7 @@
     <div class="list">
       {#each servers as s (s.server)}
         <div class="srv">
+          <!-- ds-allow-native: custom disclosure widget (per-server expand row, grid layout + chevron), not a form-control button -->
           <button class="srv-head" class:open={expanded === s.server} onclick={() => toggle(s.server)}>
             <span class="chev"><Icon name="chevron-right" size={14} /></span>
             <span class="srv-name">{s.server}</span>
@@ -83,9 +84,9 @@
             {@const td = toolCache[`${s.server}:${range}`]}
             <div class="tools" transition:slide={{ duration: 200 }}>
               {#if td === "loading" || !td}
-                <div class="muted pad">Loading tools…</div>
+                <div class="u-muted pad">Loading tools…</div>
               {:else if td === "error"}
-                <div class="muted pad">Could not load tools.</div>
+                <div class="u-muted pad">Could not load tools.</div>
               {:else}
                 <div class="trow head"><span>tool</span><span>N</span><span>p50</span><span>p95</span><span>max</span><span>err</span></div>
                 {#each td.tools as t (t.tool)}
@@ -94,7 +95,7 @@
                     <span class="mono num">{t.calls}</span>
                     <span class="mono num">{ms(t.p50)}</span>
                     <span class="mono num" class:bad={flag(t.p95) === "slow"} class:good={flag(t.p95) === "fast"}>{ms(t.p95)}</span>
-                    <span class="mono num dim">{ms(t.max)}</span>
+                    <span class="mono num u-subtle">{ms(t.max)}</span>
                     <span class="mono num" class:bad={t.errorRate > 0}>{t.errors ? pct(t.errorRate, 0) : "0"}</span>
                   </div>
                 {/each}
@@ -108,7 +109,6 @@
 </Card>
 
 <style>
-  .muted { color: var(--text-subtle); font-size: 13px; }
   .pad { padding: 10px 13px; }
   .modal-p { margin: 0; font-size: 13px; line-height: 1.6; color: var(--text-dim); }
   .src-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
@@ -148,7 +148,6 @@
   .trow.head { color: var(--text-subtle); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
   .t-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
   .num { text-align: right; }
-  .dim { color: var(--text-subtle); }
   .bad { color: var(--red); }
   .good { color: var(--cyan); } /* "good/fast" is cyan, not green (colourblind-safe vs red) */
 </style>

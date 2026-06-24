@@ -1,6 +1,6 @@
 <script lang="ts">
   import Card from "../ui/Card.svelte";
-  import EmptyState from "../ui/EmptyState.svelte";
+  import { EmptyState } from "../ui";
   import { getOutcomes } from "../../api";
   import { resource } from "../../resource.svelte";
   import { ui } from "../../stores.svelte";
@@ -30,7 +30,7 @@
 
 <Card title="Session outcomes" icon="layers" kicker="ok · errored · limited · truncated">
   {#if res.loading && !res.data}
-    <div class="muted">Loading…</div>
+    <div class="u-muted">Loading…</div>
   {:else if !days.length}
     <EmptyState icon="layers" title="No sessions in range" message="Stacked daily bars: ok / errored / rate-limited / truncated / unfinished. They sum to the day's total." error={res.error} onRetry={res.reload} />
   {:else}
@@ -51,6 +51,7 @@
     </div>
     <div class="legend">
       {#each SEGS as s (s.key)}
+        <!-- ds-allow-native: legend entry is a structural brushing/highlight control (focusable), not a form action. -->
         <button
           type="button"
           class="leg"
@@ -67,7 +68,6 @@
 </Card>
 
 <style>
-  .muted { color: var(--text-subtle); font-size: 13px; }
   .chart { display: flex; align-items: flex-end; gap: 4px; height: 130px; }
   .col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; min-width: 0; }
   .bar { width: 100%; max-width: 26px; display: flex; flex-direction: column; border-radius: 3px 3px 0 0; overflow: hidden; min-height: 2px; }

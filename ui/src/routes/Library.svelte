@@ -4,9 +4,17 @@
   // read-only Working-copy / Versions / allowed-Targets detail surface, and a
   // right status rail. Drift + per-target install records are out of v1 (Option
   // A / C2), so those cells/tabs are absent — not stubbed.
-  import Badge from "../lib/components/ui/Badge.svelte";
-  import Icon from "../lib/components/ui/Icon.svelte";
-  import EmptyState from "../lib/components/ui/EmptyState.svelte";
+  import {
+    Badge,
+    Button,
+    IconButton,
+    Input,
+    Textarea,
+    Select,
+    Callout,
+    Icon,
+    EmptyState,
+  } from "../lib/components/ui";
   import WorkingFileEditor from "../lib/components/WorkingFileEditor.svelte";
   import TargetOverlayPane from "../lib/components/TargetOverlayPane.svelte";
   import MetadataForm from "../lib/components/MetadataForm.svelte";
@@ -1223,7 +1231,7 @@
   {/if}
 
   {#if status.loading && !status.data}
-    <div class="muted">Loading…</div>
+    <div class="u-muted load">Loading…</div>
   {:else if status.error}
     <div class="panel pad">
       <EmptyState
@@ -1243,7 +1251,7 @@
           The library bridge couldn’t respond ({status.data.unavailable.message}).
         {/if}
         <div class="retry-row">
-          <button type="button" class="retry-btn" onclick={status.reload}>Reload</button>
+          <Button onclick={status.reload}>Reload</Button>
         </div>
       </EmptyState>
     </div>
@@ -1268,21 +1276,21 @@
       <span class="mono">prompt library</span>
       <span>{primitives.length} primitives</span>
       <span>{gitSummary(status.data)}</span>
-      <button
-        type="button"
+      <Button
+        size="sm"
+        icon="database"
+        iconSize={13}
         class="import-btn"
         onclick={doImport}
         disabled={importing}
-        title="Copy the standalone app’s install records into the dashboard (one-time, idempotent)"
       >
-        <Icon name="database" size={13} />
         {importing ? "Importing…" : "Import existing installs"}
-      </button>
+      </Button>
     </div>
     {#if importNotice}
-      <div class="route-notice" class:warn={importNotice.tone === "amber"} role="status">
+      <Callout tone={importNotice.tone === "amber" ? "warn" : "info"} role="status">
         {importNotice.text}
-      </div>
+      </Callout>
     {/if}
 
     <section class="explorer-detail">
@@ -1292,72 +1300,51 @@
           <h3>Library</h3>
           <div class="head-actions">
             <Badge>{filtered.length} items</Badge>
-            <button type="button" class="head-btn" title="Create a new primitive" onclick={openCreate}>
-              <Icon name="plus" size={13} /> New
-            </button>
-            <button
-              type="button"
-              class="head-btn"
-              title="Import a primitive from a local install path"
-              onclick={openImportPath}
-            >
-              <Icon name="folder" size={13} /> Import
-            </button>
-            <button
-              type="button"
-              class="head-btn"
-              title="Scan your machine for existing primitives to import"
-              onclick={() => (bootstrapOpen = true)}
-            >
-              <Icon name="search" size={13} /> Bootstrap
+            <Button size="sm" icon="plus" iconSize={13} onclick={openCreate}>New</Button>
+            <Button size="sm" icon="folder" iconSize={13} onclick={openImportPath}>Import</Button>
+            <Button size="sm" icon="search" iconSize={13} onclick={() => (bootstrapOpen = true)}>
+              Bootstrap
               {#if orphans.length}<span class="head-badge" title="orphaned install records to reconcile">{orphans.length}</span>{/if}
-            </button>
-            <button
-              type="button"
-              class="head-btn"
-              title="Push, pull, and configure the git remote"
-              onclick={() => (gitSyncOpen = true)}
-            >
-              <Icon name="git-branch" size={13} /> Sync
-            </button>
+            </Button>
+            <Button size="sm" icon="git-branch" iconSize={13} onclick={() => (gitSyncOpen = true)}>Sync</Button>
           </div>
         </div>
         {#if lifecycleNotice}
-          <div
-            class="route-notice"
-            class:warn={lifecycleNotice.tone === "amber"}
-            class:info={lifecycleNotice.tone === "cyan"}
-            role="status"
-          >
+          <Callout tone={lifecycleNotice.tone === "amber" ? "warn" : "info"} role="status">
             {lifecycleNotice.text}
-          </div>
+          </Callout>
         {/if}
         <label class="search">
           <Icon name="search" size={14} />
-          <input type="text" bind:value={query} placeholder="Filter primitives" />
+          <Input class="search-input" bind:value={query} placeholder="Filter primitives" />
         </label>
         <!-- Content search (search slice): distinct from the name filter above —
              searches each primitive's working-copy primary file via the bridge. -->
         <label class="search content-search">
           <Icon name="file-text" size={14} />
-          <input
-            type="text"
+          <Input
+            class="search-input"
             value={searchTerm}
-            oninput={(e) => onSearchInput(e.currentTarget.value)}
+            oninput={(e) => onSearchInput((e.currentTarget as HTMLInputElement).value)}
             placeholder="Search file contents"
-            aria-label="Search primitive file contents"
+            ariaLabel="Search primitive file contents"
           />
           {#if searchTerm}
-            <button type="button" class="search-clear" title="Clear search" onclick={clearSearch}>
-              <Icon name="x" size={13} />
-            </button>
+            <IconButton
+              icon="x"
+              iconSize={13}
+              size={22}
+              variant="ghost"
+              label="Clear search"
+              onclick={clearSearch}
+            />
           {/if}
         </label>
 
         {#if searching}
           <section class="search-results" aria-label="Content search results">
             {#if searchRes.loading && !searchRes.data}
-              <div class="muted">Searching…</div>
+              <div class="u-muted load">Searching…</div>
             {:else if searchRes.error}
               <EmptyState icon="alert" title="Search failed" error={true} onRetry={searchRes.reload} />
             {:else if !searchHits.length}
@@ -1370,6 +1357,7 @@
               <div class="hit-list">
                 {#each searchHits as hit, i (hit.kind + "/" + hit.name + ":" + hit.line_number + ":" + i)}
                   {@const hitKey = selectionKey(hit.kind, hit.name)}
+                  <!-- ds-allow-native: clickable explorer search-result row (whole row is the target) -->
                   <button
                     type="button"
                     class="hit"
@@ -1390,7 +1378,7 @@
         {/if}
 
         {#if primitivesRes.loading && !primitivesRes.data}
-          <div class="muted">Loading…</div>
+          <div class="u-muted load">Loading…</div>
         {:else if !primitives.length}
           <EmptyState icon="box" title="Library is empty" message="No primitives found in this library yet." error={primitivesRes.error} onRetry={primitivesRes.reload} />
         {:else if !filtered.length}
@@ -1400,6 +1388,7 @@
             {#each groups as group (group.kind)}
               {@const open = isOpen(group.kind)}
               <section>
+                <!-- ds-allow-native: custom disclosure header (whole-row toggle with aria-expanded; not a form/action button) -->
                 <button
                   type="button"
                   class="group-head"
@@ -1418,6 +1407,7 @@
                       {@const key = selectionKey(p.kind, p.name)}
                       {@const cue = dirtyCue(p.dirty)}
                       {@const drifted = anyDrift(driftBatch, p.kind, p.name)}
+                      <!-- ds-allow-native: clickable explorer tree row (whole row is the target) -->
                       <button
                         type="button"
                         class="item"
@@ -1443,7 +1433,7 @@
       <!-- Center: read-only detail -->
       <main class="document panel">
         {#if detailRes.loading && !detailRes.data}
-          <div class="muted">Loading…</div>
+          <div class="u-muted load">Loading…</div>
         {:else if detailRes.error}
           <EmptyState icon="file-text" title="Couldn’t load primitive" error={true} onRetry={detailRes.reload} />
         {:else if detail}
@@ -1462,20 +1452,9 @@
             <div class="head-right">
               <Badge tone={headCue.tone}>{headCue.glyph} {headCue.label}</Badge>
               <div class="doc-actions">
-                <button type="button" class="head-btn" title="Rename this primitive" onclick={askRename}>
-                  <Icon name="edit" size={13} /> Rename
-                </button>
-                <button type="button" class="head-btn" title="Duplicate this primitive" onclick={askDuplicate}>
-                  <Icon name="layers" size={13} /> Duplicate
-                </button>
-                <button
-                  type="button"
-                  class="head-btn danger-btn"
-                  title="Delete this primitive from the library"
-                  onclick={askDelete}
-                >
-                  <Icon name="trash" size={13} /> Delete
-                </button>
+                <Button size="sm" icon="edit" iconSize={13} onclick={askRename}>Rename</Button>
+                <Button size="sm" icon="layers" iconSize={13} onclick={askDuplicate}>Duplicate</Button>
+                <Button size="sm" variant="danger" icon="trash" iconSize={13} onclick={askDelete}>Delete</Button>
               </div>
             </div>
           </header>
@@ -1554,14 +1533,14 @@
                 {#each targetRows.filter((r) => flattenEligibleTargets.has(r.target)) as row (row.target)}
                   <li class="flatten-row">
                     <span class="mono">{row.target}</span> overlay
-                    <button
-                      type="button"
-                      class="act"
+                    <Button
+                      size="sm"
+                      class="flatten-trigger"
                       onclick={() => openFlatten(row.target)}
                       disabled={isPending(detail.kind, detail.name, row.target)}
                     >
                       Flatten into base…
-                    </button>
+                    </Button>
                   </li>
                 {/each}
               </ul>
@@ -1581,15 +1560,15 @@
                   {/if}
                   <label>
                     New version
-                    <input type="text" bind:value={flattenLabel} placeholder="v2" />
+                    <Input bind:value={flattenLabel} placeholder="v2" />
                   </label>
                   <label>
                     Notes (optional)
-                    <input type="text" bind:value={flattenNotes} />
+                    <Input bind:value={flattenNotes} />
                   </label>
                   <div class="flatten-actions">
-                    <button type="button" class="act primary" onclick={submitFlatten}>Flatten</button>
-                    <button type="button" class="act" onclick={closeFlatten}>Cancel</button>
+                    <Button size="sm" variant="primary" onclick={submitFlatten}>Flatten</Button>
+                    <Button size="sm" onclick={closeFlatten}>Cancel</Button>
                   </div>
                 </div>
               {/if}
@@ -1601,16 +1580,16 @@
                     <span class="mono">{flattenConflicts.conflicts.map((c) => c.target).join(", ")}</span>.
                   </p>
                   <div class="flatten-actions">
-                    <button type="button" class="act danger" onclick={confirmFlattenForce}>Flatten anyway (overwrite)</button>
-                    <button type="button" class="act" onclick={cancelFlattenForce}>Cancel</button>
+                    <Button size="sm" variant="danger" onclick={confirmFlattenForce}>Flatten anyway (overwrite)</Button>
+                    <Button size="sm" onclick={cancelFlattenForce}>Cancel</Button>
                   </div>
                 </div>
               {/if}
 
               {#if flattenNotice}
-                <div class="route-notice" class:warn={flattenNotice.tone === "amber"} role="status">
+                <Callout tone={flattenNotice.tone === "amber" ? "warn" : "info"} role="status">
                   {flattenNotice.text}
-                </div>
+                </Callout>
               {/if}
             </section>
           {/if}
@@ -1618,18 +1597,17 @@
           <div class="versions">
             <div class="versions-head">
               <h4>Versions</h4>
-              <button type="button" class="act" disabled={versionBusy} onclick={() => (publishOpen = !publishOpen)}>
+              <Button size="sm" disabled={versionBusy} onclick={() => (publishOpen = !publishOpen)}>
                 {publishOpen ? "Cancel" : "Publish version"}
-              </button>
+              </Button>
             </div>
 
             {#if publishOpen}
               <div class="publish-form">
                 <label>
                   <span>Version label</span>
-                  <input
+                  <Input
                     class="mono"
-                    type="text"
                     placeholder="v1"
                     bind:value={publishLabel}
                     disabled={versionBusy}
@@ -1637,12 +1615,12 @@
                 </label>
                 <label>
                   <span>Release notes <em>(optional)</em></span>
-                  <textarea rows="2" bind:value={publishNotes} disabled={versionBusy}></textarea>
+                  <Textarea rows={2} bind:value={publishNotes} disabled={versionBusy} />
                 </label>
                 <div class="publish-actions">
-                  <button type="button" class="act primary" disabled={versionBusy} onclick={doPublish}>
+                  <Button size="sm" variant="primary" disabled={versionBusy} onclick={doPublish}>
                     {versionBusy ? "Publishing…" : "Publish"}
-                  </button>
+                  </Button>
                   <small class="muted-line">Snapshots the saved working copy, then commits.</small>
                 </div>
               </div>
@@ -1666,6 +1644,7 @@
               <div class="version-strip">
                 {#each detail.versions as v (v)}
                   {@const vc = currentVersionCue(v, detail.current_version)}
+                  <!-- ds-allow-native: clickable version chip (toggles the inspector; pill-shaped chip, not a form/action button) -->
                   <button
                     type="button"
                     class="version-chip"
@@ -1684,9 +1663,9 @@
             {/if}
 
             {#if versionNotice}
-              <div class="route-notice" class:warn={versionNotice.tone === "amber"} role="status">
+              <Callout tone={versionNotice.tone === "amber" ? "warn" : "info"} role="status">
                 {versionNotice.text}
-              </div>
+              </Callout>
             {/if}
 
             {#if inspectLabel}
@@ -1695,10 +1674,10 @@
                 <div class="inspector-head">
                   <span class="mono">{inspectLabel}</span>
                   <Badge tone={ic.tone}>{ic.glyph} {ic.label}</Badge>
-                  <button type="button" class="link-btn" onclick={() => (inspectLabel = null)}>Close</button>
+                  <Button size="sm" variant="ghost" class="link-btn" onclick={() => (inspectLabel = null)}>Close</Button>
                 </div>
                 {#if inspectRes.loading && !inspectView}
-                  <div class="muted">Loading…</div>
+                  <div class="u-muted load">Loading…</div>
                 {:else if inspectRes.error}
                   <EmptyState icon="file-text" title="Couldn’t read this version" error={true} onRetry={inspectRes.reload} />
                 {:else if inspectView}
@@ -1709,13 +1688,13 @@
                   <pre class="frozen mono">{versionDisplayText(inspectView.working)}</pre>
                   <div class="inspector-actions">
                     {#if inspectLabel !== detail.current_version}
-                      <button type="button" class="act" disabled={versionBusy} onclick={() => doSetCurrent(inspectLabel!)}>
+                      <Button size="sm" disabled={versionBusy} onclick={() => doSetCurrent(inspectLabel!)}>
                         Set as current
-                      </button>
+                      </Button>
                     {/if}
-                    <button type="button" class="act danger" disabled={versionBusy} onclick={() => askRevert(inspectLabel!)}>
+                    <Button size="sm" variant="danger" disabled={versionBusy} onclick={() => askRevert(inspectLabel!)}>
                       Restore working copy
-                    </button>
+                    </Button>
                   </div>
                 {/if}
               </div>
@@ -1743,37 +1722,37 @@
                     <span class="target-ver">{row.installed ? row.installed.installed_version : ""}</span>
                     <div class="row-actions">
                       {#if row.state === "not_installed"}
-                        <button type="button" class="act" disabled={busy} onclick={() => doInstall(detail.kind, detail.name, row.target)}>Install</button>
+                        <Button size="sm" disabled={busy} onclick={() => doInstall(detail.kind, detail.name, row.target)}>Install</Button>
                       {:else if row.state === "modified"}
                         <!-- Three drift actions, distinguishable by LABEL (not color — Scott is
                              red/green CVD). Two are destructive in OPPOSITE directions, named in
-                             each tooltip + confirm copy: Reinstall → disk, Reimport(+discard) →
-                             working copy. Acknowledge is non-destructive. -->
-                        <button
-                          type="button"
-                          class="act"
+                             each `title` tooltip + confirm copy: Reinstall → disk, Reimport →
+                             working copy. Acknowledge is non-destructive. The directional `title`
+                             is a CVD-safety signal asserted by the route test; it rides through the
+                             Button primitive's rest-attr passthrough (NOT ariaLabel — that would
+                             override the visible-text accessible name the test queries by). -->
+                        <Button
+                          size="sm"
                           disabled={busy}
                           title="Overwrite the installed copy on disk with the library’s current version (discards the on-disk edits)"
                           onclick={() => doInstall(detail.kind, detail.name, row.target)}
-                        >Reinstall</button>
-                        <button
-                          type="button"
-                          class="act"
+                        >Reinstall</Button>
+                        <Button
+                          size="sm"
                           disabled={busy}
                           title="Adopt the current on-disk contents as the install baseline; the library is unchanged"
                           onclick={() => doAcknowledge(detail.kind, detail.name, row.target)}
-                        >Acknowledge</button>
-                        <button
-                          type="button"
-                          class="act"
+                        >Acknowledge</Button>
+                        <Button
+                          size="sm"
                           disabled={busy}
                           title="Pull the on-disk edits back into the library as a new version (the inverse of Reinstall)"
                           onclick={() => openReimport(row.target)}
-                        >Reimport</button>
-                        <button type="button" class="act danger" disabled={busy} onclick={() => doUninstall(detail.kind, detail.name, row.target)}>Uninstall</button>
+                        >Reimport</Button>
+                        <Button size="sm" variant="danger" disabled={busy} onclick={() => doUninstall(detail.kind, detail.name, row.target)}>Uninstall</Button>
                       {:else}
-                        <button type="button" class="act" disabled={busy} onclick={() => doInstall(detail.kind, detail.name, row.target)}>Update</button>
-                        <button type="button" class="act danger" disabled={busy} onclick={() => doUninstall(detail.kind, detail.name, row.target)}>Uninstall</button>
+                        <Button size="sm" disabled={busy} onclick={() => doInstall(detail.kind, detail.name, row.target)}>Update</Button>
+                        <Button size="sm" variant="danger" disabled={busy} onclick={() => doUninstall(detail.kind, detail.name, row.target)}>Uninstall</Button>
                       {/if}
                     </div>
                     {#if row.state === "modified"}
@@ -1807,10 +1786,10 @@
               </div>
             {/if}
             {#if notice}
-              <div class="route-notice" class:warn={notice.tone === "amber"} role="status">{notice.text}</div>
+              <Callout tone={notice.tone === "amber" ? "warn" : "info"} role="status">{notice.text}</Callout>
             {/if}
             {#if reimportNotice}
-              <div class="route-notice" class:warn={reimportNotice.tone === "amber"} role="status">{reimportNotice.text}</div>
+              <Callout tone={reimportNotice.tone === "amber" ? "warn" : "info"} role="status">{reimportNotice.text}</Callout>
             {/if}
             {#if failures.length}
               <ul class="failure-list">
@@ -1887,10 +1866,10 @@
         </ul>
         <p class="dialog-warn">This replaces the current on-disk contents. There is no backup.</p>
         <div class="dialog-actions">
-          <button type="button" class="act" onclick={cancelConflict}>Cancel</button>
-          <button type="button" class="act danger" onclick={confirmConflict}>
+          <Button size="sm" onclick={cancelConflict}>Cancel</Button>
+          <Button size="sm" variant="danger" onclick={confirmConflict}>
             {dialog.action === "install" ? "Overwrite" : "Remove anyway"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -1908,10 +1887,10 @@
         </p>
         <p class="dialog-warn">Uncommitted edits in the working copy are discarded. There is no backup.</p>
         <div class="dialog-actions">
-          <button type="button" class="act" onclick={() => (revertDialog = null)}>Cancel</button>
-          <button type="button" class="act danger" disabled={versionBusy} onclick={confirmRevert}>
+          <Button size="sm" onclick={() => (revertDialog = null)}>Cancel</Button>
+          <Button size="sm" variant="danger" disabled={versionBusy} onclick={confirmRevert}>
             Restore from {revertDialog.label}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -1932,20 +1911,20 @@
         </p>
         <label class="dialog-field">
           <span>Version label</span>
-          <input class="mono" type="text" placeholder="v1" bind:value={reimportLabel} disabled={busy} />
+          <Input class="mono" placeholder="v1" bind:value={reimportLabel} disabled={busy} />
         </label>
         <label class="dialog-field">
           <span>Notes <em>(optional)</em></span>
-          <textarea rows="2" bind:value={reimportNotes} disabled={busy}></textarea>
+          <Textarea rows={2} bind:value={reimportNotes} disabled={busy} />
         </label>
         {#if reimportNotice}
-          <div class="route-notice" class:warn={reimportNotice.tone === "amber"} role="status">{reimportNotice.text}</div>
+          <Callout tone={reimportNotice.tone === "amber" ? "warn" : "info"} role="status">{reimportNotice.text}</Callout>
         {/if}
         <div class="dialog-actions">
-          <button type="button" class="act" onclick={closeReimport}>Cancel</button>
-          <button type="button" class="act primary" disabled={busy} onclick={submitReimport}>
+          <Button size="sm" onclick={closeReimport}>Cancel</Button>
+          <Button size="sm" variant="primary" disabled={busy} onclick={submitReimport}>
             {busy ? "Reimporting…" : "Reimport"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -1966,10 +1945,10 @@
         </p>
         <p class="dialog-warn">The unpublished working-copy edits are discarded. There is no backup.</p>
         <div class="dialog-actions">
-          <button type="button" class="act" onclick={() => (reimportDirty = null)}>Cancel</button>
-          <button type="button" class="act danger" onclick={confirmReimportDiscard}>
+          <Button size="sm" onclick={() => (reimportDirty = null)}>Cancel</Button>
+          <Button size="sm" variant="danger" onclick={confirmReimportDiscard}>
             Discard &amp; reimport as {reimportDirty.label}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -1988,12 +1967,12 @@
           doesn’t parse, so it can’t be captured as-is. Fix the frontmatter below and retry.
         </p>
         <pre class="commit-error-detail">{reimportBroken.parseError}</pre>
-        <textarea class="mono fix-buffer" rows="14" bind:value={reimportBroken.text}></textarea>
+        <Textarea class="mono fix-buffer" rows={14} bind:value={reimportBroken.text} />
         <div class="dialog-actions">
-          <button type="button" class="act" onclick={() => (reimportBroken = null)}>Cancel</button>
-          <button type="button" class="act primary" onclick={saveReimportFix}>
+          <Button size="sm" onclick={() => (reimportBroken = null)}>Cancel</Button>
+          <Button size="sm" variant="primary" onclick={saveReimportFix}>
             Fix &amp; reimport as {reimportBroken.intent.label}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -2008,11 +1987,12 @@
         <p>Scaffold an empty primitive, or seed it from a GitHub URL. You can edit its working copy and publish a version next.</p>
         <label class="dialog-field">
           <span>Kind</span>
-          <select bind:value={createKind} disabled={lifecycleBusy}>
-            {#each KIND_ORDER as k (k)}
-              <option value={k}>{KIND_LABELS[k]}</option>
-            {/each}
-          </select>
+          <Select
+            bind:value={createKind}
+            disabled={lifecycleBusy}
+            size="md"
+            options={KIND_ORDER.map((k) => ({ value: k, label: KIND_LABELS[k] }))}
+          />
         </label>
         <!-- URL import (Slice 10b): optional. Fetch previews the content; the
              actual write happens on Create with the stashed preview as the seed.
@@ -2021,8 +2001,8 @@
         <label class="dialog-field">
           <span>From URL <span class="field-hint">(optional)</span></span>
           <div class="url-row">
-            <input
-              class="mono"
+            <Input
+              class="mono url-input"
               type="url"
               placeholder="https://github.com/owner/repo/blob/main/skills/x/SKILL.md"
               bind:value={createUrl}
@@ -2030,15 +2010,14 @@
               disabled={lifecycleBusy || createFetching}
               data-testid="create-url-input"
             />
-            <button
-              type="button"
-              class="act"
+            <Button
+              size="sm"
               disabled={lifecycleBusy || createFetching || !createUrl.trim()}
               onclick={doFetch}
               data-testid="create-fetch-btn"
             >
               {createFetching ? "Fetching…" : "Fetch"}
-            </button>
+            </Button>
           </div>
         </label>
         {#if createFetched}
@@ -2058,22 +2037,21 @@
         {/if}
         <label class="dialog-field">
           <span>Name</span>
-          <input
+          <Input
             class="mono"
-            type="text"
             placeholder="my-primitive"
             bind:value={createName}
             disabled={lifecycleBusy}
           />
         </label>
         {#if createNotice}
-          <div class="route-notice warn" role="status">{createNotice.text}</div>
+          <Callout tone="warn" role="status">{createNotice.text}</Callout>
         {/if}
         <div class="dialog-actions">
-          <button type="button" class="act" onclick={() => (createOpen = false)}>Cancel</button>
-          <button type="button" class="act primary" disabled={lifecycleBusy} onclick={doCreate}>
+          <Button size="sm" onclick={() => (createOpen = false)}>Cancel</Button>
+          <Button size="sm" variant="primary" disabled={lifecycleBusy} onclick={doCreate}>
             {lifecycleBusy ? "Creating…" : "Create"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -2093,29 +2071,23 @@
         </p>
         <label class="dialog-field">
           <span>Source path</span>
-          <input
+          <Input
             class="mono"
-            type="text"
             placeholder="/Users/you/.claude/skills/my-skill"
             bind:value={importPathValue}
             disabled={lifecycleBusy}
           />
         </label>
         {#if importPathNotice}
-          <div
-            class="route-notice"
-            class:warn={importPathNotice.tone === "amber"}
-            class:info={importPathNotice.tone === "cyan"}
-            role="status"
-          >
+          <Callout tone={importPathNotice.tone === "amber" ? "warn" : "info"} role="status">
             {importPathNotice.text}
-          </div>
+          </Callout>
         {/if}
         <div class="dialog-actions">
-          <button type="button" class="act" onclick={() => (importPathOpen = false)}>Cancel</button>
-          <button type="button" class="act primary" disabled={lifecycleBusy} onclick={doImportFromPath}>
+          <Button size="sm" onclick={() => (importPathOpen = false)}>Cancel</Button>
+          <Button size="sm" variant="primary" disabled={lifecycleBusy} onclick={doImportFromPath}>
             {lifecycleBusy ? "Importing…" : "Import"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -2145,16 +2117,16 @@
         </p>
         <label class="dialog-field">
           <span>New name</span>
-          <input class="mono" type="text" bind:value={renameDialog.newName} disabled={lifecycleBusy} />
+          <Input class="mono" bind:value={renameDialog.newName} disabled={lifecycleBusy} />
         </label>
         {#if renameNotice}
-          <div class="route-notice warn" role="status">{renameNotice.text}</div>
+          <Callout tone="warn" role="status">{renameNotice.text}</Callout>
         {/if}
         <div class="dialog-actions">
-          <button type="button" class="act" onclick={() => (renameDialog = null)}>Cancel</button>
-          <button type="button" class="act primary" disabled={lifecycleBusy} onclick={confirmRename}>
+          <Button size="sm" onclick={() => (renameDialog = null)}>Cancel</Button>
+          <Button size="sm" variant="primary" disabled={lifecycleBusy} onclick={confirmRename}>
             {lifecycleBusy ? "Renaming…" : "Rename"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -2172,16 +2144,16 @@
         </p>
         <label class="dialog-field">
           <span>New name</span>
-          <input class="mono" type="text" bind:value={duplicateDialog.newName} disabled={lifecycleBusy} />
+          <Input class="mono" bind:value={duplicateDialog.newName} disabled={lifecycleBusy} />
         </label>
         {#if duplicateNotice}
-          <div class="route-notice warn" role="status">{duplicateNotice.text}</div>
+          <Callout tone="warn" role="status">{duplicateNotice.text}</Callout>
         {/if}
         <div class="dialog-actions">
-          <button type="button" class="act" onclick={() => (duplicateDialog = null)}>Cancel</button>
-          <button type="button" class="act primary" disabled={lifecycleBusy} onclick={confirmDuplicate}>
+          <Button size="sm" onclick={() => (duplicateDialog = null)}>Cancel</Button>
+          <Button size="sm" variant="primary" disabled={lifecycleBusy} onclick={confirmDuplicate}>
             {lifecycleBusy ? "Duplicating…" : "Duplicate"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -2212,13 +2184,13 @@
         {/if}
         <p class="dialog-warn">⚠ This deletes the library files and the on-disk installs. There is no backup.</p>
         {#if deleteNotice}
-          <div class="route-notice warn" role="status">{deleteNotice.text}</div>
+          <Callout tone="warn" role="status">{deleteNotice.text}</Callout>
         {/if}
         <div class="dialog-actions">
-          <button type="button" class="act" onclick={() => (deleteDialog = null)}>Cancel</button>
-          <button type="button" class="act danger" disabled={lifecycleBusy} onclick={confirmDelete}>
+          <Button size="sm" onclick={() => (deleteDialog = null)}>Cancel</Button>
+          <Button size="sm" variant="danger" disabled={lifecycleBusy} onclick={confirmDelete}>
             {lifecycleBusy ? "Deleting…" : "Delete permanently"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -2231,9 +2203,9 @@
     flex-direction: column;
     gap: 14px;
   }
-  .muted {
-    color: var(--text-dim);
-    font-size: 12.5px;
+  /* Inline "Loading…/Searching…" text — pairs with the global .u-muted utility for
+     color/size; this only adds the local padding the old .muted carried. */
+  .load {
     padding: 12px 2px;
   }
   .muted-line {
@@ -2243,17 +2215,6 @@
   }
   .retry-row {
     margin-top: 12px;
-  }
-  .retry-btn {
-    padding: 5px 14px;
-    border-radius: 8px;
-    border: 1px solid var(--border);
-    background: var(--surface-2);
-    color: var(--text);
-    font-size: 12px;
-  }
-  .retry-btn:hover {
-    border-color: var(--border-glow);
   }
   .panel {
     min-width: 0;
@@ -2321,27 +2282,22 @@
     background: var(--surface-2);
     color: var(--text-subtle);
   }
-  .search input {
-    width: 100%;
+  /* The Input primitive carries the bordered/filled chrome by default; inside the
+     bordered `.search` label it must read as a borderless inline field, so strip
+     the primitive's frame back to transparent (reaches into the child via :global). */
+  .search :global(.search-input) {
     border: none;
-    outline: none;
     background: transparent;
-    color: var(--text);
+    padding: 0;
     font-size: 12px;
+    color: var(--text);
+  }
+  .search :global(.search-input:focus) {
+    border-color: transparent;
   }
   /* Content search box — sits just below the name filter, visually distinct. */
   .content-search {
     margin-top: 6px;
-  }
-  .search-clear {
-    display: flex;
-    align-items: center;
-    color: var(--text-subtle);
-    border-radius: 5px;
-    padding: 1px;
-  }
-  .search-clear:hover {
-    color: var(--text);
   }
   /* Content-search results — a flat, line-oriented list (NOT the kind tree). */
   .search-results {
@@ -2586,19 +2542,6 @@
     color: var(--text-dim);
     font-style: normal;
   }
-  .publish-form input,
-  .publish-form textarea {
-    padding: 6px 8px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-inset, transparent);
-    color: var(--text);
-    font-size: 12px;
-  }
-  .publish-form textarea {
-    resize: vertical;
-    font-family: inherit;
-  }
   .publish-actions {
     display: flex;
     align-items: center;
@@ -2613,8 +2556,8 @@
     border-radius: 8px;
   }
   .publish-result.warn {
-    border-color: color-mix(in srgb, var(--amber, #d08b00) 50%, var(--border));
-    background: color-mix(in srgb, var(--amber, #d08b00) 8%, transparent);
+    border-color: color-mix(in srgb, var(--amber) 50%, var(--border));
+    background: color-mix(in srgb, var(--amber) 8%, transparent);
   }
   .commit-error {
     margin: 0;
@@ -2642,13 +2585,13 @@
     align-items: center;
     gap: 10px;
   }
-  .inspector-head .link-btn {
+  /* The inspector's Close is a ghost Button; nudge it to the right edge and give it
+     the quiet underlined-link affordance (reaches into the child via :global). */
+  .inspector-head :global(.link-btn) {
     margin-left: auto;
-    background: none;
-    border: none;
+    border-color: transparent;
     color: var(--text-dim);
     font-size: 11.5px;
-    cursor: pointer;
     text-decoration: underline;
   }
   .inspector-meta {
@@ -2676,10 +2619,6 @@
   .inspector-actions {
     display: flex;
     gap: 8px;
-  }
-  .act.primary {
-    border-color: color-mix(in srgb, var(--accent-from) 55%, var(--border));
-    color: var(--accent-from);
   }
   .rail-stack {
     display: grid;
@@ -2727,47 +2666,17 @@
   .cue.drift {
     color: var(--amber);
   }
-  .import-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
+  /* The "Import existing installs" Button carries its own chrome now; the route
+     only owns its placement in the state-strip (pushed to the right edge, and
+     opting out of the strip's last-child divider). Reaches the child via :global. */
+  .state-strip :global(.import-btn) {
     margin-left: auto;
-    padding: 4px 10px;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    background: var(--surface-2);
-    color: var(--text);
-    font-size: 11px;
-  }
-  .import-btn:hover:not(:disabled) {
-    border-color: var(--border-glow);
-  }
-  .import-btn:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-  /* state-strip's last-child border rule would clip the button — opt out */
-  .state-strip .import-btn {
     border-right: 1px solid var(--border);
   }
-  .route-notice {
-    padding: 8px 12px;
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--cyan, var(--accent-from));
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--surface-2) 70%, transparent);
-    color: var(--text);
-    font-size: 12px;
-  }
-  .route-notice.warn {
-    border-left-color: var(--amber);
-  }
-  .route-notice.info {
-    border-left-color: var(--cyan, var(--accent-from));
-  }
-  /* Explorer + detail header action buttons (lifecycle slice). Chrome matches
-     .import-btn; the delete variant is amber-bordered, NEVER red (Scott is
-     red/green colorblind — the trash glyph + label carry the destructive cue). */
+  /* Explorer + detail header action rows (lifecycle slice). The buttons are now
+     <Button> primitives; Delete uses variant="danger" (amber border, NEVER red —
+     Scott is red/green colorblind: the trash glyph + label carry the cue). These
+     rules own only the flow/alignment of the action clusters. */
   .head-actions {
     display: flex;
     flex-wrap: wrap;
@@ -2786,32 +2695,10 @@
     display: flex;
     gap: 6px;
   }
-  .head-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 4px 9px;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    background: var(--surface-2);
-    color: var(--text);
-    font-size: 11px;
-  }
-  .head-btn:hover:not(:disabled) {
-    border-color: var(--border-glow);
-  }
-  .head-btn:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-  .head-btn.danger-btn {
-    border-color: color-mix(in srgb, var(--amber) 55%, var(--border));
-    color: var(--amber);
-  }
   .head-badge {
     margin-left: 3px;
-    background: var(--cyan, #56b4e9);
-    color: #06121b;
+    background: var(--cyan);
+    color: var(--surface-floating);
     border-radius: 999px;
     padding: 0 5px;
     font-size: 10px;
@@ -2836,13 +2723,14 @@
     align-items: center;
     gap: 8px;
   }
-  /* Right-align the row trigger so the action column is scannable regardless of
-     target-name length (matches the .target-row action alignment). */
-  .flatten-row .act {
+  /* Right-align the row trigger (a Button) so the action column is scannable
+     regardless of target-name length (matches the .target-row action alignment).
+     Reaches the child Button via :global. */
+  .flatten-row :global(.flatten-trigger) {
     margin-left: auto;
   }
-  /* radius 8px (not 6) keeps these form surfaces concentric with the 7px .act
-     buttons + 6px inputs nested inside, and matches the sibling .publish-form /
+  /* radius 8px (not 6) keeps these form surfaces concentric with the Button
+     radii + inputs nested inside, and matches the sibling .publish-form /
      .version-inspector containers. */
   .flatten-form,
   .flatten-conflicts {
@@ -2914,7 +2802,7 @@
     gap: 6px;
     padding: 6px 8px;
     border-radius: 6px;
-    background: color-mix(in srgb, var(--amber, #d08b1d) 12%, transparent);
+    background: color-mix(in srgb, var(--amber) 12%, transparent);
     color: var(--text);
     font-size: 11.5px;
     line-height: 1.4;
@@ -2927,7 +2815,7 @@
     gap: 6px;
     padding: 6px 8px;
     border-radius: 6px;
-    background: color-mix(in srgb, var(--amber, #d08b1d) 10%, transparent);
+    background: color-mix(in srgb, var(--amber) 10%, transparent);
     color: var(--text);
     font-size: 11.5px;
     line-height: 1.45;
@@ -2935,26 +2823,6 @@
   .drift-help :global(svg) {
     flex: none;
     margin-top: 1px;
-  }
-  .act {
-    padding: 4px 11px;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    background: var(--surface-2);
-    color: var(--text);
-    font-size: 11.5px;
-  }
-  .act:hover:not(:disabled) {
-    border-color: var(--border-glow);
-  }
-  .act:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  /* "danger" is amber-bordered, NOT red (Scott is red/green colorblind). */
-  .act.danger {
-    border-color: color-mix(in srgb, var(--amber) 55%, var(--border));
-    color: var(--amber);
   }
   .failure-list {
     margin: 4px 0 0;
@@ -3022,20 +2890,6 @@
     color: var(--text-dim);
     font-style: normal;
   }
-  .dialog-field input,
-  .dialog-field select,
-  .dialog-field textarea {
-    padding: 6px 8px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-inset, transparent);
-    color: var(--text);
-    font-size: 12px;
-  }
-  .dialog-field textarea {
-    resize: vertical;
-    font-family: inherit;
-  }
   /* URL import (Slice 10b) */
   .field-hint {
     color: var(--text-dim);
@@ -3045,7 +2899,9 @@
     display: flex;
     gap: 6px;
   }
-  .url-row input {
+  /* The URL field is an Input primitive; let it flex to fill the row beside the
+     Fetch Button (reaches the child via :global). */
+  .url-row :global(.url-input) {
     flex: 1;
     min-width: 0;
   }
@@ -3081,22 +2937,16 @@
     margin: 6px 0 0;
     padding: 6px;
     border-radius: 4px;
-    background: var(--bg, #111);
+    background: var(--bg);
     font-size: 11px;
     white-space: pre-wrap;
     word-break: break-word;
   }
-  .fix-buffer {
-    width: 100%;
-    box-sizing: border-box;
+  /* The broken-source fix buffer is a Textarea primitive; it brings the
+     border/radius/padding/mono chrome — the route only adds the trailing gap
+     before the dialog actions (reaches the child via :global). */
+  :global(.fix-buffer) {
     margin: 0 0 12px;
-    padding: 8px 10px;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    background: var(--bg);
-    color: var(--text);
-    font-size: 12px;
-    resize: vertical;
   }
   .dialog-actions {
     display: flex;

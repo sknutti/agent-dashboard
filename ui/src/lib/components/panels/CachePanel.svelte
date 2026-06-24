@@ -1,8 +1,7 @@
 <script lang="ts">
   import Card from "../ui/Card.svelte";
   import InfoModal from "../ui/InfoModal.svelte";
-  import Badge from "../ui/Badge.svelte";
-  import EmptyState from "../ui/EmptyState.svelte";
+  import { Badge, EmptyState } from "../ui";
   import { getCache } from "../../api";
   import { resource } from "../../resource.svelte";
   import { ui } from "../../stores.svelte";
@@ -22,7 +21,7 @@
   {/snippet}
 
   {#if res.loading && !res.data}
-    <div class="muted">Loading…</div>
+    <div class="u-muted">Loading…</div>
   {:else if !d || d.hitRate == null}
     <EmptyState icon="database" title="No cache data" message="Hit-rate trend with a 70% target line, once tokens flow." error={res.error} onRetry={res.reload} />
   {:else}
@@ -47,7 +46,6 @@
 </Card>
 
 <style>
-  .muted { color: var(--text-subtle); font-size: 13px; }
   .modal-p { margin: 0; font-size: 13px; line-height: 1.6; color: var(--text-dim); }
   .big-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
   .big { font-size: 34px; font-weight: 650; color: var(--amber); line-height: 1; }

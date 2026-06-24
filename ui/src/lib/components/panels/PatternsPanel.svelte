@@ -1,6 +1,7 @@
 <script lang="ts">
   import Card from "../ui/Card.svelte";
   import EmptyState from "../ui/EmptyState.svelte";
+  import { Select } from "../ui";
   import { getPatterns } from "../../api";
   import { resource } from "../../resource.svelte";
   import { compact, shortDate} from "../../format";
@@ -8,6 +9,9 @@
 
   // Per-agent dimension the API already returns (was collapsed to all-agents).
   const AGENTS = $derived(agentFilterOptions());
+  const agentOptions = $derived(
+    AGENTS.map((a) => ({ value: a, label: a === "all" ? "All agents" : AGENT_NAMES[a] ?? a })),
+  );
   let agent = $state("all");
   // Heatmap window is fixed at 30 days (independent of the global range toggle).
   const res = resource(
@@ -83,14 +87,10 @@
 
 <Card title="Patterns" icon="activity" kicker="30-day activity · 14-day token mix">
   {#snippet actions()}
-    <select class="sel" bind:value={agent} aria-label="Agent">
-      {#each AGENTS as a (a)}
-        <option value={a}>{a === "all" ? "All agents" : AGENT_NAMES[a] ?? a}</option>
-      {/each}
-    </select>
+    <Select bind:value={agent} options={agentOptions} ariaLabel="Agent" />
   {/snippet}
   {#if res.loading && !res.data}
-    <div class="muted">Loading…</div>
+    <div class="u-muted">Loading…</div>
   {:else if !data || totalSessions === 0}
     <EmptyState icon="activity" title="No activity in the last 30 days" message="A GitHub-style heatmap lights up per day as sessions accrue, with a 14-day token-mix strip below." error={res.error} onRetry={res.reload} />
   {:else}
@@ -142,15 +142,13 @@
           {/each}
         </div>
       {:else}
-        <p class="muted">No token-usage rows in the last 14 days.</p>
+        <p class="u-muted">No token-usage rows in the last 14 days.</p>
       {/if}
     </div>
   {/if}
 </Card>
 
 <style>
-  .muted { color: var(--text-subtle); font-size: 13px; }
-  .sel { font-size: 11px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-dim); }
   .sub { font-size: 11.5px; color: var(--text-dim); }
   .dim { color: var(--text-subtle); }
   .hsec { margin-bottom: 18px; }

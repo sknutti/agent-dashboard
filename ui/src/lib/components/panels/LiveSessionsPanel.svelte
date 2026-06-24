@@ -29,7 +29,7 @@
   {/snippet}
 
   {#if res.loading && !res.data}
-    <div class="muted">Loading…</div>
+    <div class="u-muted">Loading…</div>
   {:else if !sessions.length}
     <EmptyState icon="circle-dot" title="No active sessions" message="When an agent is mid-run it appears here. Each row expands to a scrollable raw-JSONL event feed." error={res.error} onRetry={res.reload} />
   {:else}
@@ -46,6 +46,5 @@
 </Card>
 
 <style>
-  .muted { color: var(--text-subtle); font-size: 13px; }
   .rows { display: flex; flex-direction: column; }
 </style>
