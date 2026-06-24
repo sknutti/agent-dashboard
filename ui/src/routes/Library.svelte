@@ -2364,6 +2364,9 @@
     display: grid;
     gap: 4px;
     width: 100%;
+    /* Same grid-item clamp as .group-items .item — keeps a long hit name or code
+       line truncating instead of widening the explorer. */
+    min-width: 0;
     padding: 8px;
     border-radius: 7px;
     color: var(--text-dim);
@@ -2456,6 +2459,10 @@
     align-items: center;
     gap: 8px;
     width: 100%;
+    /* min-width:0 lets the grid item shrink below its content's max-content so a
+       long primitive name truncates via .item-name's overflow:hidden instead of
+       blowing the grid track (and the fixed-width explorer) wider. */
+    min-width: 0;
     padding: 8px;
     padding-left: 19px;
     border-radius: 7px;
