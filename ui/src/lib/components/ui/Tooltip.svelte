@@ -21,7 +21,7 @@
     transform: translateX(-50%) translateY(4px);
     padding: 6px 9px;
     border-radius: 7px;
-    background: #07070c;
+    background: var(--surface-floating);
     border: 1px solid var(--border-glow);
     color: var(--text);
     font-size: 11.5px;
@@ -43,7 +43,7 @@
     transform: translateX(-50%) rotate(45deg) translateY(-4px);
     width: 8px;
     height: 8px;
-    background: #07070c;
+    background: var(--surface-floating);
     border-right: 1px solid var(--border-glow);
     border-bottom: 1px solid var(--border-glow);
   }

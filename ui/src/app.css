@@ -52,6 +52,14 @@
   --pad: 28px;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
 
+  /* Contrast inks & floating surfaces (§6). These are the few literal colours the
+     design system needs that aren't already in the palette above — given names so
+     no component carries a raw hex in its <style>. */
+  --accent-ink: #ffe0c2; /* light text/ink on accent fills (Badge.accent, Button.primary) */
+  --surface-floating: #07070c; /* near-black floating surfaces (Tooltip bg/arrow) */
+  --on-light-seg: #1a1208; /* text sitting on a LIGHT coloured segment (AgentCard, etc.) */
+  --on-dark-seg: #eef3f8; /* text sitting on a DARK coloured segment */
+
   color-scheme: dark;
 }
 
@@ -117,6 +125,41 @@ button {
 
 /* Numeric/code text. */
 .mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Design-system utilities (§5) ────────────────────────────────────────────
+   Global text helpers that fold the per-component `.muted` (×23), `.dim` (×17),
+   `.big` (×9), `.sub` (×7), `.lbl` (×3) duplicates onto one source of truth.
+   Mirrors the existing global `.kicker` / `.mono`. Pure text styling only — there
+   is intentionally NO <Text> component; wrapping every <p>/<span> is un-idiomatic
+   here (see §5). Migrations delete the local copies and use these classes. */
+.u-muted {
+  color: var(--text-subtle);
+  font-size: 13px;
+}
+.u-dim {
+  color: var(--text-dim);
+}
+.u-subtle {
+  color: var(--text-subtle);
+}
+.u-big {
+  font-size: 22px;
+  font-weight: 650;
+  color: var(--text);
+  line-height: 1.05;
+}
+.u-sub {
+  font-size: 11.5px;
+  color: var(--text-subtle);
+}
+.u-label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.u-mono {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }

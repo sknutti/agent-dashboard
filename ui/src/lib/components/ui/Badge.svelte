@@ -26,7 +26,7 @@
     white-space: nowrap;
   }
   .accent {
-    color: #ffd9b3;
+    color: var(--accent-ink);
     border-color: color-mix(in srgb, var(--accent-from) 45%, var(--border));
     background: color-mix(in srgb, var(--accent-from) 14%, transparent);
   }
