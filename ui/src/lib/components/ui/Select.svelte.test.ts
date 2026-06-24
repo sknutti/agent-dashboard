@@ -36,6 +36,19 @@ describe("Select", () => {
     expect(onchange).toHaveBeenCalledOnce();
   });
 
+  // Parent write-back guard (see Input test) — bind:value must be two-way.
+  test("bind:value writes back to the parent ($bindable, not one-way)", async () => {
+    let parent = $state("a");
+    render(Select, {
+      options: ["a", "b"],
+      ariaLabel: "Bound",
+      get value() { return parent; },
+      set value(v) { parent = v; },
+    });
+    await fireEvent.change(screen.getByLabelText("Bound"), { target: { value: "b" } });
+    expect(parent).toBe("b");
+  });
+
   test("disabled sets the attribute", () => {
     render(Select, { options: ["a"], disabled: true, ariaLabel: "Locked" });
     expect((screen.getByLabelText("Locked") as HTMLSelectElement).disabled).toBe(true);

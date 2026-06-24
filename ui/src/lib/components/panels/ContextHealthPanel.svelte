@@ -37,7 +37,7 @@
         <div class="st"><span class="sv mono">{d.claudeMd.directives}</span><span class="sl">directives</span></div>
       </div>
     </div>
-    <p class="note">Counts only — file contents never leave your machine.</p>
+    <p class="note u-sub">Counts only — file contents never leave your machine.</p>
   {/if}
 </Card>
 
@@ -50,6 +50,7 @@
   .st { display: flex; flex-direction: column; gap: 1px; }
   .sv { font-size: 18px; font-weight: 650; color: var(--text); }
   .sl { font-size: 10.5px; color: var(--text-dim); }
-  .note { margin: 4px 0 0; font-size: 11px; color: var(--text-subtle); }
+  /* Bare caption (not a boxed messagebox) — type from .u-sub; only the layout margin is local. */
+  .note { margin: 4px 0 0; }
   .dim { color: var(--text-subtle); font-weight: 400; }
 </style>

@@ -25,6 +25,20 @@ describe("Input", () => {
     expect(oninput).toHaveBeenCalledOnce();
   });
 
+  // Guards against a `bind:value` → one-way `value={value}` regression: the DOM
+  // value would still update (so the round-trip test above stays green) but the
+  // PARENT state would silently stop tracking. This asserts the parent itself.
+  test("bind:value writes back to the parent ($bindable, not one-way)", async () => {
+    let parent = $state("");
+    render(Input, {
+      ariaLabel: "Bound",
+      get value() { return parent; },
+      set value(v) { parent = v; },
+    });
+    await fireEvent.input(screen.getByLabelText("Bound"), { target: { value: "wrote-back" } });
+    expect(parent).toBe("wrote-back");
+  });
+
   test("disabled sets the attribute", () => {
     render(Input, { ariaLabel: "Locked", disabled: true });
     expect((screen.getByLabelText("Locked") as HTMLInputElement).disabled).toBe(true);

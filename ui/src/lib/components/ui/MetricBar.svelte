@@ -33,10 +33,12 @@
   const segs = $derived((segments ?? []).filter((s) => s.value > 0));
 </script>
 
+<!-- role="img" only when an accessible name is supplied — a nameless role="img"
+     is an a11y anti-pattern. Nameless bars stay decorative (no role). -->
 <div
   class="bar"
   style="height:{height}px;background:{track}"
-  role="img"
+  role={ariaLabel ? "img" : undefined}
   aria-label={ariaLabel}
 >
   {#if segments}

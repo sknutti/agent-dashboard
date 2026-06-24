@@ -216,9 +216,10 @@ let { value, max = 1, color = "var(--accent-from)", segments, height = 6,
 
 ### Stat.svelte  (replaces `.stat`+`.big`+`.lbl` figure cluster ×6–9)
 ```ts
-let { label, value, sub, big = false, mono = true, tone } : {
+let { label, value, sub, big = false, mono = true, tone, valueFirst = false } : {
   label?: string; value: string | number; sub?: string; big?: boolean;
   mono?: boolean; tone?: "default" | "accent" | "cyan" | "amber";
+  valueFirst?: boolean;   // value ABOVE label (value-prominent clusters); markup order unchanged for a11y
 } = $props();
 ```
 - column: label (`.u-label`) on top, value below (`.u-big` when `big`, else 15px/600, mono via

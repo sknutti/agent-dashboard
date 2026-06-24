@@ -1,7 +1,7 @@
 <script lang="ts">
   import Card from "../ui/Card.svelte";
   import EmptyState from "../ui/EmptyState.svelte";
-  import { Button, Input, Select } from "../ui";
+  import { Badge, Button, Input, Select } from "../ui";
   import Icon from "../ui/Icon.svelte";
   import { getSessions } from "../../api";
   import { navigate } from "../../router.svelte";
@@ -60,6 +60,15 @@
   const AGENTS = $derived(agentFilterOptions()); // ["all", …ids] from the registry
   const OUTCOMES = ["all", "ok", "errored", "rate_limited", "truncated", "unfinished"];
   const OUT_LABEL: Record<string, string> = { rate_limited: "rate-limited", all: "all" };
+
+  // Non-errored outcome pills fold onto <Badge>; map each outcome to its existing
+  // colour (ok→cyan, rate_limited/truncated→amber, everything else→default dim).
+  // The errored pill stays native (it's a clickable filter — see below).
+  function outcomeTone(o: string): "cyan" | "amber" | "default" {
+    if (o === "ok") return "cyan";
+    if (o === "rate_limited" || o === "truncated") return "amber";
+    return "default";
+  }
 </script>
 
 <Card title="All sessions" icon="layers" kicker="searchable · filterable · every agent">
@@ -141,7 +150,7 @@
                   onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); navigate(`/session/${encodeURIComponent(s.session_id)}`, "?tab=errors"); } }}
                 >errored <span class="xmark">✗</span></span>
               {:else}
-                <span class="pill {s.outcome}">{s.outcome === "rate_limited" ? "rate-limited" : s.outcome}</span>
+                <Badge tone={outcomeTone(s.outcome)}>{s.outcome === "rate_limited" ? "rate-limited" : s.outcome}</Badge>
               {/if}
             </span>
             <span class="c-num mono">{compact(s.total_tokens)}</span>
@@ -248,8 +257,6 @@
     color: var(--text-dim);
   }
   .pill.errored { color: var(--red); }
-  .pill.rate_limited, .pill.truncated { color: var(--amber); }
-  .pill.ok { color: var(--cyan); }
   .pillbtn { cursor: pointer; }
   .pillbtn:hover { background: color-mix(in srgb, var(--red) 16%, var(--surface-2)); }
   .pillbtn:focus-visible { outline: 1px solid var(--red); outline-offset: 1px; }

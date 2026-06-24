@@ -1,6 +1,6 @@
 <script lang="ts">
   import Icon from "../lib/components/ui/Icon.svelte";
-  import { Button } from "../lib/components/ui";
+  import { Badge, Button } from "../lib/components/ui";
   import SessionMessages from "../lib/components/panels/SessionMessages.svelte";
   import SessionErrors from "../lib/components/panels/SessionErrors.svelte";
   import GitOutcomeStrip from "../lib/components/panels/GitOutcomeStrip.svelte";
@@ -37,7 +37,7 @@
         <h1 class="title">{session.title ?? `session:${id.slice(0, 8)}`}</h1>
         <div class="meta mono">
           <span class="agent">{agentName}</span>
-          {#if session.model}<span class="pill model">{session.model}</span>{/if}
+          {#if session.model}<Badge tone="cyan">{session.model}</Badge>{/if}
           <span class="pill tok">{compact(session.total_tokens)} tok</span>
           {#if (session.error_count ?? 0) > 0}<span class="err">{session.error_count} err</span>{/if}
           <span class="proj">{homeDir(session.cwd)}</span>
@@ -136,7 +136,6 @@
     font-size: 11px;
     line-height: 1.4;
   }
-  .pill.model { color: var(--cyan); border-color: color-mix(in srgb, var(--cyan) 35%, var(--border)); }
   .pill.tok { color: var(--text-dim); }
   .tabs {
     flex: none;

@@ -48,7 +48,12 @@
   const glyphSize = $derived(iconSize ?? (size === "sm" ? 13 : 14));
 
   function handleClick(e: MouseEvent): void {
-    if (isDisabled) return; // a link can't use `disabled`, so guard here too
+    if (isDisabled) {
+      // A link can't use the `disabled` attribute, so a disabled href-Button
+      // would still navigate — block it explicitly as well as dropping onclick.
+      e.preventDefault();
+      return;
+    }
     onclick?.(e);
   }
 </script>

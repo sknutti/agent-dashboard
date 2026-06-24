@@ -25,6 +25,17 @@ describe("Textarea", () => {
     expect(oninput).toHaveBeenCalledOnce();
   });
 
+  // Parent write-back guard (see Input test) — bind:value must be two-way.
+  test("bind:value writes back to the parent ($bindable, not one-way)", async () => {
+    let parent = $state("");
+    render(Textarea, {
+      get value() { return parent; },
+      set value(v) { parent = v; },
+    });
+    await fireEvent.input(ta(), { target: { value: "wb" } });
+    expect(parent).toBe("wb");
+  });
+
   test("disabled sets the attribute", () => {
     render(Textarea, { disabled: true });
     expect(ta().disabled).toBe(true);

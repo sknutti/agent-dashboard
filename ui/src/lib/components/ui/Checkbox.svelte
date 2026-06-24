@@ -23,7 +23,7 @@
 </script>
 
 <label class="check">
-  <input type="checkbox" bind:checked {disabled} {onchange} {...rest} />
+  <input type="checkbox" {...rest} bind:checked {disabled} {onchange} />
   <span>{#if children}{@render children()}{:else}{label}{/if}</span>
 </label>
 

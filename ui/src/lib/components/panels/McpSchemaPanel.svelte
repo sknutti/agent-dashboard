@@ -25,7 +25,7 @@
         </div>
       {/each}
     </div>
-    <p class="note">{d?.note}</p>
+    <p class="note u-sub">{d?.note}</p>
   {/if}
 </Card>
 
@@ -34,5 +34,6 @@
   .row { display: grid; grid-template-columns: 1fr 70px 80px; gap: 8px; align-items: center; padding: 5px 4px; border-bottom: 1px solid var(--border); }
   .sv { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tn, .sz { text-align: right; }
-  .note { margin: 10px 0 0; font-size: 11px; line-height: 1.5; color: var(--text-subtle); }
+  /* Bare caption (not a boxed messagebox) — type from .u-sub; only the layout margin is local. */
+  .note { margin: 10px 0 0; line-height: 1.5; }
 </style>

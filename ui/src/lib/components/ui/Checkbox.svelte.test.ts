@@ -30,6 +30,19 @@ describe("Checkbox", () => {
     expect(onchange).toHaveBeenCalledOnce();
   });
 
+  // Parent write-back guard (see Input test) — proves bind:checked is two-way,
+  // not a one-way `checked={checked}` that would leave parent state stale.
+  test("bind:checked writes back to the parent ($bindable, not one-way)", async () => {
+    let parent = $state(false);
+    render(Checkbox, {
+      label: "B",
+      get checked() { return parent; },
+      set checked(v) { parent = v; },
+    });
+    await fireEvent.click(screen.getByRole("checkbox", { name: "B" }));
+    expect(parent).toBe(true);
+  });
+
   test("disabled sets the attribute", () => {
     render(Checkbox, { label: "L", disabled: true });
     expect((screen.getByRole("checkbox", { name: "L" }) as HTMLInputElement).disabled).toBe(true);
