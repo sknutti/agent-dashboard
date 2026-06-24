@@ -1556,7 +1556,7 @@
                     <span class="mono">{row.target}</span> overlay
                     <button
                       type="button"
-                      class="ghost"
+                      class="act"
                       onclick={() => openFlatten(row.target)}
                       disabled={isPending(detail.kind, detail.name, row.target)}
                     >
@@ -1588,8 +1588,8 @@
                     <input type="text" bind:value={flattenNotes} />
                   </label>
                   <div class="flatten-actions">
-                    <button type="button" onclick={submitFlatten}>Flatten</button>
-                    <button type="button" class="ghost" onclick={closeFlatten}>Cancel</button>
+                    <button type="button" class="act primary" onclick={submitFlatten}>Flatten</button>
+                    <button type="button" class="act" onclick={closeFlatten}>Cancel</button>
                   </div>
                 </div>
               {/if}
@@ -1601,8 +1601,8 @@
                     <span class="mono">{flattenConflicts.conflicts.map((c) => c.target).join(", ")}</span>.
                   </p>
                   <div class="flatten-actions">
-                    <button type="button" onclick={confirmFlattenForce}>Flatten anyway (overwrite)</button>
-                    <button type="button" class="ghost" onclick={cancelFlattenForce}>Cancel</button>
+                    <button type="button" class="act danger" onclick={confirmFlattenForce}>Flatten anyway (overwrite)</button>
+                    <button type="button" class="act" onclick={cancelFlattenForce}>Cancel</button>
                   </div>
                 </div>
               {/if}
@@ -2364,6 +2364,9 @@
     display: grid;
     gap: 4px;
     width: 100%;
+    /* Same grid-item clamp as .group-items .item — keeps a long hit name or code
+       line truncating instead of widening the explorer. */
+    min-width: 0;
     padding: 8px;
     border-radius: 7px;
     color: var(--text-dim);
@@ -2456,6 +2459,10 @@
     align-items: center;
     gap: 8px;
     width: 100%;
+    /* min-width:0 lets the grid item shrink below its content's max-content so a
+       long primitive name truncates via .item-name's overflow:hidden instead of
+       blowing the grid track (and the fixed-width explorer) wider. */
+    min-width: 0;
     padding: 8px;
     padding-left: 19px;
     border-radius: 7px;
@@ -2829,13 +2836,21 @@
     align-items: center;
     gap: 8px;
   }
+  /* Right-align the row trigger so the action column is scannable regardless of
+     target-name length (matches the .target-row action alignment). */
+  .flatten-row .act {
+    margin-left: auto;
+  }
+  /* radius 8px (not 6) keeps these form surfaces concentric with the 7px .act
+     buttons + 6px inputs nested inside, and matches the sibling .publish-form /
+     .version-inspector containers. */
   .flatten-form,
   .flatten-conflicts {
     display: grid;
     gap: 8px;
     padding: 10px;
-    border: 1px solid var(--border, #333);
-    border-radius: 6px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
   }
   .flatten-actions {
     display: flex;
@@ -2848,7 +2863,8 @@
   }
   .targets-section h4,
   .metadata-section h4,
-  .overlays-section h4 {
+  .overlays-section h4,
+  .flatten-section h4 {
     margin: 0 0 2px;
     color: var(--text-subtle);
     font-family: var(--font-mono);
