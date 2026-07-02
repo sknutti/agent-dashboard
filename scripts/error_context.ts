@@ -59,12 +59,23 @@ function clip(s: string, cap: number): string {
   return s.length > cap ? s.slice(0, cap) + "…" : s;
 }
 
+/** Strip ANSI/VT escape sequences so terminal-colored tool output (e.g. `ls`
+ *  aliased to a colorizing lister, git, cargo) renders as clean text in the
+ *  <pre> blocks instead of leaking raw `\x1b[..m` codes. Standard strip-ansi
+ *  pattern. Applied to both captured output and inputs. */
+// eslint-disable-next-line no-control-regex
+const ANSI_RE =
+  /[][[\]()#;?]*(?:(?:(?:;[-a-zA-Z\d\/#&.:=?%@~_]+)*|[a-zA-Z\d]+(?:;[-a-zA-Z\d\/#&.:=?%@~_]*)*)?|(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-ntqry=><~])/g;
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_RE, "");
+}
+
 /** Render a tool input (object or string) verbatim — these are local logs on a
  *  localhost-only app, so no redaction (ADR-0005 Q1) — truncated for display. */
 function stringifyInput(input: unknown): string {
   if (input == null) return "";
   const s = typeof input === "string" ? input : safeJson(input);
-  return clip(s, INPUT_CAP);
+  return clip(stripAnsi(s), INPUT_CAP);
 }
 
 function safeJson(v: unknown): string {
@@ -78,15 +89,17 @@ function safeJson(v: unknown): string {
 /** Pull readable text from a content value that may be a string, a {text} block
  *  array (claude/codex/pi all use this shape), or a single {text} object. */
 function contentText(content: unknown): string {
-  if (typeof content === "string") return content;
+  if (typeof content === "string") return stripAnsi(content);
   if (Array.isArray(content)) {
-    return content
-      .map((b: any) => (typeof b?.text === "string" ? b.text : ""))
-      .filter(Boolean)
-      .join("\n");
+    return stripAnsi(
+      content
+        .map((b: any) => (typeof b?.text === "string" ? b.text : ""))
+        .filter(Boolean)
+        .join("\n"),
+    );
   }
   if (content && typeof content === "object" && typeof (content as any).text === "string") {
-    return (content as any).text;
+    return stripAnsi((content as any).text);
   }
   return "";
 }

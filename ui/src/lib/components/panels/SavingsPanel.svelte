@@ -48,7 +48,10 @@
         <div class="figs">
           <span class="fig"><span class="lbl">rack-rate · est</span><span class="mono est">{usd(r.est)}</span></span>
           <span class="fig"><span class="lbl">native</span><span class="mono nat">{usd(r.native)}</span></span>
-          <span class="fig save"><span class="lbl">saved</span><span class="mono">{usd(r.savings)}</span></span>
+          <span class="fig save" class:over={(r.savings ?? 0) < 0}>
+            <span class="lbl">{(r.savings ?? 0) < 0 ? "over rack-rate" : "saved"}</span>
+            <span class="mono">{usd(r.savings)}</span>
+          </span>
         </div>
       </div>
     {/each}
@@ -71,7 +74,11 @@
   .fig { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
   .fig .lbl { font-size: 9.5px; color: var(--text-subtle); }
   /* "saved" is cyan, not green — matches the app-wide cyan-as-positive
-     convention and avoids the amber(est)/green(saved) red-green-CVD pairing. */
+     convention and avoids the amber(est)/green(saved) red-green-CVD pairing.
+     When savings goes negative (native cost > rack-rate estimate) the sign flips
+     meaning, so the label changes to "over rack-rate" (text cue) and the value
+     turns amber — danger=amber per the DS contract, never cyan/"good". */
   .fig.save .mono { color: var(--cyan); font-weight: 600; }
+  .fig.save.over .mono { color: var(--amber); }
   .caveat { margin: 12px 0 0; font-size: 11px; line-height: 1.55; color: var(--text-subtle); }
 </style>
