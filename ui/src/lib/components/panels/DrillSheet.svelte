@@ -15,12 +15,15 @@
   let detailLoading = $state(false);
 
   // The drill list honours the GLOBAL range toggle (was hardcoded "30d", so cell
-  // counts computed at the page range disagreed with the sheet's contents).
+  // counts computed at the page range disagreed with the sheet's contents) —
+  // unless a drill pins its own range (ctx.range), e.g. the KPI "errors today"
+  // tile, whose count is always today's regardless of the page toggle.
+  const effRange = $derived(drill.ctx?.range ?? ui.range);
   const listRes = resource(
-    () => `drill:${drill.open}:${ui.range}:${drill.ctx?.agent ?? ""}:${drill.ctx?.outcome ?? ""}`,
+    () => `drill:${drill.open}:${effRange}:${drill.ctx?.agent ?? ""}:${drill.ctx?.outcome ?? ""}`,
     async () => {
       if (!drill.open) return { total: 0, limit: 0, offset: 0, sessions: [] as SessionRow[] };
-      return getSessions({ range: ui.range, agent: drill.ctx?.agent, outcome: drill.ctx?.outcome, limit: 100 });
+      return getSessions({ range: effRange, agent: drill.ctx?.agent, outcome: drill.ctx?.outcome, limit: 100 });
     },
   );
 
@@ -111,7 +114,7 @@
     {:else if !listRes.data?.sessions.length}
       <div class="u-muted">No matching sessions.</div>
     {:else}
-      <p class="count">{listRes.data.total} session{listRes.data.total === 1 ? "" : "s"} · range {ui.range}</p>
+      <p class="count">{listRes.data.total} session{listRes.data.total === 1 ? "" : "s"} · range {effRange}</p>
       <div class="list">
         {#each listRes.data.sessions as s (s.session_id)}
           <!-- ds-allow-native: clickable session list row (opens detail or navigates), not a form-control button -->

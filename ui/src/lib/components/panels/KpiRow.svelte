@@ -22,9 +22,12 @@
   function drillErrors() {
     openDrill({
       title: "Errors · needs attention",
-      subtitle: "errored sessions · all agents",
+      subtitle: "errored sessions · today",
       outcome: "errored",
-      query: "GET /api/sessions?outcome=errored",
+      // The KPI count is always today's, so pin the drill to today rather than
+      // the global range toggle — otherwise the "18" tile opens a 7d list.
+      range: "today",
+      query: "GET /api/sessions?outcome=errored&range=today",
     });
   }
 </script>

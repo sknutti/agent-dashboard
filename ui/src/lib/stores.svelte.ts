@@ -56,6 +56,10 @@ export interface DrillContext {
   /** Filters the drill-down session list resolves to (read-only; Phase 6 adds act). */
   agent?: string;
   outcome?: string;
+  /** Overrides the global range toggle for this drill (e.g. the KPI "errors
+   *  today" tile forces "today" so the sheet matches the tile's count instead
+   *  of the page range). Falls back to the global range when unset. */
+  range?: Range;
   /** The query this maps to, shown for transparency. */
   query?: string;
 }
