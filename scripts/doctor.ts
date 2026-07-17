@@ -28,7 +28,13 @@ function expandHome(p: string): string {
   return p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
 }
 
-// ── Runtime ─────────────────────────────────────────────────────────────────
+// `--preflight` = cold-clone structural/toolchain mode (added for the `.factory/`
+// binding's `preflight` step: `bun run doctor -- --preflight`). Same
+// add()/critical/exit-code/glyph machinery, a different check set — NO server
+// fetch, NO DB reads, NO launchd. Default (no flag) is the unchanged live check.
+const preflight = process.argv.includes("--preflight");
+
+// ── Runtime (shared: both modes require Bun) ─────────────────────────────────
 add("Bun runtime", "ok", `bun ${Bun.version}`, true);
 
 // ── Config files ─────────────────────────────────────────────────────────────
@@ -37,6 +43,57 @@ for (const f of ["agents.yaml", "prices.yaml"]) {
   add(`config/${f}`, existsSync(p) ? "ok" : "fail", existsSync(p) ? p : "missing", true);
 }
 
+if (preflight) {
+  // ── Cold-clone structural + toolchain checks (zero-LLM, no server, no DB) ────
+  // Dependency presence via sentinel packages the gate actually loads: `hono`
+  // (root `bun test scripts`) and `svelte-check` (the `ui/` gate). Error details
+  // are fix instructions (poka-yoke), matching the live path's discipline.
+  const rootDep = existsSync(join(PROJECT_ROOT, "node_modules", "hono"));
+  add(
+    "root deps",
+    rootDep ? "ok" : "fail",
+    rootDep ? "node_modules/ present" : "run `bun run .factory/harness/prepare.ts` (frozen install)",
+    true,
+  );
+  const uiDep = existsSync(join(PROJECT_ROOT, "ui", "node_modules", "svelte-check"));
+  add(
+    "ui deps",
+    uiDep ? "ok" : "fail",
+    uiDep ? "ui/node_modules/ present" : "run `bun run .factory/harness/prepare.ts` (installs root + ui)",
+    true,
+  );
+
+  // Branch + tree hygiene (warn only — informational, never fails preflight).
+  const branch = Bun.spawnSync(["git", "rev-parse", "--abbrev-ref", "HEAD"], { cwd: PROJECT_ROOT });
+  const branchName = branch.exitCode === 0 ? branch.stdout.toString().trim() : "";
+  if (!branchName) {
+    add("work branch", "warn", "could not resolve current branch (git unavailable?)");
+  } else {
+    add(
+      "work branch",
+      branchName === "main" ? "warn" : "ok",
+      branchName === "main" ? "on `main` — factory work lands on a typed branch" : `on \`${branchName}\``,
+    );
+  }
+  const porcelain = Bun.spawnSync(["git", "status", "--porcelain"], { cwd: PROJECT_ROOT });
+  if (porcelain.exitCode === 0) {
+    const dirty = porcelain.stdout.toString().trim();
+    add("working tree", dirty ? "warn" : "ok", dirty ? "uncommitted changes present (informational)" : "clean");
+  } else {
+    add("working tree", "warn", "could not read git status (git unavailable?)");
+  }
+
+  // Rust toolchain — the bridge is OFF the gate (known seam), so warn only. A
+  // missing cargo never fails preflight; it just surfaces the seam before a build.
+  const cargo = Bun.spawnSync(["cargo", "--version"]);
+  add(
+    "rust toolchain",
+    cargo.exitCode === 0 ? "ok" : "warn",
+    cargo.exitCode === 0
+      ? cargo.stdout.toString().trim()
+      : "cargo not found — bridge build unavailable (off the gate; ok)",
+  );
+} else {
 // ── Database ─────────────────────────────────────────────────────────────────
 let unpricedModels: string[] = [];
 try {
@@ -185,6 +242,7 @@ try {
 } catch {
   add("launchd service", "warn", "launchctl unavailable");
 }
+}
 
 // ── Report ───────────────────────────────────────────────────────────────────
 const C = { reset: "\x1b[0m", green: "\x1b[32m", amber: "\x1b[33m", red: "\x1b[31m", dim: "\x1b[2m" };
@@ -193,7 +251,7 @@ const C = { reset: "\x1b[0m", green: "\x1b[32m", amber: "\x1b[33m", red: "\x1b[3
 // on hue (the color stays as a redundant cue).
 const mark = { ok: `${C.green}✓${C.reset}`, warn: `${C.amber}▲${C.reset}`, fail: `${C.red}✗${C.reset}` };
 
-console.log(`\n  ${C.dim}Command Centre · doctor${C.reset}  ${C.dim}(${PROJECT_ROOT})${C.reset}\n`);
+console.log(`\n  ${C.dim}Command Centre · doctor${preflight ? " · preflight" : ""}${C.reset}  ${C.dim}(${PROJECT_ROOT})${C.reset}\n`);
 const pad = Math.max(...checks.map((c) => c.name.length));
 for (const c of checks) {
   console.log(`  ${mark[c.status]} ${c.name.padEnd(pad)}  ${C.dim}${c.detail}${C.reset}`);

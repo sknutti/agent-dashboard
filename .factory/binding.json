@@ -1,0 +1,7 @@
+{
+  "binding_version": 1,
+  "tools": ["bun", "sh"],
+  "prepare": ["bun", "run", ".factory/harness/prepare.ts"],
+  "preflight": ["bun", "run", "doctor", "--", "--preflight"],
+  "verify": ["bun", "run", "check"]
+}
