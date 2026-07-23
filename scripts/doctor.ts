@@ -28,6 +28,33 @@ function expandHome(p: string): string {
   return p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
 }
 
+/**
+ * `Bun.spawnSync` that reports a MISSING binary as a non-zero exit instead of throwing.
+ *
+ * `Bun.spawnSync` throws `ENOENT` when the executable is not on PATH — it does not return a
+ * non-zero `exitCode`. So every `probe.exitCode === 0 ? ok : warn` below was unreachable on its
+ * warn side, and a missing tool crashed the whole doctor run rather than degrading to a warning.
+ *
+ * That is exactly backwards for `--preflight`, whose entire job is to run in a cold clone where
+ * optional toolchains are absent. Found by the dark-factory runner: `bun run doctor -- --preflight`
+ * exited 1 with `Executable not found in $PATH: "cargo"`, in a sandbox that deliberately does not
+ * grant cargo — the Rust bridge is off the gate, and `.factory/binding.json` declares only
+ * `["bun", "sh"]`.
+ *
+ * 127 is the shell's own "command not found", so callers comparing against 0 read it correctly.
+ */
+function probe(argv: string[], opts: { cwd?: string } = {}) {
+  try {
+    return Bun.spawnSync(argv, opts);
+  } catch {
+    return {
+      exitCode: 127,
+      stdout: Buffer.from(""),
+      stderr: Buffer.from(""),
+    } as unknown as ReturnType<typeof Bun.spawnSync>;
+  }
+}
+
 // `--preflight` = cold-clone structural/toolchain mode (added for the `.factory/`
 // binding's `preflight` step: `bun run doctor -- --preflight`). Same
 // add()/critical/exit-code/glyph machinery, a different check set — NO server
@@ -64,7 +91,7 @@ if (preflight) {
   );
 
   // Branch + tree hygiene (warn only — informational, never fails preflight).
-  const branch = Bun.spawnSync(["git", "rev-parse", "--abbrev-ref", "HEAD"], { cwd: PROJECT_ROOT });
+  const branch = probe(["git", "rev-parse", "--abbrev-ref", "HEAD"], { cwd: PROJECT_ROOT });
   const branchName = branch.exitCode === 0 ? branch.stdout.toString().trim() : "";
   if (!branchName) {
     add("work branch", "warn", "could not resolve current branch (git unavailable?)");
@@ -75,7 +102,7 @@ if (preflight) {
       branchName === "main" ? "on `main` — factory work lands on a typed branch" : `on \`${branchName}\``,
     );
   }
-  const porcelain = Bun.spawnSync(["git", "status", "--porcelain"], { cwd: PROJECT_ROOT });
+  const porcelain = probe(["git", "status", "--porcelain"], { cwd: PROJECT_ROOT });
   if (porcelain.exitCode === 0) {
     const dirty = porcelain.stdout.toString().trim();
     add("working tree", dirty ? "warn" : "ok", dirty ? "uncommitted changes present (informational)" : "clean");
@@ -85,7 +112,7 @@ if (preflight) {
 
   // Rust toolchain — the bridge is OFF the gate (known seam), so warn only. A
   // missing cargo never fails preflight; it just surfaces the seam before a build.
-  const cargo = Bun.spawnSync(["cargo", "--version"]);
+  const cargo = probe(["cargo", "--version"]);
   add(
     "rust toolchain",
     cargo.exitCode === 0 ? "ok" : "warn",
