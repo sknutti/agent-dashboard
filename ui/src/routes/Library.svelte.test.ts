@@ -155,6 +155,31 @@ describe("Library route — explorer, collapse, selection, detail", () => {
     expect(await screen.findByText(/Select a primitive/)).toBeTruthy();
   });
 
+  test("the explorer badge shows '1 item' for a single primitive and 'N items' for multiple", async () => {
+    // Single primitive case
+    mockValidLibrary();
+    vi.spyOn(api, "getLibraryPrimitives").mockResolvedValue([{ kind: "skill" as const, name: "diagnose", dirty: false, author: "Ada Lovelace" }]);
+    render(Library);
+    expect(await screen.findByText("1 item")).toBeTruthy();
+    cleanup();
+    vi.restoreAllMocks();
+
+    // Multiple primitives case
+    mockValidLibrary();
+    vi.spyOn(api, "getLibraryPrimitives").mockResolvedValue(PRIMS);
+    render(Library);
+    expect(await screen.findByText(`${PRIMS.length} items`)).toBeTruthy();
+  });
+
+  test("the explorer badge shows '1 item' when filter results in a single primitive", async () => {
+    mockValidLibrary();
+    render(Library);
+    await screen.findByText("Skills");
+    // Filter to match only one primitive
+    await fireEvent.input(screen.getByPlaceholderText("Filter primitives"), { target: { value: "diagnose" } });
+    expect(await screen.findByText("1 item")).toBeTruthy();
+  });
+
   test("clicking a Kind header expands it to reveal its primitives", async () => {
     mockValidLibrary();
     render(Library);
