@@ -180,6 +180,16 @@ describe("Library route — explorer, collapse, selection, detail", () => {
     expect(await screen.findByText("1 item")).toBeTruthy();
   });
 
+  test("the explorer badge shows an empty state (—) when a filter matches nothing", async () => {
+    mockValidLibrary();
+    render(Library);
+    await screen.findByText("Skills");
+    // Filter that matches nothing
+    await fireEvent.input(screen.getByPlaceholderText("Filter primitives"), { target: { value: "zzz" } });
+    // The badge should show '—' instead of '0 items'
+    expect(screen.getByText("—")).toBeTruthy();
+  });
+
   test("clicking a Kind header expands it to reveal its primitives", async () => {
     mockValidLibrary();
     render(Library);
