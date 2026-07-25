@@ -1299,7 +1299,7 @@
         <div class="panel-head">
           <h3>Library</h3>
           <div class="head-actions">
-            <Badge>{filtered.length} {filtered.length === 1 ? 'item' : 'items'}</Badge>
+            <Badge>{#if filtered.length === 0 && filtering}—{:else}{filtered.length} {filtered.length === 1 ? 'item' : 'items'}{/if}</Badge>
             <Button size="sm" icon="plus" iconSize={13} onclick={openCreate}>New</Button>
             <Button size="sm" icon="folder" iconSize={13} onclick={openImportPath}>Import</Button>
             <Button size="sm" icon="search" iconSize={13} onclick={() => (bootstrapOpen = true)}>
