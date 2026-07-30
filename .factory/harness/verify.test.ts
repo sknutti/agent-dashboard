@@ -8,12 +8,13 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  resolveArgv,
   runSubgates,
   SUBGATE_RESULTS_ENV,
   SUBGATE_RESULTS_VERSION,
   type RunDeps,
 } from "./verify.ts";
-import type { Subgate } from "./subgates.ts";
+import { SUBGATES, type Subgate } from "./subgates.ts";
 
 const gate = (name: string): Subgate => ({ name, argv: ["bun", "run", name], cwd: "." });
 const FIVE = ["typecheck", "test:unit", "check:ds", "ui:svelte-check", "ui:vitest"].map(gate);
@@ -195,5 +196,40 @@ describe("runSubgates — the emitted names stay inside the contract", () => {
   test("refuses to emit a sub-gate whose name violates the contract", async () => {
     const d = deps({});
     await expect(runSubgates([gate("Bad Name")], d)).rejects.toThrow(/Bad Name/);
+  });
+});
+
+// The sandbox-exec fix. Under the factory this harness runs inside a Seatbelt profile that grants
+// read on the pinned tool binaries and nothing else, so resolving the BARE name `bun` fails even
+// though PATH contains bun's directory — every sub-gate died with
+// `Executable not found in $PATH: "bun"`, exit 127. Found by software-factory's U14 live proof
+// against a real worktree of this repo's origin/main; the fixture-driven tests above could not
+// reach it, because they inject `spawn` and never exec anything.
+describe("resolveArgv — sub-gates exec by absolute path, not by PATH lookup", () => {
+  test("rewrites a bare `bun` to the bun already running this harness", () => {
+    expect(resolveArgv(["bun", "run", "typecheck"])).toEqual([process.execPath, "run", "typecheck"]);
+  });
+
+  test("the rewritten head is absolute, which is the whole point", () => {
+    expect(resolveArgv(["bun", "test"])[0]!.startsWith("/")).toBe(true);
+  });
+
+  test("leaves any other tool untouched", () => {
+    // `argv[0]` must be a tool `.factory/binding.json` declares; only bun is self-referential.
+    expect(resolveArgv(["node", "x.js"])).toEqual(["node", "x.js"]);
+    expect(resolveArgv(["sh", "-c", "true"])).toEqual(["sh", "-c", "true"]);
+  });
+
+  test("never rewrites a `bun` that is not in head position", () => {
+    expect(resolveArgv(["sh", "-c", "bun --version"])).toEqual(["sh", "-c", "bun --version"]);
+  });
+
+  test("every declared sub-gate resolves to an executable head", () => {
+    // Guards the real manifest rather than a fixture: a new sub-gate spawning `bun` gets the fix
+    // automatically, and one spawning anything else is visible here rather than at 127 in a run.
+    for (const s of SUBGATES) {
+      const head = resolveArgv(s.argv)[0]!;
+      expect(head === process.execPath || head === s.argv[0]).toBe(true);
+    }
   });
 });
