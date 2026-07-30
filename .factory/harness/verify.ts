@@ -117,6 +117,27 @@ export async function runSubgates(subgates: Subgate[], deps: RunDeps): Promise<R
   return { exitCode, results };
 }
 
+/**
+ * Resolve `argv[0]` to something the sandbox can actually exec.
+ *
+ * Under the factory this harness runs inside a Seatbelt profile that grants read on the PINNED
+ * tool binaries and nothing else. `PATH` is present and even contains bun's directory, but
+ * resolving the bare name `"bun"` still fails — walking PATH means stat-ing directories the
+ * profile denies, and the resolver gives up before reaching the one entry it is allowed to see.
+ * The result is `Executable not found in $PATH: "bun"`, exit 127, on every sub-gate at once.
+ *
+ * `process.execPath` is the bun already executing this file: an absolute path, necessarily the
+ * pinned one the engine granted, and correct by construction rather than by PATH archaeology.
+ * Verified against the real sandbox — the absolute path execs fine where the bare name cannot.
+ *
+ * Outside the factory this is still right: it runs sub-gates with the same bun running the
+ * harness, instead of whichever one happens to come first on the developer's PATH.
+ */
+export function resolveArgv(argv: string[]): string[] {
+  const [head, ...rest] = argv;
+  return head === "bun" ? [process.execPath, ...rest] : argv;
+}
+
 /** The production deps: real spawns, inherited stdio, real clock. */
 export function realDeps(repoRoot: string): RunDeps {
   return {
@@ -124,7 +145,7 @@ export function realDeps(repoRoot: string): RunDeps {
       // `stdio: inherit` is deliberate: the engine's raw capture is byte-for-byte evidence and the
       // model's excerpt comes from it, so every child's output must flow through unaltered. This
       // harness adds a report; it must not become a filter.
-      const proc = Bun.spawn(subgate.argv, {
+      const proc = Bun.spawn(resolveArgv(subgate.argv), {
         cwd: join(repoRoot, subgate.cwd),
         stdout: "inherit",
         stderr: "inherit",
