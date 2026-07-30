@@ -36,10 +36,14 @@ function die(fix: string): never {
 
 // Run an argv (never a shell string) with inherited stdio; die with a fix instruction
 // on any non-zero exit or spawn error.
-function run(label: string, argv: string[], cwd: string): void {
+// `argv` is typed non-empty so `program` is a `string` rather than `string | undefined`. Every
+// call site already passes a literal with a program in it; this states that in the type instead of
+// leaving it as an assumption the checker has to be told to ignore.
+function run(label: string, argv: [string, ...string[]], cwd: string): void {
   console.log(`  ${C.dim}→ ${label}: ${argv.join(" ")} (${cwd})${C.reset}`);
-  const r = spawnSync(argv[0], argv.slice(1), { cwd, stdio: "inherit" });
-  if (r.error) die(`could not spawn \`${argv[0]}\` (${r.error.message}) — is the tool provisioned?`);
+  const [program, ...args] = argv;
+  const r = spawnSync(program, args, { cwd, stdio: "inherit" });
+  if (r.error) die(`could not spawn \`${program}\` (${r.error.message}) — is the tool provisioned?`);
   if (r.status !== 0) {
     die(
       `\`${argv.join(" ")}\` exited ${r.status ?? `signal ${r.signal}`}. ` +
