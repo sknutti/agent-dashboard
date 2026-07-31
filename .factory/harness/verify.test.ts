@@ -7,13 +7,16 @@
 // are about a reporting failure NOT becoming a gate failure.
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
-  resolveArgv,
+  resultsPathFromArgv,
   runSubgates,
-  SUBGATE_RESULTS_ENV,
+  SUBGATE_RESULTS_FLAG,
   SUBGATE_RESULTS_VERSION,
   type RunDeps,
 } from "./verify.ts";
+import { resolveArgv } from "./resolve-argv.ts";
 import { SUBGATES, type Subgate } from "./subgates.ts";
 
 const gate = (name: string): Subgate => ({ name, argv: ["bun", "run", name], cwd: "." });
@@ -31,7 +34,7 @@ const deps = (
     spawn: async (s) => codes[s.name] ?? 0,
     now: () => (clock += 10),
     writeResults: (path, body) => void written.push({ path, body }),
-    env: { [SUBGATE_RESULTS_ENV]: "/tmp/results.json" },
+    argv: [process.execPath, "verify.ts", SUBGATE_RESULTS_FLAG, "/tmp/results.json"],
     warn: (m) => void warnings.push(m),
     written,
     warnings,
@@ -120,18 +123,25 @@ describe("runSubgates — the results file", () => {
     }
   });
 
-  // The harness must run correctly outside the factory — a developer invoking it by hand.
-  test("writes NOTHING when the variable is unset, and the exit code is unchanged", async () => {
-    const d = deps({ typecheck: 7 }, { env: {} });
+  // The harness must run correctly outside the factory — a developer invoking it by hand gets no
+  // flag at all, because the engine only appends it for an opted-in binding.
+  test("writes NOTHING when the flag is absent, and the exit code is unchanged", async () => {
+    const d = deps({ typecheck: 7 }, { argv: [process.execPath, "verify.ts"] });
     const res = await runSubgates(FIVE, d);
     expect(d.written).toHaveLength(0);
     expect(res.exitCode).toBe(7);
   });
 
-  test("writes nothing when the variable is set but empty", async () => {
-    const d = deps({}, { env: { [SUBGATE_RESULTS_ENV]: "" } });
-    await runSubgates(FIVE, d);
-    expect(d.written).toHaveLength(0);
+  test("writes nothing when the flag is present but has no value", async () => {
+    for (const argv of [
+      [process.execPath, "verify.ts", SUBGATE_RESULTS_FLAG],
+      [process.execPath, "verify.ts", SUBGATE_RESULTS_FLAG, ""],
+      [process.execPath, "verify.ts", SUBGATE_RESULTS_FLAG, "--other"],
+    ]) {
+      const d = deps({}, { argv });
+      await runSubgates(FIVE, d);
+      expect(d.written).toHaveLength(0);
+    }
   });
 });
 
@@ -231,5 +241,46 @@ describe("resolveArgv — sub-gates exec by absolute path, not by PATH lookup", 
       const head = resolveArgv(s.argv)[0]!;
       expect(head === process.execPath || head === s.argv[0]).toBe(true);
     }
+  });
+
+  // #48 fixed the sub-gate spawns and left `prepare.ts` with the identical defect, so a cold
+  // worktree still died before installing a dependency. Reading the source is crude, but it is the
+  // only thing that catches the NEXT by-name spawn: `prepare.ts` is a top-level script with real
+  // side effects, so it cannot be imported and exercised the way `runSubgates` can.
+  test("prepare.ts spawns through resolveArgv, never a bare tool name", () => {
+    const src = readFileSync(join(import.meta.dir, "prepare.ts"), "utf8");
+    expect(src).toContain("resolveArgv");
+    // The two frozen installs must go through the helper, not straight to spawnSync.
+    expect(src).not.toMatch(/spawnSync\(\s*"bun"/);
+  });
+});
+
+// The channel itself. It moved from an environment variable to argv when software-factory's Slice
+// 10 U14 measured that a bun child under the factory's profile sees an EMPTY environment whenever
+// its cwd is under the user's home tree — so this harness read `undefined`, wrote nothing, warned
+// about nothing, and every test here still passed while the feature did nothing.
+describe("resultsPathFromArgv — the engine names the path on our command line", () => {
+  const base = [process.execPath, ".factory/harness/verify.ts"];
+
+  test("reads the value that follows the flag", () => {
+    expect(resultsPathFromArgv([...base, SUBGATE_RESULTS_FLAG, "/x/results.json"])).toBe(
+      "/x/results.json",
+    );
+  });
+
+  test("is undefined when the engine did not offer the channel", () => {
+    // The ordinary case for a developer running the gate by hand, and for any run whose binding
+    // did not opt in. It must never be an error.
+    expect(resultsPathFromArgv(base)).toBeUndefined();
+  });
+
+  test("treats a valueless or malformed flag as absent, never as a failure", () => {
+    expect(resultsPathFromArgv([...base, SUBGATE_RESULTS_FLAG])).toBeUndefined();
+    expect(resultsPathFromArgv([...base, SUBGATE_RESULTS_FLAG, ""])).toBeUndefined();
+    expect(resultsPathFromArgv([...base, SUBGATE_RESULTS_FLAG, "--verbose"])).toBeUndefined();
+  });
+
+  test("ignores our own arguments that merely resemble the flag", () => {
+    expect(resultsPathFromArgv([...base, "--subgate-results-dir", "/x"])).toBeUndefined();
   });
 });

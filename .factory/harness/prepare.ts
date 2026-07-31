@@ -19,6 +19,7 @@
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveArgv } from "./resolve-argv.ts";
 
 // Derive the repo root from this file's own location (`<root>/.factory/harness/`) so
 // preparation is correct regardless of the invoking cwd.
@@ -39,9 +40,15 @@ function die(fix: string): never {
 // `argv` is typed non-empty so `program` is a `string` rather than `string | undefined`. Every
 // call site already passes a literal with a program in it; this states that in the type instead of
 // leaving it as an assumption the checker has to be told to ignore.
+//
+// `resolveArgv` rewrites a leading bare `bun` to the absolute `process.execPath`. Under the factory
+// this is not an optimisation — a bare name CANNOT resolve there, because the child's environment
+// (and therefore `PATH`) is empty; see `resolve-argv.ts`. Without it a cold worktree dies at
+// `Executable not found in $PATH: "bun"` before installing a single dependency, which is exactly
+// what the factory does on every run.
 function run(label: string, argv: [string, ...string[]], cwd: string): void {
   console.log(`  ${C.dim}→ ${label}: ${argv.join(" ")} (${cwd})${C.reset}`);
-  const [program, ...args] = argv;
+  const [program, ...args] = resolveArgv(argv) as [string, ...string[]];
   const r = spawnSync(program, args, { cwd, stdio: "inherit" });
   if (r.error) die(`could not spawn \`${program}\` (${r.error.message}) — is the tool provisioned?`);
   if (r.status !== 0) {
