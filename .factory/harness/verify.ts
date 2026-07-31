@@ -29,12 +29,38 @@
 import { join } from "node:path";
 import { writeFileSync } from "node:fs";
 import { SUBGATES, type Subgate } from "./subgates.ts";
+import { resolveArgv } from "./resolve-argv.ts";
 
-/** The env var through which the engine names the results path. Declared here rather than imported
- *  so this repository has no build-time dependency on the engine; the contract doc is the shared
- *  source of truth, and `subgates.test.ts` asserts our names satisfy it. */
-export const SUBGATE_RESULTS_ENV = "FACTORY_SUBGATE_RESULTS";
+/**
+ * The argv flag through which the engine names the results path. Declared here rather than imported
+ * so this repository has no build-time dependency on the engine; the contract doc is the shared
+ * source of truth, and `subgates.test.ts` asserts our names satisfy it.
+ *
+ * **This was an environment variable (`FACTORY_SUBGATE_RESULTS`) until the engine's Slice 10 `U14`
+ * measured that channel inert:** a `bun` child under the factory's Seatbelt profile starts with a
+ * completely empty environment whenever its cwd is under the user's home tree, which is where every
+ * worktree lives. This harness read `undefined`, wrote no file, warned about nothing — because "not
+ * asked to report" is a legitimate state under the contract's rule 5 — and every test here passed
+ * while the feature did nothing. Argv survives where the environment does not; see
+ * `resolve-argv.ts` for the same root cause biting the sub-gate spawns.
+ */
+export const SUBGATE_RESULTS_FLAG = "--subgate-results";
 export const SUBGATE_RESULTS_VERSION = 1;
+
+/**
+ * The results path the engine put on our command line, or `undefined` if it did not.
+ *
+ * `undefined` is the ordinary case, not an error: the flag is only appended when the engine is
+ * driving AND `.factory/binding.json` opted in, so a developer running this harness by hand gets no
+ * flag and must still get a correct gate. A flag with no value is treated as absent for the same
+ * reason — a malformed invocation must not be able to fail a gate about *reporting*.
+ */
+export function resultsPathFromArgv(argv: readonly string[]): string | undefined {
+  const i = argv.indexOf(SUBGATE_RESULTS_FLAG);
+  if (i === -1) return undefined;
+  const value = argv[i + 1];
+  return value === undefined || value === "" || value.startsWith("--") ? undefined : value;
+}
 
 /** The contract's bounded-identifier rule for sub-gate names. */
 const NAME_RE = /^[a-z][a-z0-9:._-]{0,63}$/;
@@ -51,7 +77,8 @@ export interface RunDeps {
   spawn: (subgate: Subgate) => Promise<number>;
   now: () => number;
   writeResults: (path: string, body: string) => void;
-  env: Record<string, string | undefined>;
+  /** This process's own argv — the channel the engine names the results path on. */
+  argv: readonly string[];
   warn: (message: string) => void;
 }
 
@@ -99,8 +126,8 @@ export async function runSubgates(subgates: Subgate[], deps: RunDeps): Promise<R
     if (code !== 0 && exitCode === 0) exitCode = code; // FIRST failure wins, as `&&` does
   }
 
-  const target = deps.env[SUBGATE_RESULTS_ENV];
-  if (target !== undefined && target !== "") {
+  const target = resultsPathFromArgv(deps.argv);
+  if (target !== undefined) {
     const body = JSON.stringify(
       { subgate_results_version: SUBGATE_RESULTS_VERSION, subgates: results },
       null,
@@ -115,27 +142,6 @@ export async function runSubgates(subgates: Subgate[], deps: RunDeps): Promise<R
   }
 
   return { exitCode, results };
-}
-
-/**
- * Resolve `argv[0]` to something the sandbox can actually exec.
- *
- * Under the factory this harness runs inside a Seatbelt profile that grants read on the PINNED
- * tool binaries and nothing else. `PATH` is present and even contains bun's directory, but
- * resolving the bare name `"bun"` still fails — walking PATH means stat-ing directories the
- * profile denies, and the resolver gives up before reaching the one entry it is allowed to see.
- * The result is `Executable not found in $PATH: "bun"`, exit 127, on every sub-gate at once.
- *
- * `process.execPath` is the bun already executing this file: an absolute path, necessarily the
- * pinned one the engine granted, and correct by construction rather than by PATH archaeology.
- * Verified against the real sandbox — the absolute path execs fine where the bare name cannot.
- *
- * Outside the factory this is still right: it runs sub-gates with the same bun running the
- * harness, instead of whichever one happens to come first on the developer's PATH.
- */
-export function resolveArgv(argv: string[]): string[] {
-  const [head, ...rest] = argv;
-  return head === "bun" ? [process.execPath, ...rest] : argv;
 }
 
 /** The production deps: real spawns, inherited stdio, real clock. */
@@ -155,7 +161,7 @@ export function realDeps(repoRoot: string): RunDeps {
     },
     now: () => Bun.nanoseconds() / 1_000_000,
     writeResults: (path, body) => writeFileSync(path, body, "utf8"),
-    env: process.env as Record<string, string | undefined>,
+    argv: process.argv,
     warn: (message) => console.error(`[factory-verify] ${message}`),
   };
 }
