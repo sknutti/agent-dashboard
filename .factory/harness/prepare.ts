@@ -1,5 +1,29 @@
-// `.factory/harness/prepare.ts` — the repo-owned cold-clone preparation behind the
-// factory's opaque `prepare` interface (`.factory/binding.json`).
+// `.factory/harness/prepare.ts` — cold-clone preparation for HUMANS and CI.
+//
+// ⚠️ THE FACTORY NO LONGER RUNS THIS FILE, and must not be pointed back at it.
+// `.factory/binding.json`'s `prepare` is now `/bin/sh -c '<the two installs>'`. This is not a
+// style preference — it is the only shape that works:
+//
+//   A bun process under the factory's sandbox has an EMPTY `process.env`, and both `Bun.spawn`
+//   and `node:child_process` default to `env: process.env`. So everything a bun script spawns
+//   inherits an empty environment and loses nono's `http_proxy` — the installs below then fail
+//   with `ConnectionRefused downloading tarball`, which reads like a network outage and is not
+//   one. Measured 2026-08-03 (bun 1.3.6 / nono 0.71.0) against a real cold worktree: this file
+//   as the binding fails; the same two installs under `/bin/sh -c` succeed, 127 packages, exit 0.
+//   `resolveArgv`'s `process.execPath` rewrite below fixed the same root cause for `PATH` only —
+//   it cannot help the proxy, because that is read by the install child, not by this script.
+//
+// A harness cannot work around this from the inside: anything it spawns — including
+// `/usr/bin/env` or `/bin/sh` — inherits the same empty environment. The bun process has to be
+// out of the ancestry of the install, which only the binding can do.
+//
+// Running it yourself (`bun run .factory/harness/prepare.ts`) is unaffected and still the
+// friendlier path: it keeps the fix-instruction failure messages and the lockfile-drift
+// assertion, neither of which the binding's sh command has. Note the drift assertion has ALWAYS
+// been inert under the factory anyway — `git` finds no repository inside the sandbox, so it took
+// the "inconclusive" branch on every factory run; `--frozen-lockfile` is the real guarantee.
+//
+// Original rationale for a script rather than a bare `bun install`, still true:
 //
 // Why a script and not a bare `bun install`: command-centre is NOT a Bun workspace
 // (no `workspaces` field; two lockfiles — `bun.lock` + `ui/bun.lock`), and the verify
