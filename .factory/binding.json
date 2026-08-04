@@ -1,7 +1,7 @@
 {
   "binding_version": 1,
   "tools": ["bun", "node", "sh"],
-  "prepare": ["bun", "run", ".factory/harness/prepare.ts"],
+  "prepare": ["sh", "-c", "bun install --frozen-lockfile && cd ui && bun install --frozen-lockfile"],
   "preflight": ["bun", "run", "doctor", "--", "--preflight"],
   "verify": ["bun", "run", ".factory/harness/verify.ts"],
   "subgate_results": true
