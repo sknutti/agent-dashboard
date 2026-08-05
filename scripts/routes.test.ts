@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initSchema } from "./db.ts";
-import { rangePred, buildSessionErrors, buildSessionMessages, buildSearch, buildBurnOutput } from "./routes.ts";
+import { rangePred, buildSessionErrors, buildSessionMessages, buildSearch, buildBurnOutput, buildSummary, otelNativeCost, type SummaryData } from "./routes.ts";
 import { indexSession } from "./session_search.ts";
 
 // The rollup tables store `date` as an already-local YYYY-MM-DD. The old predicate
@@ -386,6 +386,143 @@ describe("buildBurnOutput (#burn-output)", () => {
     expect(res.days[0]!.commits).toBe(3);
     expect(res.days[0]!.filesChanged).toBe(4);
     expect(res.days[0]!.fidelity).toBe("estimated");
+    db.close();
+  });
+});
+
+// GET /api/summary core logic (buildSummary) — aggregates today's headline metrics
+// including spend, using OTEL-first/JSONL-fallback per agent (same logic as /api/agents).
+describe("buildSummary (#summary-endpoint)", () => {
+  function freshDb(): Database {
+    const db = new Database(":memory:");
+    initSchema(db);
+    return db;
+  }
+
+  function insertSession(db: Database, row: Record<string, unknown>): void {
+    const cols = Object.keys(row);
+    db.run(
+      `INSERT INTO sessions (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`,
+      cols.map((k) => row[k] as any),
+    );
+  }
+
+  test("aggregates sessions, tokens, tools, and errors for today", () => {
+    const db = freshDb();
+    const today = (db.query("SELECT datetime('now','localtime') t").get() as { t: string }).t;
+    insertSession(db, {
+      session_id: "s1",
+      agent: "claude_code",
+      started_at: today,
+      total_tokens: 100,
+      error_count: 0,
+      cost_usd: 0.50,
+    });
+    insertSession(db, {
+      session_id: "s2",
+      agent: "claude_code",
+      started_at: today,
+      total_tokens: 200,
+      error_count: 1,
+      cost_usd: 0.75,
+    });
+    db.run(
+      "INSERT INTO tool_calls (session_id, agent, ts, tool_name) VALUES (?,?,?,?)",
+      ["s1", "claude_code", today, "Edit"],
+    );
+    const res = buildSummary(db, "today", ["claude_code"]);
+    expect(res.sessions).toBe(2);
+    expect(res.tokens).toBe(300);
+    expect(res.tools).toBe(1);
+    expect(res.errors).toBe(1);
+    db.close();
+  });
+
+  test("OTEL-first/JSONL-fallback: uses OTEL native cost when present, else JSONL cost_usd", () => {
+    const db = freshDb();
+    const today = (db.query("SELECT date('now','localtime') d").get() as { d: string }).d;
+    const todayTs = (db.query("SELECT datetime('now','localtime') t").get() as { t: string }).t;
+
+    // claude_code: has both OTEL native ($10) and JSONL cost ($1) — OTEL should win
+    insertSession(db, {
+      session_id: "s1",
+      agent: "claude_code",
+      started_at: todayTs,
+      cost_usd: 1.0,
+    });
+    db.run(
+      "INSERT INTO otel_metrics (metric_name, agent, value, timestamp, received_at) VALUES (?,?,?,?,?)",
+      ["claude_code.cost.usage", "claude_code", 10.0, todayTs, todayTs],
+    );
+
+    // codex: has only JSONL cost ($2) — no OTEL, so JSONL is used
+    insertSession(db, {
+      session_id: "s2",
+      agent: "codex",
+      started_at: todayTs,
+      cost_usd: 2.0,
+    });
+
+    // pi: has only OTEL native ($5) — OTEL is used
+    db.run(
+      "INSERT INTO otel_metrics (metric_name, agent, value, timestamp, received_at) VALUES (?,?,?,?,?)",
+      ["claude_code.cost.usage", "pi", 5.0, todayTs, todayTs],
+    );
+
+    const res = buildSummary(db, "today", ["claude_code", "codex", "pi"]);
+    // Expected: claude_code $10 (OTEL) + codex $2 (JSONL) + pi $5 (OTEL) = $17
+    expect(res.spendUsd).toBe(17.0);
+    db.close();
+  });
+
+  test("an agent with neither OTEL nor JSONL cost contributes $0", () => {
+    const db = freshDb();
+    const todayTs = (db.query("SELECT datetime('now','localtime') t").get() as { t: string }).t;
+
+    // antigravity: a session with no cost_usd and no OTEL native
+    insertSession(db, {
+      session_id: "a1",
+      agent: "antigravity",
+      started_at: todayTs,
+      cost_usd: null,
+    });
+
+    const res = buildSummary(db, "today", ["antigravity"]);
+    expect(res.spendUsd).toBe(0);
+    db.close();
+  });
+
+  test("multiple sessions per agent sum correctly (OTEL total if present, else JSONL sum)", () => {
+    const db = freshDb();
+    const todayTs = (db.query("SELECT datetime('now','localtime') t").get() as { t: string }).t;
+
+    // claude_code: 3 JSONL sessions worth $1 each + 1 OTEL metric for $15 total
+    // → should use $15 OTEL, not $3 JSONL
+    insertSession(db, {
+      session_id: "s1",
+      agent: "claude_code",
+      started_at: todayTs,
+      cost_usd: 1.0,
+    });
+    insertSession(db, {
+      session_id: "s2",
+      agent: "claude_code",
+      started_at: todayTs,
+      cost_usd: 1.0,
+    });
+    insertSession(db, {
+      session_id: "s3",
+      agent: "claude_code",
+      started_at: todayTs,
+      cost_usd: 1.0,
+    });
+    db.run(
+      "INSERT INTO otel_metrics (metric_name, agent, value, timestamp, received_at) VALUES (?,?,?,?,?)",
+      ["claude_code.cost.usage", "claude_code", 15.0, todayTs, todayTs],
+    );
+
+    const res = buildSummary(db, "today", ["claude_code"]);
+    expect(res.spendUsd).toBe(15.0); // OTEL $15, not JSONL $3
     db.close();
   });
 });

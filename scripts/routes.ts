@@ -370,6 +370,42 @@ export function buildBurnOutput(db: Database, range: string): { range: string; d
   return { range, days };
 }
 
+/** Core of GET /api/summary — aggregates today's sessions/tokens/tools/errors/spend.
+ *  Spend resolution uses OTEL-first/JSONL-fallback per agent: for each agent,
+ *  uses otelNativeCost if available, else SUM(cost_usd) from sessions — never sums
+ *  both for the same agent as they describe the SAME spend. Exported for testing. */
+export interface SummaryData {
+  sessions: number;
+  tokens: number;
+  tools: number;
+  errors: number;
+  spendUsd: number;
+}
+export function buildSummary(db: Database, range: string, agentList?: string[]): SummaryData {
+  const agents = agentList ?? agentIds();
+  const today = `DATE(started_at,'localtime') = date('now','localtime')`;
+  const s = db.query(/* sql */ `
+    SELECT COUNT(*) AS sessions,
+           COALESCE(SUM(total_tokens),0) AS tokens,
+           COALESCE(SUM(error_count),0) AS errors
+    FROM sessions WHERE ${today}`).get() as any;
+  const tools = db.query(/* sql */ `
+    SELECT COUNT(*) AS n FROM tool_calls WHERE DATE(ts,'localtime') = date('now','localtime')`).get() as any;
+  // Spend today: OTEL-first / JSONL-fallback per agent
+  let spendUsd = 0;
+  for (const agentId of agents) {
+    const otelNative = otelNativeCost(db, agentId, range);
+    if (otelNative != null) {
+      spendUsd += otelNative;
+    } else {
+      const costRow = db.query<CountRow, [string]>(/* sql */ `
+        SELECT COALESCE(SUM(cost_usd),0) n FROM sessions WHERE agent = ? AND ${today}`).get(agentId)!;
+      spendUsd += costRow.n;
+    }
+  }
+  return { sessions: s.sessions, tokens: s.tokens, tools: tools.n, errors: s.errors, spendUsd };
+}
+
 export function registerApiRoutes(app: Hono): void {
   const db = getDb();
 
@@ -381,15 +417,8 @@ export function registerApiRoutes(app: Hono): void {
 
   // ── Summary (KpiRow) ──────────────────────────────────────────────────────
   app.get("/api/summary", (c) => {
-    const today = "DATE(started_at,'localtime') = date('now','localtime')";
-    const s = db.query(/* sql */ `
-      SELECT COUNT(*) AS sessions,
-             COALESCE(SUM(total_tokens),0) AS tokens,
-             COALESCE(SUM(error_count),0) AS errors
-      FROM sessions WHERE ${today}`).get() as any;
-    const tools = db.query(/* sql */ `
-      SELECT COUNT(*) AS n FROM tool_calls WHERE DATE(ts,'localtime') = date('now','localtime')`).get() as any;
-    return c.json({ sessions: s.sessions, tokens: s.tokens, tools: tools.n, errors: s.errors });
+    const summary = buildSummary(db, "today");
+    return c.json(summary satisfies SummaryData);
   });
 
   // ── Per-agent cards (ADR-0003) ────────────────────────────────────────────
@@ -1343,8 +1372,9 @@ function mcpCalls(db: Database, range: string): McpCall[] {
   });
 }
 
-/** OTEL native cost (claude_code.cost.usage, USD) summed over the range, or null. */
-function otelNativeCost(db: Database, agent: string, range: string): number | null {
+/** OTEL native cost (claude_code.cost.usage, USD) summed over the range, or null.
+ *  Exported for testing; used by /api/summary and /api/agents for cost resolution. */
+export function otelNativeCost(db: Database, agent: string, range: string): number | null {
   const row = db.query(/* sql */ `
     SELECT SUM(value) v FROM otel_metrics
     WHERE metric_name = 'claude_code.cost.usage' AND agent = ?
