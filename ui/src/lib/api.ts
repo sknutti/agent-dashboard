@@ -25,6 +25,7 @@ export interface Summary {
   tokens: number;
   tools: number;
   errors: number;
+  spendUsd: number;
 }
 
 export interface TokenCounts {

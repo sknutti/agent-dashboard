@@ -2,7 +2,7 @@
   import Icon from "../ui/Icon.svelte";
   import { getSummary } from "../../api";
   import { resource } from "../../resource.svelte";
-  import { compact } from "../../format";
+  import { compact, usd } from "../../format";
   import { openDrill } from "../../stores.svelte";
 
   // Today's headline counters (master §17 KpiRow). Real /api/summary data.
@@ -13,6 +13,7 @@
     { label: "Tokens today", icon: "cpu", value: res.data?.tokens, fmt: true },
     { label: "Tool calls", icon: "wrench", value: res.data?.tools },
     { label: "Errors", icon: "alert", value: res.data?.errors, alert: true },
+    { label: "Spend today", icon: "dollar", value: res.data?.spendUsd, fmt: "currency" },
   ]);
 
   // "Errors · needs attention" was a dead-end tile even though the per-agent
@@ -60,7 +61,7 @@
     <div class="tile-val mono">—</div>
     <div class="tile-sub">unavailable</div>
   {:else}
-    <div class="tile-val mono">{t.fmt ? compact(t.value) : (t.value ?? 0).toLocaleString()}</div>
+    <div class="tile-val mono">{t.fmt === "currency" ? usd(t.value) : (t.fmt ? compact(t.value) : (t.value ?? 0).toLocaleString())}</div>
     <div class="tile-sub">{t.alert && (t.value ?? 0) > 0 ? "needs attention" : "live"}</div>
   {/if}
 {/snippet}
@@ -68,7 +69,7 @@
 <style>
   .kpis {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 14px;
   }
   @media (max-width: 760px) {
